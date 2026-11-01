@@ -435,6 +435,57 @@ NVN_API(nvnProgramSetShaders) {
     NVN_BLOCKING();
     ret_x(c, prog_set_shaders(arg_p(c, 0), (int)arg_x(c, 1), arg_p(c, 2)));
 }
+// ---- NVN 2 program builder (Donkey Kong Bananza). The game zeroes a 0x80-byte NVNprogramBuilder on the stack, calls
+// SetDefaults, SetDevice and SetShaders(b, n, NVNshaderData[n]) and then nvnProgramInitializeFromBuilder(program, b)
+// (main+0x88be28 sub_710088BDCC; programs 0xa0 apart). The builder keeps its own copy of the stage list, so the
+// initialize step is NVN 1's Initialize + SetShaders.
+#define NVN_PROG_BUILDER_MAGIC 0x50424e32u   // "2NBP"
+typedef struct { uint32_t magic, nstage; void *dev; NVNshaderData sd[6]; } prog_builder_t;
+_Static_assert(sizeof(prog_builder_t) <= 0x80, "NVNprogramBuilder is 0x80 bytes in Bananza");
+static prog_builder_t *prog_builder(Cpu *c, const char *fn) {
+    prog_builder_t *b = arg_p(c, 0);
+    if (!b) rt_fatal("nvn: %s: null program builder", fn);
+    return b;
+}
+// void nvnProgramBuilderSetDefaults(NVNprogramBuilder *b)
+NVN_API(nvnProgramBuilderSetDefaults) {
+    prog_builder_t *b = prog_builder(c, "ProgramBuilderSetDefaults");
+    void *dev = b->magic == NVN_PROG_BUILDER_MAGIC ? b->dev : NULL;   // like the other builders, keep the device
+    memset(b, 0, sizeof *b);
+    b->magic = NVN_PROG_BUILDER_MAGIC;
+    b->dev = dev;
+}
+// void nvnProgramBuilderSetDevice(NVNprogramBuilder *b, NVNdevice *d), NVNdevice *...GetDevice(const ... *b)
+NVN_API(nvnProgramBuilderSetDevice) { prog_builder(c, "ProgramBuilderSetDevice")->dev = arg_p(c, 1); }
+NVN_API(nvnProgramBuilderGetDevice) { ret_x(c, (uint64_t)(uintptr_t)prog_builder(c, "ProgramBuilderGetDevice")->dev); }
+// void nvnProgramBuilderSetShaders(NVNprogramBuilder *b, int n, const NVNshaderData *sd)
+NVN_API(nvnProgramBuilderSetShaders) {
+    prog_builder_t *b = prog_builder(c, "ProgramBuilderSetShaders");
+    int n = (int)arg_x(c, 1);
+    const NVNshaderData *sd = arg_p(c, 2);
+    if (n < 0 || n > 6 || (n && !sd)) rt_fatal("nvn: ProgramBuilderSetShaders with %d stages at %p", n, (const void *)sd);
+    b->nstage = (uint32_t)n;
+    if (n) memcpy(b->sd, sd, (size_t)n * sizeof *sd);
+}
+// int nvnProgramBuilderGetShaderCount(const NVNprogramBuilder *b)
+NVN_API(nvnProgramBuilderGetShaderCount) { ret_x(c, prog_builder(c, "ProgramBuilderGetShaderCount")->nstage); }
+// Per-sample shading, debug data hashes, subroutine linkage and ray-tracing modules: the Vulkan path has no use for
+// them yet; each is logged so a game that depends on one shows up in a gfx trace.
+NVN_API(nvnProgramBuilderSetSampleShading) { NVN_LOG("ProgramBuilderSetSampleShading %d", (int)arg_x(c, 1)); }
+NVN_API(nvnProgramBuilderSetDebugDataHashes) { (void)c; }
+NVN_API(nvnProgramBuilderSetSubroutineLinkage) { NVN_LOG("ProgramBuilderSetSubroutineLinkage %p", arg_p(c, 1)); }
+NVN_API(nvnProgramBuilderSetRayTracingModules) { NVN_LOG("ProgramBuilderSetRayTracingModules %p", arg_p(c, 1)); }
+// NVNboolean nvnProgramInitializeFromBuilder(NVNprogram *p, const NVNprogramBuilder *b)
+NVN_API(nvnProgramInitializeFromBuilder) {
+    NVN_BLOCKING();
+    prog_t *o = arg_p(c, 0);
+    const prog_builder_t *b = arg_p(c, 1);
+    if (!o || !b || b->magic != NVN_PROG_BUILDER_MAGIC) rt_fatal("nvn: ProgramInitializeFromBuilder(%p, %p)", (void *)o, (const void *)b);
+    memset(o, 0, sizeof *o);
+    o->magic = NVN_PROG_MAGIC;
+    ret_x(c, prog_set_shaders(o, (int)b->nstage, b->sd));
+}
+
 // NVNboolean nvnProgramSetShadersExt(NVNprogram *p, int n, const NVNshaderDataExt *sd): no prototype in nvn.h; the
 // entries are {data, control, reserved} (0x18 bytes, reserved observed 0)
 typedef struct { NVNbufferAddress data; const void *control; uint64_t reserved; } shader_data_ext;

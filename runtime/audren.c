@@ -394,6 +394,8 @@ static IpcBuffer pick(const IpcBuffer *a, unsigned na, const IpcBuffer *b, unsig
     return x.size ? x : y;
 }
 
+static float voice_drop = 1.0f;   // IAudioRenderer 12/13
+
 static void renderer_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
     AudioRenderer *r = s->state;
     switch (rq->cmd) {
@@ -431,6 +433,11 @@ static void renderer_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
     case 7: rs->copy[rs->ncopy++] = kern_event_readable(r->event); return;   // QuerySystemEvent
     case 8: r->time_limit = IPC_ARG(rq, uint32_t, 0); return;                // SetRenderingTimeLimit
     case 9: { uint32_t v = r->time_limit ? r->time_limit : 100; IPC_OUT(rs, v); return; }   // GetRenderingTimeLimit
+    // [15.0.0+] Set/GetVoiceDropParameter (a float, as nn::audio::SetAudioRendererVoiceDropParameter takes): the host
+    // mixer drops no voices, so the value is only kept for the getter. One renderer is open at a time.
+    case 12: voice_drop = IPC_ARG(rq, float, 0); return;
+    case 13: { float v = voice_drop; IPC_OUT(rs, v); return; }
+    case 14: return;   // [23.0.0+] SetAsyncMemoryPoolControlEnabled(bool): memory pools are always synchronous here
     default: ipc_unimplemented(s, rq);
     }
 }
@@ -446,6 +453,18 @@ static void renderer_close(void *p) {
     kern_handle_close(r->event);
     rt_log("audren: renderer closed after %llu frames", (unsigned long long)r->elapsed_frames);
     renderer_free(r);
+}
+
+// ---- aud:u, nn::audio::IUserClientSession (Switch 2): the SDK reaches the audio managers through it
+// (nn::audio::CreateUserClientSessionByHipc) instead of opening audren:u itself. Switchbrew, "Audio services": command
+// 2 returns an IAudioRendererManager. 0 (IAudioInManager), 1 (IAudioOutManager), 3 and 4 are not served yet.
+void aud_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    switch (rq->cmd) {
+    case 2:
+        rs->move[rs->nmove++] = ipc_session_new("audren:u", audren_manager_handler, NULL, NULL);
+        return;
+    default: ipc_unimplemented(s, rq);
+    }
 }
 
 // ---- IAudioRendererManager

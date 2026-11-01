@@ -435,6 +435,17 @@ static void ov_user_id(Cpu *c) {
     ret_x(c, ok ? 0 : ACCOUNT_R_INVALID);
 }
 
+// Result GetLastOpenedUser(Uid *out): the local user, the only one the host ever opens (Bananza asks after
+// TryOpenPreselectedUser)
+static void ov_last_opened_user(Cpu *c) {
+    Uid *out = arg_p(c, 0);
+    if (!out) rt_fatal("nn::account::GetLastOpenedUser: null output");
+    plat_mutex_lock_shared(&account_lock);
+    *out = local;
+    plat_mutex_unlock_shared(&account_lock);
+    ret_x(c, 0);
+}
+
 // Result GetUserExistence(bool *out, const Uid &)
 static void ov_user_existence(Cpu *c) {
     uint8_t *out = arg_p(c, 0);
@@ -761,6 +772,24 @@ static void ov_font_size(Cpu *c) {
 }
 
 // ==== registration
+// ---- Switch 2 oe calls (Donkey Kong Bananza)
+// int nn::oe::GetCurrentGraphicsScale(): an enum 0-2; main+0x4686d4 maps it through a float table {3, 12, 16} and
+// ignores anything above 2. The host is a docked console with the most to give, so the highest value. Unverified
+// against hardware: what the three levels mean is not known.
+static void ov_graphics_scale(Cpu *c) { ret_x(c, 2); }
+// void nn::oe::SetGraphicsScaleChangedNotificationEnabled(bool): the scale never changes on the host
+static void ov_graphics_scale_notify(Cpu *c) { (void)c; }
+// void nn::oe::SetAlbumImageOrientation(album::ImageOrientation): there is no capture album
+static void ov_album_orientation(Cpu *c) { (void)c; }
+// void nn::oe::{Enter,Leave}ExitRequestHandlingSection(): no exit request ever arrives from a host system applet
+static void ov_exit_section(Cpu *c) { (void)c; }
+
+HOST_OVERRIDE("_ZN2nn2oe23GetCurrentGraphicsScaleEv", ov_graphics_scale);
+HOST_OVERRIDE("_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb", ov_graphics_scale_notify);
+HOST_OVERRIDE("_ZN2nn2oe24SetAlbumImageOrientationENS_5album16ImageOrientationE", ov_album_orientation);
+HOST_OVERRIDE("_ZN2nn2oe31EnterExitRequestHandlingSectionEv", ov_exit_section);
+HOST_OVERRIDE("_ZN2nn2oe31LeaveExitRequestHandlingSectionEv", ov_exit_section);
+
 HOST_OVERRIDE("_ZN2nn2oe10InitializeEv", ov_oe_initialize);
 HOST_OVERRIDE("_ZN2nn2oe18GetDesiredLanguageEv", ov_desired_language);
 HOST_OVERRIDE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", ov_performance_config);
@@ -823,6 +852,7 @@ HOST_OVERRIDE("_ZN2nn7account10InitializeEv", ov_account_initialize);
 HOST_OVERRIDE("_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE", ov_open_user);
 HOST_OVERRIDE("_ZN2nn7account9CloseUserERKNS0_10UserHandleE", ov_close_user);
 HOST_OVERRIDE("_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE", ov_user_id);
+HOST_OVERRIDE("_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE", ov_last_opened_user);
 HOST_OVERRIDE("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", ov_user_existence);
 HOST_OVERRIDE("_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE", ov_nickname);
 

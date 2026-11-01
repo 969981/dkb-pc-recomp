@@ -856,6 +856,12 @@ void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) 
         return;
     }
     case 5: { int32_t n = 2; IPC_OUT(rs, n); return; }   // GetActiveChannelCount
+    case 19: return;   // SetAudioDeviceOutputVolumeAutoTuneEnabled [18.0.0+]: the host output has no auto tune
+    case 20: case 21: {   // IsAudioDeviceOutputVolumeAutoTuneEnabled [18.0.0+], IsActiveOutputDeviceEstimatedLowLatency
+        uint8_t v = 0;   //   [21.0.0+]: both false (Switchbrew, "Audio services")
+        IPC_OUT(rs, v);
+        return;
+    }
     case 4: case 11: case 12: {   // QueryAudioDeviceSystemEvent, ...InputEvent, ...OutputEvent
         uint32_t ev = __atomic_load_n(&change_event, __ATOMIC_ACQUIRE);
         if (!ev) {

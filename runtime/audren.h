@@ -168,6 +168,7 @@ typedef struct AudioRenderer {
 
 // IAudioRendererManager, served under "audren:u" (ipc.c's service table).
 void audren_manager_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);
+void aud_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // aud:u (Switch 2)
 long audren_renderers_live(void);      // renderers whose render tick runs
 
 // Mixer interface (audio_mixer.c). Every call but open/close/set_running runs with r->lock held.

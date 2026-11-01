@@ -102,6 +102,38 @@ static void ov_vsync_event(Cpu *c) {
     ret_x(c, 0);
 }
 
+// ---- Switch 2 vi calls (Donkey Kong Bananza): the host presents SDR with a fixed swap interval and no VRR.
+// Result QueryDisplayHdrStatus(bool *enabled, HdrOutputFormat *format, u16 *?, const Display *): HDR off
+static void ov_hdr_status(Cpu *c) {
+    uint8_t *on = arg_p(c, 0);
+    if (on) *on = 0;
+    ret_x(c, 0);
+}
+// Result QueryDisplayHdrPaperWhite(u16 *nits, const Display *): the BT.2408 reference white, 203 nits
+static void ov_hdr_paper_white(Cpu *c) {
+    uint16_t *nits = arg_p(c, 0);
+    if (nits) *nits = 203;
+    ret_x(c, 0);
+}
+// Result QueryDisplayVrrSupported(bool *out, const Display *): no
+static void ov_vrr_supported(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+// Result SetDisplayVrrCapability(Display *, bool), Set/ClearLayerExtendedSwapInterval(Layer *[, int, int]),
+// SetLayerNextHdr{Extended,Standard}ContentLuminanceRangeMetadata(Layer *, u16, u16): accepted, nothing changes
+static void ov_vi_accept(Cpu *c) { ret_x(c, 0); }
+
+HOST_OVERRIDE("_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE", ov_hdr_status);
+HOST_OVERRIDE("_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE", ov_hdr_paper_white);
+HOST_OVERRIDE("_ZN2nn2vi24QueryDisplayVrrSupportedEPbPKNS0_7DisplayE", ov_vrr_supported);
+HOST_OVERRIDE("_ZN2nn2vi23SetDisplayVrrCapabilityEPNS0_7DisplayEb", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi28SetLayerExtendedSwapIntervalEPNS0_5LayerEii", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi30ClearLayerExtendedSwapIntervalEPNS0_5LayerE", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_vi_accept);
+
 // void *nvnBootstrapLoader(const char *name): the first NVN call
 static void ov_nvn_bootstrap(Cpu *c) {
     const char *name = arg_p(c, 0);
