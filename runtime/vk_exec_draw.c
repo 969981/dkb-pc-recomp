@@ -883,6 +883,13 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
             memcpy(&c1, ctl + 0x700, 4);
             if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, &bi))
                 return bi;
+            if (c1 < len && len - c1 <= max) {   // NVN 2 stages: the lowered code (nvn2_lower.cpp) is host memory
+                VkBuffer b;
+                VkDeviceSize o;
+                RS.volatile_ = 1;
+                memcpy(scratch(ex, len - c1, &b, &o), code + c1, len - c1);
+                return (VkDescriptorBufferInfo){b, o, len - c1};
+            }
         }
     } else if (slot >= 3 && slot - 3 < 18) {
         const p_bind_buf *b = &ex->ubo[st][slot - 3];
@@ -2044,11 +2051,18 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (b < bis_lo || b > bis_hi) return 0;
         if (bis_lo == bis_hi) {
             static int told;
-            if (told++ < 4) rt_log("bisect: draw byte %#x vs %02x%02x%02x%02x fs %02x%02x%02x%02x", b,
-                                   gfx_shader_input_id(vs)[0], gfx_shader_input_id(vs)[1], gfx_shader_input_id(vs)[2],
-                                   gfx_shader_input_id(vs)[3], fs ? gfx_shader_input_id(fs)[0] : 0,
-                                   fs ? gfx_shader_input_id(fs)[1] : 0, fs ? gfx_shader_input_id(fs)[2] : 0,
-                                   fs ? gfx_shader_input_id(fs)[3] : 0);
+            if (told++ < 4) {   // the cache file names (shader-cache/<key>.spv)
+                char k[2][65] = {{0}};
+                for (int i = 0; i < 32; i++) {
+                    sprintf(k[0] + 2 * i, "%02x", gfx_shader_key(vs)[i]);
+                    if (fs) sprintf(k[1] + 2 * i, "%02x", gfx_shader_key(fs)[i]);
+                }
+                const uint8_t *ctl, *vcode = NULL, *fcode = NULL;
+                uint32_t len;
+                find_stage(ex->prog, NVN_STAGE_VS, &ctl, &vcode, &len), find_stage(ex->prog, NVN_STAGE_FS, &ctl, &fcode, &len);
+                rt_log("bisect: draw byte %#x vs %s (NVN 2 dump %016llx) fs %s (%016llx)", b, k[0],
+                       (unsigned long long)nvn2_origin(vcode), k[1], (unsigned long long)nvn2_origin(fcode));
+            }
         }
     }
     // A draw into a target the previous frame did not render (or into none) waits for a pending shader or pipeline:

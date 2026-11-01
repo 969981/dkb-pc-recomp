@@ -1161,18 +1161,29 @@ int gfx_shader_is_nvn2(const uint8_t *control) {
 // With DKB_SHADER_DUMP=<folder>, gfx_shader_nvn2_dump writes each distinct NVN 2 stage there as <fnv>.ctl (control,
 // size at +0x30) and <fnv>.bin (code, size at +0x38), the hash taken over both; nvn_api_obj.c calls it for every
 // program the game makes. The files are game data and stay out of the repository.
-void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code) {
-    const char *dir = getenv("DKB_SHADER_DUMP");
-    if (!dir || !*dir || !control || !code || !gfx_shader_is_nvn2(control)) return;
+// An NVN 2 stage's control size and code size (the code with its inline constants, c[0x1]); 0 when implausible.
+static int nvn2_sizes(const uint8_t *control, uint32_t *ctl_size, uint32_t *len) {
+    uint32_t c1_end;
+    memcpy(ctl_size, control + 0x30, 4), memcpy(len, control + 0x38, 4), memcpy(&c1_end, control + 0x44, 4);
+    if (c1_end > *len && c1_end - *len <= 0x10000) *len = c1_end;
+    return *ctl_size >= 0x40 && *ctl_size <= 0x10000 && *len && *len <= 0x400000;
+}
+
+// FNV-1a over an NVN 2 stage's control and code: the DKB_SHADER_DUMP file name. 0 when it is not one.
+uint64_t gfx_shader_nvn2_hash(const uint8_t *control, const uint8_t *code) {
     uint32_t ctl_size, len;
-    memcpy(&ctl_size, control + 0x30, 4), memcpy(&len, control + 0x38, 4);
-    if (ctl_size < 0x40 || ctl_size > 0x10000 || !len || len > 0x400000) {
-        rt_log("gfx_shader: NVN 2 stage with control size %#x and code size %#x not dumped", ctl_size, len);
-        return;
-    }
-    uint64_t h = 0xcbf29ce484222325ull;   // FNV-1a over control and code
+    if (!control || !code || !gfx_shader_is_nvn2(control) || !nvn2_sizes(control, &ctl_size, &len)) return 0;
+    uint64_t h = 0xcbf29ce484222325ull;
     for (uint32_t i = 0; i < ctl_size; i++) h = (h ^ control[i]) * 0x100000001b3ull;
     for (uint32_t i = 0; i < len; i++) h = (h ^ code[i]) * 0x100000001b3ull;
+    return h;
+}
+
+void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code) {
+    const char *dir = getenv("DKB_SHADER_DUMP");
+    uint32_t ctl_size, len;
+    uint64_t h = dir && *dir ? gfx_shader_nvn2_hash(control, code) : 0;
+    if (!h || !nvn2_sizes(control, &ctl_size, &len)) return;
     static PlatMutex dump_lock = PLAT_MUTEX_INIT;
     char path[1024];
     plat_mutex_lock(&dump_lock);

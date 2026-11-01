@@ -11,13 +11,14 @@
 #include "shader_recompiler/frontend/ampere/program_capture.h"
 
 extern "C" void rt_log(const char *fmt, ...);
+extern "C" uint64_t gfx_shader_nvn2_hash(const uint8_t *control, const uint8_t *code);
 
 namespace {
 constexpr size_t kControl = 0x880;   // gfx_shader.c CONTROL_SIZE
 constexpr uint64_t kMaxwellNop = 0x50b0000000070f00ull;
 constexpr uint64_t kMaxwellExit = 0xe30000000007000full;
 
-struct Lowered { std::vector<uint8_t> control; std::vector<uint64_t> code; };
+struct Lowered { std::vector<uint8_t> control; std::vector<uint64_t> code; uint64_t origin; };
 std::mutex lock;
 // ponytail: kept for the process (a few thousand small stages); free with the program if memory ever matters
 std::map<std::pair<const void *, const void *>, Lowered *> cache;
@@ -64,16 +65,47 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
     }
     // A full scheduling group of EXITs closes the program: Ryujinx's decoder runs on until a block ends, and a lowered
     // program whose last native instruction is a conditional exit or a self-branch would read past the buffer.
+    // The compiler's end marker, an unconditional branch to itself after the last EXIT, becomes an EXIT too: Ryujinx's
+    // structuring can join it to the exit path, and the empty endless loop it then emits hangs the GPU (device lost).
     for (size_t i = 0; i < lowered.instructions.size() + 4; i++) {
         if (pos % 32 == 0) m.push_back(0), pos += 8;
-        m.push_back(i < lowered.instructions.size() ? lowered.instructions[i] : kMaxwellExit), pos += 8;
+        uint64_t insn = i < lowered.instructions.size() ? lowered.instructions[i] : kMaxwellExit;
+        if ((insn >> 52) == 0xe24 && ((insn >> 20) & 0xffffff) == 0xfffff8 && ((insn >> 16) & 15) == 7) insn = kMaxwellExit;
+        m.push_back(insn), pos += 8;
+    }
+
+    // Inline constants (c[0x1]) follow the code in the NVN 2 buffer, from control +0x40 to +0x44; they go after the
+    // Maxwell code, where control +0x700 points as in NVN 1. A BRX jump table in them holds native instruction offsets
+    // (index * 16, as the lowering requires); the lowered BRX jumps to Maxwell addresses, so those are rewritten.
+    uint32_t c1_at, c1_end;
+    std::memcpy(&c1_at, control + 0x40, 4), std::memcpy(&c1_end, control + 0x44, 4);
+    const uint32_t c1_off = static_cast<uint32_t>(m.size() * 8);
+    if (c1_end > c1_at && c1_end - c1_at <= 0x10000) {
+        std::vector<uint32_t> c1((c1_end - c1_at) / 4);
+        std::memcpy(c1.data(), code + c1_at, c1.size() * 4);
+        bool brx = false;
+        for (const auto &insn : native) brx |= insn.Bits(0, 12) == 0x949 || insn.Bits(0, 12) == 0x958;
+        // ponytail: any 16-aligned word inside the program counts as a table entry; an integer constant that happens to
+        // be one would be rewritten too. Track the LDC base of each BRX if that ever bites.
+        if (brx)
+            for (uint32_t &w : c1)
+                if (w % 16 == 0 && w / 16 < lowered.source_instruction_offsets.size()) {
+                    const uint32_t i = lowered.source_instruction_offsets[w / 16];
+                    // The lowering's address_of. The lowered BRX jumps to its register plus a base of 0 in the graphics
+                    // layout and of -0x40 in the compute one (its code starts 0x40 earlier), so the same value lands on
+                    // instruction i in both (Ryujinx FindBrxTargets: target = BRX base + table value).
+                    w = 0x50 + i * 8 + ((i + 1) / 3) * 8;
+                }
+        c1.resize((c1.size() + 1) & ~size_t{1});
+        m.resize(m.size() + c1.size() / 2);
+        std::memcpy(m.data() + c1_off / 8, c1.data(), c1.size() * 4);
     }
 
     out->control.assign(kControl, 0);
     const uint32_t len = static_cast<uint32_t>(m.size() * 8);
     const uint32_t type = (w0 >> 10) & 15;   // SPH shader type -> NVN stage
     const uint32_t stage = !gfx ? 5 : type == 5 ? 1 : type == 4 ? 2 : type == 2 ? 3 : type == 3 ? 4 : 0;
-    put32(out->control, 0x700, len);   // no inline constants (no NVN 2 stage reads c[0x1])
+    put32(out->control, 0x700, c1_off);
     put32(out->control, 0x704, len);
     put32(out->control, 0x714, stage);
     if (!gfx) std::memcpy(out->control.data() + 0x748, control + 0x58, 12);   // local size (NVN 2 control +0x58)
@@ -86,9 +118,18 @@ extern "C" int nvn2_lower(const uint8_t *control, const uint8_t *code, const uin
                           const uint8_t **out_code) {
     std::lock_guard<std::mutex> g(lock);
     auto [it, fresh] = cache.try_emplace({control, code}, nullptr);
-    if (fresh) it->second = lower(control, code);
+    if (fresh && (it->second = lower(control, code))) it->second->origin = gfx_shader_nvn2_hash(control, code);
     if (!it->second) return 0;
     *out_control = it->second->control.data();
     *out_code = reinterpret_cast<const uint8_t *>(it->second->code.data());
     return 1;
+}
+
+// The dump name (gfx_shader_nvn2_hash) of the NVN 2 stage a lowered code buffer came from, or 0. A linear scan: only
+// diagnostics call it.
+extern "C" uint64_t nvn2_origin(const uint8_t *code) {
+    std::lock_guard<std::mutex> g(lock);
+    for (const auto &[k, v] : cache)
+        if (v && reinterpret_cast<const uint8_t *>(v->code.data()) == code) return v->origin;
+    return 0;
 }

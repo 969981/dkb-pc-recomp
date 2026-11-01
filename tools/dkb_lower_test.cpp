@@ -15,6 +15,7 @@
 #include "../runtime/nvn2_lower.cpp"
 
 static std::map<std::string, int> reasons;
+extern "C" uint64_t gfx_shader_nvn2_hash(const uint8_t *, const uint8_t *) { return 0; }
 extern "C" void rt_log(const char *fmt, ...) {
     char buf[512];
     va_list ap;

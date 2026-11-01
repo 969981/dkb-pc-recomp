@@ -39,6 +39,8 @@ typedef struct {                                           // the translator's a
 typedef struct GfxShader GfxShader;                        // SPIR-V words + parsed reflection; owned by the cache
 void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code);   // DKB_SHADER_DUMP (gfx_shader.c)
 int gfx_shader_is_nvn2(const uint8_t *control);                          // NVN 2 control block (gfx_shader.c)
+uint64_t gfx_shader_nvn2_hash(const uint8_t *control, const uint8_t *code);   // DKB_SHADER_DUMP name, 0 if not NVN 2
+uint64_t nvn2_origin(const uint8_t *code);   // that name of the NVN 2 stage a lowered code buffer came from, or 0
 // NVN 2 stage -> NVN 1 control and Maxwell code (nvn2_lower.cpp); 0 when it does not lower
 int nvn2_lower(const uint8_t *control, const uint8_t *code, const uint8_t **out_control, const uint8_t **out_code);
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
