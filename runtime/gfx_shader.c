@@ -1229,14 +1229,22 @@ static void ans_note(const Req *r, int stage, const uint8_t *control, const uint
 static const GfxShader *get_async_one(Req r, int stage, const uint8_t *control, const uint8_t *code,
                                       const GfxShaderAnswers *a, int *pending);
 
+static int known_failed(const uint8_t key[32]);
+static void note_failed(const uint8_t key[32]);
+
+// The synchronous path (compute dispatches, awaited stages) remembers failures as the background one does
+// (X.waits): a shader that does not translate is not sent to the translator again on every dispatch or draw.
 static const GfxShader *get_one(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
                                 const GfxShaderAnswers *a) {
     GfxShader *s = mem_find(r->key);
     if (s) return plat_inc64(&n_hits), s;
+    if (known_failed(r->key)) return NULL;
     paths();
     if (!cache_dir[0]) return fail("no cache directory", NULL);
     if (r->final && (s = disk_load(r->key, r->iid))) return plat_inc64(&n_hits), mem_insert(s);
-    return translate(r, stage, control, code, a);
+    const GfxShader *t = translate(r, stage, control, code, a);
+    if (!t) note_failed(r->key);
+    return t;
 }
 
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
@@ -1418,6 +1426,22 @@ static XWait **wait_slot(const uint8_t key[32]) {
     XWait **w = &X.waits[key[0]];
     while (*w && memcmp((*w)->key, key, 32)) w = &(*w)->next;
     return w;
+}
+
+static int known_failed(const uint8_t key[32]) {
+    plat_mutex_lock(&X.lock);
+    XWait *w = *wait_slot(key);
+    int f = w && w->failed;
+    plat_mutex_unlock(&X.lock);
+    return f;
+}
+
+static void note_failed(const uint8_t key[32]) {
+    plat_mutex_lock(&X.lock);
+    XWait **w = wait_slot(key);
+    if (!*w && (*w = calloc(1, sizeof **w))) memcpy((*w)->key, key, 32);
+    if (*w) (*w)->failed = 1;
+    plat_mutex_unlock(&X.lock);
 }
 
 static void xlate_worker(void *arg) {

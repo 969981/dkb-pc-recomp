@@ -20,8 +20,10 @@ constexpr uint64_t kMaxwellExit = 0xe30000000007000full;
 
 struct Lowered { std::vector<uint8_t> control; std::vector<uint64_t> code; uint64_t origin; };
 std::mutex lock;
+// Keyed by content, not by address: a game frees program memory and loads other shaders at the same place (a scene
+// change), and an address key handed those the old lowering. The key is gfx_shader_nvn2_hash (the dump name).
 // ponytail: kept for the process (a few thousand small stages); free with the program if memory ever matters
-std::map<std::pair<const void *, const void *>, Lowered *> cache;
+std::map<uint64_t, Lowered *> cache;
 
 void put32(std::vector<uint8_t> &c, size_t at, uint32_t v) { std::memcpy(c.data() + at, &v, 4); }
 
@@ -115,9 +117,11 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
 // 1 and the replacement control and code for an NVN 2 stage, 0 when it does not lower.
 extern "C" int nvn2_lower(const uint8_t *control, const uint8_t *code, const uint8_t **out_control,
                           const uint8_t **out_code) {
+    const uint64_t key = gfx_shader_nvn2_hash(control, code);
+    if (!key) return 0;
     std::lock_guard<std::mutex> g(lock);
-    auto [it, fresh] = cache.try_emplace({control, code}, nullptr);
-    if (fresh && (it->second = lower(control, code))) it->second->origin = gfx_shader_nvn2_hash(control, code);
+    auto [it, fresh] = cache.try_emplace(key, nullptr);
+    if (fresh && (it->second = lower(control, code))) it->second->origin = key;
     if (!it->second) return 0;
     *out_control = it->second->control.data();
     *out_code = reinterpret_cast<const uint8_t *>(it->second->code.data());

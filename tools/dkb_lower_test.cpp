@@ -15,7 +15,17 @@
 #include "../runtime/nvn2_lower.cpp"
 
 static std::map<std::string, int> reasons;
-extern "C" uint64_t gfx_shader_nvn2_hash(const uint8_t *, const uint8_t *) { return 0; }
+// runtime/gfx_shader.c gfx_shader_nvn2_hash: FNV-1a over the control (size at +0x30) and the code with its inline
+// constants (up to +0x44 when that is past +0x38)
+extern "C" uint64_t gfx_shader_nvn2_hash(const uint8_t *ctl, const uint8_t *code) {
+    uint32_t ctl_size, len, c1_end;
+    std::memcpy(&ctl_size, ctl + 0x30, 4), std::memcpy(&len, ctl + 0x38, 4), std::memcpy(&c1_end, ctl + 0x44, 4);
+    if (c1_end > len && c1_end - len <= 0x10000) len = c1_end;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0; i < ctl_size; i++) h = (h ^ ctl[i]) * 0x100000001b3ull;
+    for (uint32_t i = 0; i < len; i++) h = (h ^ code[i]) * 0x100000001b3ull;
+    return h;
+}
 extern "C" void rt_log(const char *fmt, ...) {
     char buf[512];
     va_list ap;
@@ -42,6 +52,9 @@ int main(int argc, char **argv) {
         auto code = slurp(e.path());
         auto ctl = slurp(std::filesystem::path(e.path()).replace_extension(".ctl"));
         if (ctl.size() < 0xd8) continue;
+        uint32_t c1_end;   // dumps from before the inline constants were dumped end at +0x38: pad to +0x44
+        std::memcpy(&c1_end, ctl.data() + 0x44, 4);
+        if (c1_end > code.size() && c1_end <= 0x400000) code.resize(c1_end);
         ++total;
         const uint8_t *nctl, *ncode;
         if (!nvn2_lower(ctl.data(), code.data(), &nctl, &ncode)) continue;

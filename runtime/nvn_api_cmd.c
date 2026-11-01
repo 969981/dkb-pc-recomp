@@ -722,6 +722,9 @@ NVN_API(nvnCommandBufferSetStencilMask) {
 NVN_API(nvnCommandBufferSetStencilRef) {
     *REC(cmd_of(c), OP_STENCIL, p_stencil) = (p_stencil){(int)arg_x(c, 1), 0, 0, (int)arg_x(c, 2), 2};
 }
+// void nvnCommandBufferSetStencilCullCriteria(NVNcommandBuffer *, NVNstencilFunc, int ref, int mask): a hint for the
+// hardware's stencil culling; the stencil test itself still decides, so the Vulkan replay needs nothing (Bananza)
+NVN_API(nvnCommandBufferSetStencilCullCriteria) { (void)c; }
 // void nvnCommandBufferSetPolygonOffsetClamp(NVNcommandBuffer *cmd, float factor, float units, float clamp)
 NVN_API(nvnCommandBufferSetPolygonOffsetClamp) {
     *REC(cmd_of(c), OP_POLY_OFFSET, p_poly_offset) = (p_poly_offset){arg_s(c, 0), arg_s(c, 1), arg_s(c, 2)};
