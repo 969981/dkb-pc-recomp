@@ -475,6 +475,48 @@ static void ov_six_state(Cpu *c) {
     ret_x(c, 0);
 }
 
+// ---- Switch 2 SDK (Donkey Kong Bananza): public names for what TotK's SDK had under nn::hid::detail, and the
+// touch screen and Joy-Con assignment calls TotK never made.
+
+// int GetSixAxisSensorStates(SixAxisSensorState *out, int count, const SixAxisSensorHandle &): the count is returned
+static void ov_six_states_public(Cpu *c) {
+    ret_x(c, (uint64_t)(int64_t)six_fill(arg_p(c, 0), (int)arg_x(c, 1), arg_p(c, 2), "GetSixAxisSensorStates"));
+}
+
+// void InitializeTouchScreen(): there is no touch screen on the host
+static void ov_touch_init(Cpu *c) {
+    static volatile int32_t logged;
+    (void)c;
+    once(&logged, "hid: the game initialized the touch screen (none on this host)", 0);
+}
+
+// void GetTouchScreenState<1>(TouchScreenState<1> *out): sampling number, then a count of 0 touches
+static void ov_touch_state1(Cpu *c) {
+    static volatile int64_t sampling;
+    uint8_t *out = arg_p(c, 0);
+    if (!out) rt_fatal("nn::hid::GetTouchScreenState: null output");
+    memset(out, 0, 0x38);   // int64 sampling number, int32 count, int32 reserved, one 0x28-byte TouchState
+    int64_t n = __atomic_add_fetch(&sampling, 1, __ATOMIC_RELAXED);
+    memcpy(out, &n, 8);
+}
+
+// void SetNpadJoyAssignmentModeDual(const NpadIdType &), SetNpadJoyAssignmentModeSingle(const NpadIdType &,
+// NpadJoyDeviceType), Result MergeSingleJoyAsDualJoy(const NpadIdType &, const NpadIdType &): the host's one pad is
+// always a full controller, so the assignment mode changes nothing
+static void ov_joy_assignment(Cpu *c) { ret_x(c, 0); }
+
+HOST_OVERRIDE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", ov_six_start);
+HOST_OVERRIDE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE",
+              ov_six_states_public);
+HOST_OVERRIDE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", ov_vib_send);
+HOST_OVERRIDE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", ov_vib_init);
+HOST_OVERRIDE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", ov_vib_info);
+HOST_OVERRIDE("_ZN2nn3hid21InitializeTouchScreenEv", ov_touch_init);
+HOST_OVERRIDE("_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE", ov_touch_state1);
+HOST_OVERRIDE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", ov_joy_assignment);
+HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE", ov_joy_assignment);
+HOST_OVERRIDE("_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_", ov_joy_assignment);
+
 HOST_OVERRIDE("_ZN2nn3hid14InitializeNpadEv", ov_initialize_npad);
 HOST_OVERRIDE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", ov_supported_ids);
 HOST_OVERRIDE("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", ov_supported_styles);

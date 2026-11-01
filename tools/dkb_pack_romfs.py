@@ -55,8 +55,10 @@ def main():
             off += size
             if i % 20000 == 0:
                 print(f'{i}/{len(files)} files, {off / 2**30:.1f} GiB', file=sys.stderr)
-    manifest = {'status': 'packed from a loose RomFS folder', 'romfs_size': off, 'romfs_sha256': sha.hexdigest(),
-                'files': entries}
+    # 'pass' is what tools/romfs_index.py requires: the image was written whole and its SHA-256 is recorded. Unlike
+    # tools/extract.py there is no NCA hash tree to check the files against, which 'source' says.
+    manifest = {'status': 'pass', 'source': 'packed from a loose RomFS folder; no NCA hash tree checked',
+                'romfs_size': off, 'romfs_sha256': sha.hexdigest(), 'files': entries}
     (args.out / 'index.json').write_text(json.dumps(manifest), encoding='utf-8')
     print(f'{len(entries)} files, {off / 2**30:.2f} GiB, {time.time() - t0:.0f} s -> {image}')
 

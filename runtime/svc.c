@@ -16,7 +16,7 @@
 #define ST_FREE 0u
 #define ST_STACK 0xBu
 #define PERM_RW 3u
-#define PROGRAM_ID 0x0100f2c0115b6000ull
+#define PROGRAM_ID RT_APPLICATION_ID
 
 static uint64_t g_svcs;
 void (*volatile svc_test_exit_hook)(unsigned code);
@@ -111,7 +111,7 @@ static void get_info(Cpu *c, uint64_t pc) {
         return;
     }
     switch (id) {
-    case 0: v = 7; break;                       // core mask
+    case 0: v = 0x3f; break;                    // core mask: cores 0-5 on Switch 2 (kernel.c NCORE)
     case 1: v = 0x0ffffffff0000000ull; break;   // priority mask
     case 8: v = 0; break;                       // debugger attached
     case 10: v = 0; break;                      // idle tick count

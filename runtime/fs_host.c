@@ -25,7 +25,7 @@
 #include "platform/platform.h"
 #include "romfs_path.h"
 
-#define TOTK_APPLICATION_ID 0x0100f2c0115b6000ull
+#define TOTK_APPLICATION_ID RT_APPLICATION_ID   // name kept from TotK Recomp
 #define FILE_BASE 0x200000000ull
 #define DIR_BASE 0x300000000ull
 #define NFILES 1024
@@ -1103,6 +1103,12 @@ static void ov_close_directory(Cpu *c) { close_directory(arg_x(c, 0)); }
 static void ov_mount_save(Cpu *c) { ret_x(c, mount_save(arg_p(c, 0), arg_p(c, 1))); }
 static void ov_mount_save_ro(Cpu *c) { ret_x(c, mount_save_ro(arg_p(c, 0), arg_x(c, 1), arg_p(c, 2))); }
 static void ov_save_exists(Cpu *c) { ret_x(c, save_exists(arg_x(c, 0), arg_p(c, 1))); }
+// Result nn::fs::EnsureSaveData(const account::Uid &): the host save folder needs no creating ahead of the mount
+// (mount_save makes its working copy), so the local user's save "exists" already. Bananza calls it before mounting.
+static void ov_ensure_save(Cpu *c) {
+    ready();
+    ret_x(c, my_uid(arg_p(c, 0)) ? 0 : FS_R_TARGET_NOT_FOUND);
+}
 static void ov_mount_temp(Cpu *c) { ret_x(c, mount_temp(arg_p(c, 0))); }
 static void ov_unmount(Cpu *c) { unmount(arg_p(c, 0)); }
 static void ov_commit(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
@@ -1174,6 +1180,7 @@ HOST_OVERRIDE(S_CLOSE_DIRECTORY, ov_close_directory);
 HOST_OVERRIDE(S_MOUNT_SAVE, ov_mount_save);
 HOST_OVERRIDE(S_MOUNT_SAVE_RO, ov_mount_save_ro);
 HOST_OVERRIDE(S_SAVE_EXISTS, ov_save_exists);
+HOST_OVERRIDE("_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ov_ensure_save);
 HOST_OVERRIDE(S_MOUNT_TEMP, ov_mount_temp);
 HOST_OVERRIDE(S_UNMOUNT, ov_unmount);
 HOST_OVERRIDE(S_COMMIT, ov_commit);

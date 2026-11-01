@@ -73,20 +73,32 @@ static void cb_loader_ready(Cpu *c) {
 
 // DT_INIT registers the module with musl (__nnmusl_init_dso) and runs its init_array; the constructor flag reads 2
 // afterwards (MacNativeGames loader.c:458-462).
+// The init_array size a TotK build expects of module name, or 0 for another game (rt_game_version 0: Bananza), whose
+// counts are not pinned.
+static uint64_t expected_entries(const char *name) {
+    if (!rt_game_version) return 0;
+    for (unsigned k = 0; k < sizeof inits_121 / sizeof *inits_121; k++)
+        if (!strcmp(expected_inits[k].name, name)) return expected_inits[k].entries;
+    rt_fatal("boot: module %s is not one of this game version's", name);
+}
+
 static void cb_module_inits(Cpu *c) {
     if (plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: module constructors requested twice");
-    for (unsigned k = 0; k < sizeof inits_121 / sizeof *inits_121; k++) {
-        const RtLoaded *m = module_named(expected_inits[k].name);
-        uint64_t entries = m->init_array_size / 8;
+    if (rt_game_version)   // TotK: the three modules must all be there
+        for (unsigned k = 0; k < sizeof inits_121 / sizeof *inits_121; k++) module_named(expected_inits[k].name);
+    // Load order (main, subsdk*, sdk), as rtld runs them. Bananza has no subsdk0.
+    for (int k = 0; k < ldr_count(); k++) {
+        const RtLoaded *m = ldr_module(k);
+        uint64_t entries = m->init_array_size / 8, want = expected_entries(m->name);
         if (!m->init) rt_fatal("boot: %s has no DT_INIT", m->name);
         rt_log("boot: ENTER %s DT_INIT (%llu init_array entries)", m->name, (unsigned long long)entries);
         rt_call(c, m->init, 0);
         uint32_t state = ctor_state(m);
         rt_logf("boot: DT_INIT %s state=%u (%llu)\n", m->name, state, (unsigned long long)entries);
         if (state != CTOR_DONE) rt_fatal("boot: %s DT_INIT left its constructor flag at %u, not 2", m->name, state);
-        if (entries != expected_inits[k].entries)
+        if (want && entries != want)
             rt_fatal("boot: %s has %llu init_array entries, this game version has %llu", m->name, (unsigned long long)entries,
-                     (unsigned long long)expected_inits[k].entries);
+                     (unsigned long long)want);
     }
     plat_xchg32(&inits_done, 1);
 }

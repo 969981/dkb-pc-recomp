@@ -254,19 +254,21 @@ static void parse_dynamic(Mod *m) {
 }
 
 // The constructor state flag DT_INIT checks: ADRP xN at DT_INIT+16, LDR wM, [xN, #imm] at +20 or +24
-// (MNG scripts/prepare_runtime.py).
+// (MNG scripts/prepare_runtime.py). Switch 2 code opens every function with PACIBSP, which moves the ADRP to +20 and
+// the LDR to +24 or +28.
 static uint64_t decode_ctor_flag(const Mod *m) {
     uint64_t init = m->pub.init;
     if (!init) return 0;
-    uint32_t a = rd32(init + 16);
+    int adrp_at = rd32(init) == 0xd503237fu ? 20 : 16;   // PACIBSP
+    uint32_t a = rd32(init + adrp_at);
     if ((a & 0x9f000000u) != 0x90000000u) return 0;
     uint32_t reg = a & 31;
-    for (int at = 20; at <= 24; at += 4) {
+    for (int at = adrp_at + 4; at <= adrp_at + 8; at += 4) {
         uint32_t w = rd32(init + at);
         if ((w & 0xffc00000u) != 0xb9400000u || ((w >> 5) & 31) != reg) continue;
         int64_t imm = (int64_t)(((a >> 29) & 3) | (((a >> 5) & 0x7ffff) << 2));
         imm = (imm ^ (1 << 20)) - (1 << 20);
-        uint64_t flag = ((init + 16) & ~0xFFFull) + (uint64_t)(imm << 12) + ((w >> 10) & 0xfff) * 4;
+        uint64_t flag = ((init + adrp_at) & ~0xFFFull) + (uint64_t)(imm << 12) + ((w >> 10) & 0xfff) * 4;
         uint64_t data = m->pub.base + m->pub.data_off;
         return flag >= data && flag < m->pub.base + m->pub.size ? flag : 0;
     }

@@ -30,10 +30,11 @@ static void ov_graphics_allocator(Cpu *c) { set_allocator(c, &nv.graphics); }
 // void nv::SetGraphicsDevtoolsAllocator(AllocateFunction, FreeFunction, ReallocateFunction, void *user)
 static void ov_devtools_allocator(Cpu *c) { set_allocator(c, &nv.devtools); }
 
-// void nv::InitializeGraphics(void *memory, size_t size)
+// void nv::InitializeGraphics(void *memory, size_t size). TotK hands over a work buffer. Donkey Kong Bananza (Switch 2)
+// passes (0, 0) and leaves the driver to its allocator callbacks; nothing on the host reads the buffer, so that is fine.
 static void ov_initialize_graphics(Cpu *c) {
     uint64_t mem = arg_x(c, 0), size = arg_x(c, 1);
-    if (!mem || !size) rt_fatal("nv::InitializeGraphics: no graphics work memory (%#llx, %#llx)", (unsigned long long)mem,
+    if (!mem != !size) rt_fatal("nv::InitializeGraphics: work memory %#llx with size %#llx", (unsigned long long)mem,
                                 (unsigned long long)size);
     plat_mutex_lock(&lock);
     nv.memory = mem;

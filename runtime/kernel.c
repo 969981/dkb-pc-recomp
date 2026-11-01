@@ -31,7 +31,7 @@
 #define H_CUR_THREAD KERN_H_CURRENT_THREAD
 
 #define MAX_H 4096
-#define NCORE 3
+#define NCORE 6                          // Switch 2 applications run on cores 0-5 (Bananza main.npdm ACI0 ThreadInfo)
 #define HOST_STACK (256ull << 20)        // reserved, committed on demand
 #define TLR_SIZE 0x200
 #define THREAD_OBJ_SIZE 0x400            // "current thread object" at TLR+0x1F8 (d2r-mobile thread.c)
