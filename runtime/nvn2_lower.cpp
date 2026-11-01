@@ -121,7 +121,13 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
 extern "C" int nvn2_lower(const uint8_t *control, const uint8_t *code, const uint8_t **out_control,
                           const uint8_t **out_code) {
     const uint64_t key = gfx_shader_nvn2_hash(control, code);
-    if (!key) return rt_log("nvn2: stage with a control block of unexpected sizes: not lowered"), 0;
+    if (!key) {
+        uint32_t w[6];
+        std::memcpy(w, control + 0x30, sizeof w);
+        rt_log("nvn2: stage with a control block of unexpected sizes (+0x30 %#x +0x38 %#x +0x44 %#x, code %p): not "
+               "lowered", w[0], w[2], w[5], (const void *)code);
+        return 0;
+    }
     std::lock_guard<std::mutex> g(lock);
     auto [it, fresh] = cache.try_emplace(key, nullptr);
     if (fresh && (it->second = lower(control, code))) it->second->origin = key;

@@ -1165,6 +1165,9 @@ int gfx_shader_is_nvn2(const uint8_t *control) {
 static int nvn2_sizes(const uint8_t *control, uint32_t *ctl_size, uint32_t *len) {
     uint32_t c1_end;
     memcpy(ctl_size, control + 0x30, 4), memcpy(len, control + 0x38, 4), memcpy(&c1_end, control + 0x44, 4);
+    // Some stages leave the control size at 0 (182 in Bananza's first 3D scene, its final composite among them);
+    // 0xd8 is the size of all but two of the 4820 others.
+    if (!*ctl_size) *ctl_size = 0xd8;
     if (c1_end > *len && c1_end - *len <= 0x10000) *len = c1_end;
     return *ctl_size >= 0x40 && *ctl_size <= 0x10000 && *len && *len <= 0x400000;
 }
