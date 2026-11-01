@@ -1,69 +1,57 @@
-# TotK Recomp
+# DKB Recomp
 
-**TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native Windows x86-64 application ([docs/architecture.md](docs/architecture.md)).
+**DKB Recomp** is an attempt at a static recompilation of *Donkey Kong Bananza* (Nintendo Switch 2, 2025) into a
+native Windows x86-64 application. It is built on [TotK Recomp](https://github.com/valentderah/totk-pc-recomp), which
+does the same for *Tears of the Kingdom* on the original Switch.
 
 > [!IMPORTANT]
-> **No game files are included.** You need your own legally obtained copy of *Tears of the Kingdom*, dumped from your own console: the base game and the 1.2.1 or 1.4.3 update. Instructions for obtaining those files will not be provided.
->
-> The game is built from your files on your machine, so the result contains the game. It is for your own use. Do not share it.
+> **No game files are included, and none ever will be.** You need your own copy of *Donkey Kong Bananza*, dumped
+> from your own console. Instructions for obtaining those files will not be provided.
 
 ## Status
 
-Early development. The game is playable on Windows; visual bugs and crashes are still expected.
+**Not playable.** Very early: the CPU side works and the game starts booting; everything else is still to do.
 
-Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
+| Part | State |
+| --- | --- |
+| ARM64 → C lifter | Done for base 1.0.0. `main` and `sdk` lift with no unsupported instruction (ARMv8.3 pointer authentication and `LDAPR` added). Differential tests against Unicorn pass. |
+| Build | The generated C compiles and links into one executable with the TotK Recomp toolchain. |
+| OS (Horizon on Switch 2) | Boots through `nn::init` and `nn::os` into the SDK module init on TotK Recomp's host; Switch 2 `GetInfo` ids added. Next: the file system and the services after it. |
+| Graphics (NVN 2) | Not started. The game asks for 700 NVN entry points; 529 have the same names as NVN 1, which TotK Recomp implements. 171 are new (DLSS, new command buffer and program calls). |
+| Shaders (Ampere) | Not started. Needs an Ampere (SM86) to SPIR-V translator; TotK Recomp translates Maxwell. |
 
-## Features
-
-- Native code, not emulation
-- Game updates 1.2.1 and 1.4.3, with saves that carry over between them
-- 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
-- Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
-- 16:10 (Steam Deck, handhelds), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
-- In-game settings menu (F1) and performance overlay (F10)
-- Keyboard, mouse and gamepad with remapping, rumble and gyro
-- Xbox button prompts: a layout that keeps the Switch button positions and shows the Xbox labels
-- Shaders prepared at install instead of during play
-
-## Planned
-
-- Linux and the Steam Deck
-- Mods made for emulators: unpack a mod into a `mods` folder
-- VRR
-
-## Installing
-
-Requirements: Windows 10 or later, an x86-64 CPU with AVX2, a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 36 GiB free during setup (20 GiB after).
-
-1. Download `TotK-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
-2. Start `TotK-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
-3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once.
-4. Play `totk.exe` from the install folder.
-
-To update, run a newer `TotK-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
-
-## Credits
-
-TotK Recomp builds on the projects below. What was taken from each, with its license, is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-- [LAS Recomp](https://github.com/peiikai/LASRecomp)
-- [MacNativeGames](https://github.com/ly05010419/MacNativeGames)
-- [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) and [nxnative](https://github.com/seedds/nxnative)
-- [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp)
-- [Ryujinx](https://github.com/Ryujinx/Ryujinx)
-- [deko3d](https://github.com/devkitPro/deko3d)
-- [hactool](https://github.com/SciresM/hactool)
-- [SDL 3](https://libsdl.org), [Dear ImGui](https://github.com/ocornut/imgui), [AMD FSR 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR), [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator), [libopus](https://opus-codec.org), [libvpx](https://chromium.googlesource.com/webm/libvpx), [Zstandard](https://github.com/facebook/zstd)
-- [Switchbrew](https://switchbrew.org) and the Switch homebrew community
-
-## License
-
-The project's own code is under the [MIT License](LICENSE); third-party code keeps its own license ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The license grants nothing for Nintendo's game.
-
-TotK Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *The Legend of Zelda*, *Tears of the Kingdom* and *Nintendo Switch* are trademarks of Nintendo.
+The plan, by phase: [docs/bananza-plan.md](docs/bananza-plan.md). Shader notes: [docs/bananza-shaders.md](docs/bananza-shaders.md).
 
 ## Building from source
 
-[docs/building.md](docs/building.md) lists the toolchain and the steps. Everything the build writes stays under `build\` and `generated\`, which git ignores; run `tools/check_content.py` before a commit. Testers: [docs/tester-guide.md](docs/tester-guide.md).
+The toolchain is TotK Recomp's ([docs/building.md](docs/building.md)). With the Bananza ExeFS and RomFS:
 
-Most of the code and documentation is written by AI coding agents (Claude Code) under the maintainer's direction; the maintainer plays every build and decides what is merged. [AGENTS.md](AGENTS.md) holds the rules they work under.
+```
+.venv\Scripts\python recomp\gen.py --exefs <exefs> --out generated\dkb100 --modules main,sdk
+.venv\Scripts\python tools\dkb_expected.py --exefs <exefs> --name dkb100 --display 1.0.0
+.venv\Scripts\python tools\dkb_pack_romfs.py --dir <romfs folder> --out build\extracted\dkb100\romfs
+.venv\Scripts\python tools\build_game.py --version dkb100 --expected tools\data\expected-dkb100.json --exefs <exefs>
+```
+
+Everything the build writes stays under `build\` and `generated\`, which git ignores.
+
+## Credits
+
+- [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by valentderah, the base of everything here, and the
+  projects it builds on: [LAS Recomp](https://github.com/peiikai/LASRecomp),
+  [MacNativeGames](https://github.com/ly05010419/MacNativeGames), [nxnative](https://github.com/seedds/nxnative),
+  [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp), [Ryujinx](https://github.com/Ryujinx/Ryujinx),
+  [deko3d](https://github.com/devkitPro/deko3d), [hactool](https://github.com/SciresM/hactool) and the rest listed in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- [GRAnimated/DKBananza](https://github.com/GRAnimated/DKBananza) for the game's symbols and research.
+- [Switchbrew](https://switchbrew.org) for the Switch 2 `GetInfo` ids, and the Switch homebrew community.
+
+## License
+
+The project's own code is under the [MIT License](LICENSE); third-party code keeps its own license
+([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The license grants nothing for Nintendo's game.
+
+DKB Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Donkey Kong
+Bananza* and *Nintendo Switch 2* are trademarks of Nintendo.
+
+Most of the code and documentation is written by AI coding agents (Claude Code), as in TotK Recomp.

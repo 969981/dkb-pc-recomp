@@ -121,6 +121,10 @@ static void get_info(Cpu *c, uint64_t pc) {
     case 18: v = PROGRAM_ID; break;
     case 20: v = user_exception_context(); break;   // the SDK keeps e.g. the dying message at +0x1C0
     case 23: v = 1; break;
+    // Switch 2 (Switchbrew "SVC", GetInfo [S2]): RemoteRegionAddress/Size, RemoteMemoryUsage/Peak, ProcessPageSize.
+    // No remote region is given to the process, so its address, size and usage are all 0.
+    case 29: case 30: case 31: case 32: v = 0; break;
+    case 33: v = 0x1000; break;
     default: {
         char why[64];
         snprintf(why, sizeof why, "GetInfo id %u (handle %#x, sub id %#llx)", id, (uint32_t)c->x[2],
