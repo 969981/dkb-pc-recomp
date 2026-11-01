@@ -117,6 +117,8 @@ static class SwshXlate
         public int QueryHostStorageBufferOffsetAlignment() => _job["sbuf_align"] is JsonNode n ? (int)n : 16;
         // "subgroup": n: lanes per subgroup when the host cannot pin 32 (AMD GCN/Vega run 64): ballots and votes span n lanes.
         public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
+        // The translator's own warnings (a global access with no storage buffer found, ...), with DMSH_STACK set.
+        public void Log(string message) { if (Environment.GetEnvironmentVariable("DMSH_STACK") != null) Console.Error.WriteLine(message); }
     }
 
 

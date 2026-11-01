@@ -30,6 +30,7 @@
 #include "platform/platform.h"
 
 #define MAX_BINDINGS 128
+#define NVN2_C0 (!rt_game_version)   // Bananza (no TotK build): NVN 2 driver banks (vk_c0_fill)
 #define MAX_DESC 1024
 #define CHUNK_BYTES (4u << 20)
 #define ZERO_BYTES 65536u
@@ -817,7 +818,18 @@ static void c0_table(uint8_t *at, const p_bind_buf b[16]) {
 void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16], const p_bind_buf ubo[16],
                 const uint32_t dispatch[3], uint32_t base_instance) {
     memset(bank, 0, VK_C0_BYTES);
-    int base = stage == NVN_STAGE_VS ? 0x110 : stage == NVN_STAGE_FS ? 0x510 : stage == NVN_STAGE_CS ? 0x310 : -1;
+    if (stage == NVN_STAGE_CS && NVN2_C0) {
+        // NVN 2 compute: {u64 address, u32 size} every 16 bytes from 0x60, the 14 uniform buffers first and the storage
+        // buffers after them (0x140). Read from Bananza's compute code: entries 4-6 go unread where the code reads c7
+        // (uniform buffer 4) directly, and its atomic counters are the last storage buffers. The driver's compute
+        // binds (sdk BindStorageBuffer / BindUniformBuffer, stage 5) write a driver table at dword 0x248 + 3i and
+        // 0x360 + 3i that the dispatch turns into this bank. The dispatch size is not placed yet.
+        // ponytail: uniform buffers 14-15 are not in the table (the 0x60 table holds 14); add them if a bind shows up
+        c0_table(bank + 0x60, ubo);
+        c0_table(bank + 0x140, ssbo);
+        return;
+    }
+    int base =stage == NVN_STAGE_VS ? 0x110 : stage == NVN_STAGE_FS ? 0x510 : stage == NVN_STAGE_CS ? 0x310 : -1;
     if (base < 0) return;
     c0_table(bank + base, ssbo);
     if (stage == NVN_STAGE_CS) {
@@ -926,6 +938,11 @@ static int ssbo_slot(const GfxShaderRes *r, int st, int *ubo) {
     *ubo = 0;
     if (r->cbuf_slot != 0) return -1;
     int off = r->handle * 4, base = st == NVN_STAGE_VS ? 0x110 : st == NVN_STAGE_FS ? 0x510 : st == NVN_STAGE_CS ? 0x310 : -1;
+    if (st == NVN_STAGE_CS && NVN2_C0) {   // vk_c0_fill: uniform buffers 0-13 from 0x60, storage buffers from 0x140
+        if (off < 0x60 || off % 16) return -1;
+        if (off < 0x140) return *ubo = 1, (off - 0x60) / 16;
+        return off < 0x140 + 0x100 ? (off - 0x140) / 16 : -1;
+    }
     if (st == NVN_STAGE_CS && off >= 0x210 && off < 0x310 && (off - 0x210) % 16 == 0) {
         *ubo = 1;
         return (off - 0x210) / 16;
@@ -2436,6 +2453,11 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     case OP_BIND_SSBO: {
         const p_bind_buf *b = payload;
         if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16) ex->ssbo[b->stage][b->index] = *b;
+        else {   // past the table: dropped (NVN 2 binds more storage buffers per stage than NVN 1's 16)
+            static uint64_t seen[6];
+            if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 64 && !(seen[b->stage] >> b->index & 1))
+                seen[b->stage] |= 1ull << b->index, rt_log("vk: storage buffer %d of stage %d dropped", b->index, b->stage);
+        }
         bind_gen++;
         break;
     }
