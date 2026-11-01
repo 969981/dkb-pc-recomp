@@ -296,7 +296,12 @@ class Lifter:
             return Insn('bcond', target=t, cond=f'(({X(rt)} >> {b}) & 1) {"!=" if nz else "=="} 0')
         if bits(w, 25, 7) == 0b1101011:  # branch register
             opc, rn = bits(w, 21, 4), bits(w, 5, 5)
-            if bits(w, 16, 5) != 31 or bits(w, 10, 6) or bits(w, 0, 5):
+            op3 = bits(w, 10, 6)
+            if bits(w, 16, 5) == 31 and op3 in (2, 3) and opc in (0, 1, 2, 8, 9):
+                # Pointer authentication (ARMv8.3, Switch 2): BRA{A,B}[Z], BLRA{A,B}[Z], RETA{A,B}. The host never
+                # signs pointers (PACIxSP and friends are hints, so NOPs), so these branch like BR/BLR/RET.
+                opc &= 7
+            elif bits(w, 16, 5) != 31 or op3 or bits(w, 0, 5):
                 raise Unsupported('branch reg variant')
             if opc == 0:
                 return Insn('br', target=X(rn))
@@ -462,6 +467,8 @@ class Lifter:
         p, v = f'({t} *)(uintptr_t)({XS(rn)})', f'({t}){X(rs)}'
         order = ('__ATOMIC_RELAXED', '__ATOMIC_RELEASE', '__ATOMIC_ACQUIRE', '__ATOMIC_ACQ_REL')[A << 1 | R]
         if o3:
+            if opc == 4 and A and not R and rs == 31:  # LDAPR{B,H} (RCpc, ARMv8.3): acquire load
+                return Insn('op', set_reg(size == 3, rt, f'__atomic_load_n({p}, __ATOMIC_ACQUIRE)'))
             if opc:
                 raise Unsupported('ldapr')
             expr = f'__atomic_exchange_n({p}, {v}, {order})'
@@ -673,6 +680,10 @@ class Lifter:
         if op2 == 6:
             opcode = bits(w, 10, 6)
             if bits(w, 30, 1):  # 1-source
+                if bits(w, 16, 5) == 1 and sf and opcode <= 17:
+                    # PAC*/AUT* (opcode 0-15) and XPAC{I,D} (16, 17): pointers are never signed on the host, so
+                    # signing, authenticating and stripping all leave the register as it is.
+                    return Insn('op', '/* pac */')
                 if bits(w, 16, 5):
                     raise Unsupported('dp1 opcode2')
                 a = R(sf, rn)

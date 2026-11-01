@@ -78,6 +78,9 @@ def tests(r):
                 rn = r.choice(regs(r, 1) + [31])
                 rs, rt = regs(r, 2, {rn})
                 out.append(([cas(size, a, rs, rel, rn, rt)], rn, 'cas'))
+        # LDAPR{B,H} (ARMv8.3 RCpc, Switch 2 code): A=1, R=0, Rs=XZR, o3=1, opc=4
+        rn = r.choice(regs(r, 1) + [31])
+        out.append(([lse(size, 1, 0, 31, 1, 4, rn, r.randrange(32))], rn, 'lse'))
     for sz in (0, 1):
         for l in (0, 1):
             for o0 in (0, 1):
