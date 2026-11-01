@@ -234,7 +234,10 @@ static void world_clock(double dt, double step) {
     int64_t w = atomic_load_explicit(&world_us, memory_order_relaxed);
     if (w < 0) {
         float p[3];
-        if (!player_pos(p) || fabsf(p[0]) + fabsf(p[2]) < 1.0f) return;   // a few guest reads, until the load ends
+        // TotK: a few guest reads, until the load ends. Another game (Bananza) has no known player position: the clock
+        // starts at the first present.
+        p[0] = p[1] = p[2] = 0;
+        if (rt_game_version && (!player_pos(p) || fabsf(p[0]) + fabsf(p[2]) < 1.0f)) return;
         rt_log("frame step: world clock starts at present %llu, %.2f s after the guest started (the player at %.1f %.1f %.1f)",
                (unsigned long long)presents, rt_guest_start_ns ? (kern_now_ns() - rt_guest_start_ns) / 1e9 : 0.0, p[0],
                p[1], p[2]);
