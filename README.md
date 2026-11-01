@@ -18,7 +18,7 @@ does the same for *Tears of the Kingdom* on the original Switch.
 | Build | The generated C compiles and links into one executable with the TotK Recomp toolchain. |
 | OS (Horizon on Switch 2) | Boots through `nn::init` and `nn::os` into the SDK module init on TotK Recomp's host; Switch 2 `GetInfo` ids added. Next: the file system and the services after it. |
 | Graphics (NVN 2) | Not started. The game asks for 700 NVN entry points; 529 have the same names as NVN 1, which TotK Recomp implements. 171 are new (DLSS, new command buffer and program calls). |
-| Shaders (Ampere) | Not started. Needs an Ampere (SM86) to SPIR-V translator; TotK Recomp translates Maxwell. |
+| Shaders (Ampere) | In progress. Eglantine's Ampere-to-Maxwell lowering (GPL) takes 97.3% of 2,656 of the game's shader stages offline (`tools/dkb_lower_test.cpp`); next is feeding its output to TotK Recomp's Maxwell translator. |
 
 The plan, by phase: [docs/bananza-plan.md](docs/bananza-plan.md). Shader notes: [docs/bananza-shaders.md](docs/bananza-shaders.md).
 
@@ -44,12 +44,17 @@ Everything the build writes stays under `build\` and `generated\`, which git ign
   [deko3d](https://github.com/devkitPro/deko3d), [hactool](https://github.com/SciresM/hactool) and the rest listed in
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - [GRAnimated/DKBananza](https://github.com/GRAnimated/DKBananza) for the game's symbols and research.
+- [Eglantine](https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork) (Eden Emulator Project) for the
+  Ampere-to-Maxwell shader lowering and its Switch 2 notes, and [Mesa NAK](https://gitlab.freedesktop.org/mesa/mesa)
+  for the SM70+ encodings both build on.
 - [Switchbrew](https://switchbrew.org) for the Switch 2 `GetInfo` ids, and the Switch homebrew community.
 
 ## License
 
-The project's own code is under the [MIT License](LICENSE); third-party code keeps its own license
-([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The license grants nothing for Nintendo's game.
+DKB Recomp as a whole is under the [GNU GPL v3 or later](LICENSE), because it includes Eglantine's GPL Ampere shader
+lowering (`runtime/third_party/eglantine/`). The files that came from TotK Recomp keep their
+[MIT License](LICENSE-MIT); third-party code keeps its own license ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+The license grants nothing for Nintendo's game.
 
 DKB Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Donkey Kong
 Bananza* and *Nintendo Switch 2* are trademarks of Nintendo.

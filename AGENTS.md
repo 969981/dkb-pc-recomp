@@ -16,7 +16,10 @@ This repository is public. Game data lives outside it and every derived file sta
 `refs/` holds the upstream checkouts (`tools/fetch_refs.sh` recreates it). Read-only.
 
 - Copy only MIT, BSD, ISC, zlib or Apache-2.0 code, keep its header, and add a row to `THIRD_PARTY_NOTICES.md`.
-- yuzu, suyu, OpenSmash-Ultimate and other GPL code: read for behaviour, write our own.
+- DKB Recomp is GPL-3.0-or-later as a whole (LICENSE), because it carries Eglantine's GPL Ampere lowering
+  (`runtime/third_party/eglantine/`, with the owner's go-ahead). GPL-3.0-compatible code (Eden, Eglantine, yuzu and
+  the like) may be copied with its header kept, a row in `THIRD_PARTY_NOTICES.md` and the upstream commit. Files that
+  came from TotK Recomp keep their MIT terms (`LICENSE-MIT`); a fix meant for TotK Recomp itself must not use GPL code.
 - `tools/vendor/` stays byte-identical to upstream; Windows changes go in `tools/extract.py`.
 
 ## Code
