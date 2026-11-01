@@ -52,3 +52,65 @@ NVN_API(nvnWindowBuilderSetHdrDisplayMetadata) { (void)c; }
 NVN_API(nvnWindowBuilderSetHdrContentMetadata) { (void)c; }
 NVN_API(nvnWindowSetHdrDisplayMetadata) { (void)c; }
 NVN_API(nvnWindowSetHdrContentMetadata) { (void)c; }
+
+// ---- Command buffer calls new in NVN 2. Until the Vulkan back end learns them (mesh shaders, ray tracing, DLSS,
+// variable-rate shading, push constants, conditional enables, device command buffers), they are accepted and
+// recorded nowhere, and the first call of each is logged, so a run lists what the back end still has to do. None of
+// them returns a value.
+#define NVN2_NOT_RECORDED(n)                                                                                         \
+    NVN_API(n) {                                                                                                     \
+        static volatile int32_t logged;                                                                              \
+        (void)c;                                                                                                     \
+        if (!__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED)) rt_log("nvn2: " #n " accepted, not recorded yet");   \
+    }
+NVN2_NOT_RECORDED(nvnCommandBufferSetRecordingMode)
+NVN2_NOT_RECORDED(nvnCommandBufferBeginDeviceCommands)
+NVN2_NOT_RECORDED(nvnCommandBufferEndDeviceCommands)
+NVN2_NOT_RECORDED(nvnCommandBufferSubmitDeviceCommands)
+NVN2_NOT_RECORDED(nvnCommandBufferBindAccelerationStructure)
+NVN2_NOT_RECORDED(nvnCommandBufferBindAccelerationStructures)
+NVN2_NOT_RECORDED(nvnCommandBufferBindAccelerationStructuresDeferred)
+NVN2_NOT_RECORDED(nvnCommandBufferBuildAccelerationStructures)
+NVN2_NOT_RECORDED(nvnCommandBufferCompactAccelerationStructure)
+NVN2_NOT_RECORDED(nvnCommandBufferCopyAccelerationStructure)
+NVN2_NOT_RECORDED(nvnCommandBufferRelocateAccelerationStructure)
+NVN2_NOT_RECORDED(nvnCommandBufferDispatchRays)
+NVN2_NOT_RECORDED(nvnCommandBufferDispatchRaysIndirect)
+NVN2_NOT_RECORDED(nvnCommandBufferBindDeviceMessageBuffer)
+NVN2_NOT_RECORDED(nvnCommandBufferBindDeviceMessageBufferDeferred)
+NVN2_NOT_RECORDED(nvnCommandBufferResetDeviceMessageBuffer)
+NVN2_NOT_RECORDED(nvnCommandBufferResetDeviceMessageBufferDeferred)
+NVN2_NOT_RECORDED(nvnCommandBufferBindShadingRateImage)
+NVN2_NOT_RECORDED(nvnCommandBufferSetShadingRatePaletteMode)
+NVN2_NOT_RECORDED(nvnCommandBufferShadingRateImagePalette)
+NVN2_NOT_RECORDED(nvnCommandBufferComputeDirtyTileMap)
+NVN2_NOT_RECORDED(nvnCommandBufferDrawMeshTasks)
+NVN2_NOT_RECORDED(nvnCommandBufferDrawMeshTasks3D)
+NVN2_NOT_RECORDED(nvnCommandBufferDrawMeshTasks3DIndirect)
+NVN2_NOT_RECORDED(nvnCommandBufferDrawMeshTasksIndirect)
+NVN2_NOT_RECORDED(nvnCommandBufferMultiDrawMeshTasks3DIndirect)
+NVN2_NOT_RECORDED(nvnCommandBufferMultiDrawMeshTasks3DIndirectCount)
+NVN2_NOT_RECORDED(nvnCommandBufferMultiDrawMeshTasksIndirect)
+NVN2_NOT_RECORDED(nvnCommandBufferMultiDrawMeshTasksIndirectCount)
+NVN2_NOT_RECORDED(nvnCommandBufferEnableExclusiveScissor)
+NVN2_NOT_RECORDED(nvnCommandBufferSetExclusiveScissor)
+NVN2_NOT_RECORDED(nvnCommandBufferSetExclusiveScissors)
+NVN2_NOT_RECORDED(nvnCommandBufferEvaluateDlss)
+NVN2_NOT_RECORDED(nvnCommandBufferInsertDebugMarkerCompute)
+NVN2_NOT_RECORDED(nvnCommandBufferInsertDebugMarkerGraphics)
+NVN2_NOT_RECORDED(nvnCommandBufferPushDebugGroupCompute)
+NVN2_NOT_RECORDED(nvnCommandBufferPushDebugGroupGraphics)
+NVN2_NOT_RECORDED(nvnCommandBufferPopDebugGroupCompute)
+NVN2_NOT_RECORDED(nvnCommandBufferPopDebugGroupGraphics)
+NVN2_NOT_RECORDED(nvnCommandBufferPushComputeConstants)
+NVN2_NOT_RECORDED(nvnCommandBufferPushComputeConstantsDeferred)
+NVN2_NOT_RECORDED(nvnCommandBufferPushGraphicsConstants)
+NVN2_NOT_RECORDED(nvnCommandBufferPushGraphicsConstantsDeferred)
+NVN2_NOT_RECORDED(nvnCommandBufferSetComputeEnable)
+NVN2_NOT_RECORDED(nvnCommandBufferSetComputeEnableConditional)
+NVN2_NOT_RECORDED(nvnCommandBufferSetComputeOverlapMode)
+NVN2_NOT_RECORDED(nvnCommandBufferSetCopyEnable)
+NVN2_NOT_RECORDED(nvnCommandBufferSetCopyEnableConditional)
+NVN2_NOT_RECORDED(nvnCommandBufferSetConservativeRasterMode)
+NVN2_NOT_RECORDED(nvnCommandBufferSetGeometryProcessingMode)
+NVN2_NOT_RECORDED(nvnCommandBufferSetRepresentativeFragmentTest)
