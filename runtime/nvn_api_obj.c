@@ -426,8 +426,12 @@ static int prog_set_shaders(prog_t *o, int n, const NVNshaderData *sd) {
     prog_release(o);
     o->nstage = (uint32_t)n;
     if (n) memcpy(o->sd, sd, (size_t)n * sizeof *sd);
-    for (int i = 0; i < n; i++)
-        gfx_shader_nvn2_dump(sd[i].control, (const uint8_t *)(uintptr_t)sd[i].data);   // only with DKB_SHADER_DUMP
+    for (int i = 0; i < n; i++) {   // NVN 2 stages are lowered to the NVN 1 shape (nvn2_lower.cpp)
+        const uint8_t *ctl = sd[i].control, *code = (const uint8_t *)(uintptr_t)sd[i].data, *nctl, *ncode;
+        gfx_shader_nvn2_dump(ctl, code);   // only with DKB_SHADER_DUMP
+        if (gfx_shader_is_nvn2(ctl) && nvn2_lower(ctl, code, &nctl, &ncode))
+            o->sd[i] = (NVNshaderData){(NVNbufferAddress)(uintptr_t)ncode, nctl};
+    }
     o->serial = nvn_new_serial();
     NVN_LOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)o, n, n ? (unsigned long long)sd[0].data : 0ull);
     return 1;

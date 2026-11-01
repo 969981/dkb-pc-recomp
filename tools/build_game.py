@@ -382,6 +382,8 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
                          f'{ninja_path(RUNTIME / "totk.ico")}')
         else:
             lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
+            if src.suffix == '.cpp':   # the Ampere lowering headers (runtime/third_party/eglantine) need C++20
+                lines.append(f'  rtflags = $rtflags -std=c++20 -I {cmd_path(RUNTIME / "third_party" / "eglantine")}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]

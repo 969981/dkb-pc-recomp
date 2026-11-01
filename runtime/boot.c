@@ -116,6 +116,7 @@ static void stats_line(void) {
 }
 
 void rt_boot_event(const char *what, Cpu *c, const char *detail) {
+    if (!rt_game_version) return;   // the expected call sites are TotK's main; Bananza has none pinned
     char at[128];
     const RtLoaded *main_mod = module_named("main");
     uint64_t ret = c->x[30];

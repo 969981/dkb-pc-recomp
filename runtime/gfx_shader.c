@@ -1152,7 +1152,7 @@ typedef struct {
 
 // NVN 2 programs (Donkey Kong Bananza): control magic 0x98761234, version 0xC9 at +4, control size at +0x30, code
 // size at +0x38 (docs/bananza-shaders.md).
-static int nvn2_control(const uint8_t *control) {
+int gfx_shader_is_nvn2(const uint8_t *control) {
     uint32_t magic, version;
     memcpy(&magic, control, 4), memcpy(&version, control + 4, 4);
     return magic == 0x98761234u && version == 0xC9u;
@@ -1163,7 +1163,7 @@ static int nvn2_control(const uint8_t *control) {
 // program the game makes. The files are game data and stay out of the repository.
 void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code) {
     const char *dir = getenv("DKB_SHADER_DUMP");
-    if (!dir || !*dir || !control || !code || !nvn2_control(control)) return;
+    if (!dir || !*dir || !control || !code || !gfx_shader_is_nvn2(control)) return;
     uint32_t ctl_size, len;
     memcpy(&ctl_size, control + 0x30, 4), memcpy(&len, control + 0x38, 4);
     if (ctl_size < 0x40 || ctl_size > 0x10000 || !len || len > 0x400000) {
@@ -1192,7 +1192,7 @@ static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *co
                     const GfxShaderAnswers *a) {
     // Reading an NVN 2 control block at the NVN 1 offsets (+0x700, +0x704) runs off its end and yields a bogus code
     // length, which once crashed the Vulkan path.
-    if (control && nvn2_control(control)) return fail("NVN 2 program (Ampere code): no translator yet", NULL), 0;
+    if (control && gfx_shader_is_nvn2(control)) return fail("NVN 2 program (Ampere code): no translator yet", NULL), 0;
     r->stage_name = stage == GFX_STAGE_VS ? "vs" : stage == GFX_STAGE_FS ? "ps" : stage == GFX_STAGE_CS ? "cs" : NULL;
     if (!r->stage_name) return fail("stage is not translated", NULL), 0;
     uint32_t c1_off;
