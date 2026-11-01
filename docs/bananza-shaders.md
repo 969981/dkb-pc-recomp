@@ -34,3 +34,6 @@ Plano F3: (1) decifrar o resto do controle com mais pares de shaders; (2) decodi
   sph_type (1 VTG, 2 PS), 5-9 versão (4), 10-13 shaderType (1 vertex, 5 pixel). 1.460 vertex, 1.138 pixel, 58 compute
   (compute sem SPH). Instruções começam em +0x80 nos gráficos.
 - Próximo: decodificador SM86 validado contra o nvdisasm (CUDA toolkit, `-b SM86`), usando sm70_encode.rs do NAK.
+- nvdisasm SM86 sobre o VS do sead (código após o SPH): ALD.96 a[0x80] / ALD a[0xa0] → duas matrizes 4x4 em c[0x4] e
+  c[0x3] (FMUL/FFMA/FADD .FTZ) → AST.128 a[0x80] (cor), AST.128 a[0x70] (posição), EXIT. Atributos no layout clássico
+  (a[0x70] = posição, a[0x80+] genéricos): o mapeamento do Ryujinx para Maxwell deve servir.

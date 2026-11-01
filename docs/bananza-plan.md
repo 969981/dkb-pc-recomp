@@ -18,7 +18,7 @@ Cada fase termina num marco verificável. A ordem é a do caminho crítico; iten
 - [x] Suporte no lifter (commit 3941578): `retab`/`retaa`/`braa`/`blraa`… como desvio sem autenticação; `ldapr*` como `ldar*`;
       hints PAC (`pacibsp`, `autibsp`…) como NOP. Teste diferencial contra o Unicorn para cada classe nova.
 - [x] Repo local `repo/` (branch `bananza`) a partir do TotK Recomp 0.2.8, histórico mantido.
-- [ ] Publicar no GitHub (Lucas-blip-png/dkb-pc-recomp) com README honesto.
+- [x] Publicado: https://github.com/Lucas-blip-png/dkb-pc-recomp (público, branch padrão `bananza`).
 - **Marco:** `main` + `sdk` inteiros geram C sem `unsupported` e compilam.
 
 ### F1 — Sistema (HLE do Horizon do Switch 2)
