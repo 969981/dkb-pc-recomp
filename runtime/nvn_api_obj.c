@@ -426,6 +426,8 @@ static int prog_set_shaders(prog_t *o, int n, const NVNshaderData *sd) {
     prog_release(o);
     o->nstage = (uint32_t)n;
     if (n) memcpy(o->sd, sd, (size_t)n * sizeof *sd);
+    for (int i = 0; i < n; i++)
+        gfx_shader_nvn2_dump(sd[i].control, (const uint8_t *)(uintptr_t)sd[i].data);   // only with DKB_SHADER_DUMP
     o->serial = nvn_new_serial();
     NVN_LOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)o, n, n ? (unsigned long long)sd[0].data : 0ull);
     return 1;

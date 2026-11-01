@@ -37,6 +37,7 @@ typedef struct {                                           // the translator's a
     uint8_t depth_minus_w;
 } GfxShaderAnswers;
 typedef struct GfxShader GfxShader;                        // SPIR-V words + parsed reflection; owned by the cache
+void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code);   // DKB_SHADER_DUMP (gfx_shader.c)
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                 const uint8_t *c1, const GfxShaderAnswers *a);   // blocks; NULL on failure (counted)
 // As gfx_shader_get with c1 inside the code, but a shader in neither cache is queued to a background translation and

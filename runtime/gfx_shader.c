@@ -1150,8 +1150,49 @@ typedef struct {
     int final;
 } Req;
 
+// NVN 2 programs (Donkey Kong Bananza): control magic 0x98761234, version 0xC9 at +4, control size at +0x30, code
+// size at +0x38 (docs/bananza-shaders.md).
+static int nvn2_control(const uint8_t *control) {
+    uint32_t magic, version;
+    memcpy(&magic, control, 4), memcpy(&version, control + 4, 4);
+    return magic == 0x98761234u && version == 0xC9u;
+}
+
+// With DKB_SHADER_DUMP=<folder>, gfx_shader_nvn2_dump writes each distinct NVN 2 stage there as <fnv>.ctl (control,
+// size at +0x30) and <fnv>.bin (code, size at +0x38), the hash taken over both; nvn_api_obj.c calls it for every
+// program the game makes. The files are game data and stay out of the repository.
+void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code) {
+    const char *dir = getenv("DKB_SHADER_DUMP");
+    if (!dir || !*dir || !control || !code || !nvn2_control(control)) return;
+    uint32_t ctl_size, len;
+    memcpy(&ctl_size, control + 0x30, 4), memcpy(&len, control + 0x38, 4);
+    if (ctl_size < 0x40 || ctl_size > 0x10000 || !len || len > 0x400000) {
+        rt_log("gfx_shader: NVN 2 stage with control size %#x and code size %#x not dumped", ctl_size, len);
+        return;
+    }
+    uint64_t h = 0xcbf29ce484222325ull;   // FNV-1a over control and code
+    for (uint32_t i = 0; i < ctl_size; i++) h = (h ^ control[i]) * 0x100000001b3ull;
+    for (uint32_t i = 0; i < len; i++) h = (h ^ code[i]) * 0x100000001b3ull;
+    static PlatMutex dump_lock = PLAT_MUTEX_INIT;
+    char path[1024];
+    plat_mutex_lock(&dump_lock);
+    for (int part = 0; part < 2; part++) {
+        snprintf(path, sizeof path, "%s/%016llx.%s", dir, (unsigned long long)h, part ? "bin" : "ctl");
+        FILE *f = fopen(path, "rb");
+        if (f) { fclose(f); continue; }
+        if ((f = fopen(path, "wb"))) {
+            fwrite(part ? code : control, 1, part ? len : ctl_size, f);
+            fclose(f);
+        }
+    }
+    plat_mutex_unlock(&dump_lock);
+}
+
 static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size, const uint8_t *c1,
                     const GfxShaderAnswers *a) {
+    // Reading an NVN 2 control block at the NVN 1 offsets (+0x700, +0x704) runs off its end and yields a bogus code
+    // length, which once crashed the Vulkan path.
+    if (control && nvn2_control(control)) return fail("NVN 2 program (Ampere code): no translator yet", NULL), 0;
     r->stage_name = stage == GFX_STAGE_VS ? "vs" : stage == GFX_STAGE_FS ? "ps" : stage == GFX_STAGE_CS ? "cs" : NULL;
     if (!r->stage_name) return fail("stage is not translated", NULL), 0;
     uint32_t c1_off;
