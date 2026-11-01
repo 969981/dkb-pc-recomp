@@ -37,3 +37,15 @@ Plano F3: (1) decifrar o resto do controle com mais pares de shaders; (2) decodi
 - nvdisasm SM86 sobre o VS do sead (código após o SPH): ALD.96 a[0x80] / ALD a[0xa0] → duas matrizes 4x4 em c[0x4] e
   c[0x3] (FMUL/FFMA/FADD .FTZ) → AST.128 a[0x80] (cor), AST.128 a[0x70] (posição), EXIT. Atributos no layout clássico
   (a[0x70] = posição, a[0x80+] genéricos): o mapeamento do Ryujinx para Maxwell deve servir.
+
+## Integração (f080197 em diante)
+- Caminho: nvnProgramSetShaders → runtime/nvn2_lower.cpp (Eglantine) → controle NVN 1 sintético → totk_xlate.
+  Offline (`tools/dkb_lower_test.cpp` + `totk_xlate jobs.json`): 2.597/2.656 rebaixam, 2.564 viram SPIR-V.
+  Fechar o buffer com um grupo de EXIT Maxwell foi o que tirou 855 IndexOutOfRange do decodificador do Ryujinx.
+- Banco do driver c0: gráficos usam o MESMO layout do NVN 1 (VS sbuf 0x110, PS 0x510); compute é outro
+  (0x10-0x2c dimensões?, sbuf 0x60+16r até 0x1e0). Texturas: handles combinados em c2 0x20+8s, como no NVN 1.
+- Restam: 33 "GlobalMemory" no Ryujinx (LDG/STG sem base em cbuf), 59 destinos de BRA desalinhados (captura lê
+  além do fim).
+- Do NX2_NOTES do Eglantine (a fazer): banco 24 = bloco de parâmetros de blit do console (sintetizar da área de
+  render); ASTC com swizzle de GOB do Switch 2 (o deswizzle do TotK é o do Switch 1); mesh/task shaders
+  (ISBEWR/ISBERD); texturas virtuais 8192x8192x68 ASTC (alocar esparsas); IPA com modos de interpolação.

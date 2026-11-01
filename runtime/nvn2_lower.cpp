@@ -15,6 +15,7 @@ extern "C" void rt_log(const char *fmt, ...);
 namespace {
 constexpr size_t kControl = 0x880;   // gfx_shader.c CONTROL_SIZE
 constexpr uint64_t kMaxwellNop = 0x50b0000000070f00ull;
+constexpr uint64_t kMaxwellExit = 0xe30000000007000full;
 
 struct Lowered { std::vector<uint8_t> control; std::vector<uint64_t> code; };
 std::mutex lock;
@@ -61,11 +62,12 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
         m = {0, kMaxwellNop};
         pos = 0x10;
     }
-    for (const uint64_t insn : lowered.instructions) {
+    // A full scheduling group of EXITs closes the program: Ryujinx's decoder runs on until a block ends, and a lowered
+    // program whose last native instruction is a conditional exit or a self-branch would read past the buffer.
+    for (size_t i = 0; i < lowered.instructions.size() + 4; i++) {
         if (pos % 32 == 0) m.push_back(0), pos += 8;
-        m.push_back(insn), pos += 8;
+        m.push_back(i < lowered.instructions.size() ? lowered.instructions[i] : kMaxwellExit), pos += 8;
     }
-    m.push_back(0);
 
     out->control.assign(kControl, 0);
     const uint32_t len = static_cast<uint32_t>(m.size() * 8);

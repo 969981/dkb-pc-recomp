@@ -1998,6 +1998,9 @@ static int pipe_memo_on(void) {
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (ex->render_disabled) return 0;
+    static int skip_all = -1;   // DKB_SKIP_DRAWS=1: drop every draw (bisecting GPU faults)
+    if (skip_all < 0) skip_all = getenv("DKB_SKIP_DRAWS") != NULL;
+    if (skip_all) return 0;
     cb_res(ex);
     dummies_init();
     if (ex->pass_noatt) {   // no attachment: the pass covers this draw's viewport or scissor, reopened when it needs more
@@ -2030,6 +2033,24 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
             memo_key(ex, gen, &SM.k), SM.vs = vs, SM.fs = fs, SM.has_fs = has_fs, SM.valid = 1;
     }
     if (!has_vs) return warn_once(W_NO_VS, "a draw with a program that has no vertex stage is skipped"), 0;
+    static int bis_lo = -1, bis_hi = 255;   // DKB_DRAW_BISECT=lo-hi (hex): only draws whose program byte is in range
+    if (bis_lo < 0) {
+        const char *e = getenv("DKB_DRAW_BISECT");
+        bis_lo = 0;
+        if (e) sscanf(e, "%x-%x", &bis_lo, &bis_hi);
+    }
+    if (vs && (bis_lo > 0 || bis_hi < 255)) {
+        int b = gfx_shader_input_id(vs)[0] ^ (fs ? gfx_shader_input_id(fs)[0] : 0);
+        if (b < bis_lo || b > bis_hi) return 0;
+        if (bis_lo == bis_hi) {
+            static int told;
+            if (told++ < 4) rt_log("bisect: draw byte %#x vs %02x%02x%02x%02x fs %02x%02x%02x%02x", b,
+                                   gfx_shader_input_id(vs)[0], gfx_shader_input_id(vs)[1], gfx_shader_input_id(vs)[2],
+                                   gfx_shader_input_id(vs)[3], fs ? gfx_shader_input_id(fs)[0] : 0,
+                                   fs ? gfx_shader_input_id(fs)[1] : 0, fs ? gfx_shader_input_id(fs)[2] : 0,
+                                   fs ? gfx_shader_input_id(fs)[3] : 0);
+        }
+    }
     // A draw into a target the previous frame did not render (or into none) waits for a pending shader or pipeline:
     // one-shot draws (volumes and LUTs generated once, later only sampled) would leave their target empty for the
     // session. A draw into per-frame targets is skipped until they are ready and comes back next frame.
@@ -2243,6 +2264,9 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
+    static int skip = -1;   // DKB_SKIP_COMPUTE=1: drop every direct dispatch (bisecting GPU faults)
+    if (skip < 0) skip = getenv("DKB_SKIP_COMPUTE") != NULL;
+    if (skip) return;
     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
     cb_res(ex);
     dummies_init();
