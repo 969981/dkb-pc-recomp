@@ -78,7 +78,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # them. MAIN_ROOT is where they land, so resolved paths still print and compare relative to a root.
 MAIN_ROOT = (ROOT / 'build').resolve().parent
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-EXE = 'totk.exe' if WIN else 'totk'
+EXE = 'dkb.exe' if WIN else 'dkb'   # DKB Recomp: not TotK's executable
 
 
 def on_path(name):

@@ -50,19 +50,18 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
 
     auto *out = new Lowered;
     auto &m = out->code;
-    // The lowering places instruction 0 at 0x10 modulo 32 past the program start, with a scheduling word at every
-    // 32-byte boundary. Graphics: 0x30 bytes the host skips, then the first 0x50 bytes of the SPH, so instruction 0
-    // lands at SPH+0x50. Compute (decoded from 0): a scheduling word and a NOP in front.
-    size_t pos;
+    // The lowering places instruction 0 at 0x10 modulo 32 with a scheduling word at every 32-byte boundary. Ryujinx
+    // decodes from the code start (graphics: SPH+0x50, compute: 0) and takes every 32-byte boundary counted from there
+    // as a scheduling word, so the code starts with a scheduling word and a NOP and instruction 0 lands 0x10 in. For
+    // graphics, the 0x30 bytes the host skips and the first 0x50 bytes of the SPH come first. (Instruction 0 straight
+    // at SPH+0x50 was decoded as a scheduling word and shifted every group: one real instruction in four was lost.)
     if (gfx) {
         m.assign(6, 0);
         m.resize(16);
         std::memcpy(m.data() + 6, code, 0x50);
-        pos = 0x50;
-    } else {
-        m = {0, kMaxwellNop};
-        pos = 0x10;
     }
+    m.push_back(0), m.push_back(kMaxwellNop);
+    size_t pos = 0x10;   // from the code start
     // A full scheduling group of EXITs closes the program: Ryujinx's decoder runs on until a block ends, and a lowered
     // program whose last native instruction is a conditional exit or a self-branch would read past the buffer.
     // The compiler's end marker, an unconditional branch to itself after the last EXIT, becomes an EXIT too: Ryujinx's
@@ -91,9 +90,9 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
             for (uint32_t &w : c1)
                 if (w % 16 == 0 && w / 16 < lowered.source_instruction_offsets.size()) {
                     const uint32_t i = lowered.source_instruction_offsets[w / 16];
-                    // The lowering's address_of. The lowered BRX jumps to its register plus a base of 0 in the graphics
-                    // layout and of -0x40 in the compute one (its code starts 0x40 earlier), so the same value lands on
-                    // instruction i in both (Ryujinx FindBrxTargets: target = BRX base + table value).
+                    // The lowering's address_of (0x50-based). Instruction i sits at address_of(i) - 0x40 from the code
+                    // start, and the lowered BRX's base works out to -0x40, so the value lands on instruction i
+                    // (Ryujinx FindBrxTargets: target = BRX base + table value).
                     w = 0x50 + i * 8 + ((i + 1) / 3) * 8;
                 }
         c1.resize((c1.size() + 1) & ~size_t{1});

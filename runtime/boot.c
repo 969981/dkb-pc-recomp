@@ -314,6 +314,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
            (unsigned long long)g.validation_errors, (unsigned long long)g.shader_failures,
            (unsigned long long)g.draws_skipped);
     stats_line();
+    if (rt_trace & RT_TRACE_HOSTCALL) hostfn_report();   // which host functions the run leaned on
     fflush(stdout);
     fflush(stderr);
     fs_save_flush();
