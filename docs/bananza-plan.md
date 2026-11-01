@@ -22,15 +22,15 @@ Cada fase termina num marco verificável. A ordem é a do caminho crítico; iten
 - **Marco:** `main` + `sdk` inteiros geram C sem `unsupported` e compilam.
 
 ### F1 — Sistema (HLE do Horizon do Switch 2)
-- [ ] Loader: NSO do Switch 2 (RELR, MOD0), TLS, layout de memória; `main.npdm` (capacidades, serviços).
-- [ ] Reaproveitar o host do TotK (threads, IPC, fs/RomFS, time, account, applet) e logar toda chamada desconhecida.
-- [ ] Serviços/SVCs novos do Switch 2 conforme aparecerem (o firmware do Switch 2 é Horizon 20+).
+- [x] Loader: NSO do Switch 2 (RELR, MOD0), TLS, layout de memória; `main.npdm` (capacidades, serviços).
+- [x] Reaproveitar o host do TotK (threads, IPC, fs/RomFS, time, account, applet) e logar toda chamada desconhecida.
+- [x] Serviços/SVCs novos do Switch 2 conforme aparecerem (o firmware do Switch 2 é Horizon 20+).
 - **Marco:** o jogo sai do `nnMain`, monta o RomFS e chega na primeira chamada de NVN.
 
 ### F2 — NVN 2 (API gráfica) com renderizador nulo
-- [ ] Engenharia reversa do bootstrap e da tabela de procs do NVN 2 a partir do próprio `sdk`/`main`
+- [x] Engenharia reversa do bootstrap e da tabela de procs do NVN 2 a partir do próprio `sdk`/`main`
       (o driver é linkado no jogo, como no Switch 1). Comparar com o NVN 1 do TotK (`runtime/nvn_*`).
-- [ ] Front end NVN 2 que grava os comandos; back end nulo (sem GPU) só para o jogo avançar quadros.
+- [x] Front end NVN 2 que grava os comandos; back end nulo (sem GPU) só para o jogo avançar quadros.
 - **Marco:** o loop do jogo roda (quadros contando, áudio tocando, input chegando) sem imagem.
 
 ### F3 — Shaders Ampere → SPIR-V (o item mais difícil)
