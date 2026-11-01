@@ -32,7 +32,10 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
     std::memcpy(&code_len, control + 0x38, 4), std::memcpy(&w0, code, 4);
     const bool gfx = ((w0 & 31) == 1 || (w0 & 31) == 2) && ((w0 >> 5) & 31) == 4;   // SPH v4
     const uint32_t hdr = gfx ? 0x80 : 0;
-    if (code_len <= hdr) return nullptr;
+    if (code_len <= hdr) {
+        rt_log("nvn2: stage with %#x bytes of code (header %#x, word 0 %#x): nothing to lower", code_len, hdr, w0);
+        return nullptr;
+    }
 
     std::vector<Shader::Ampere::Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
@@ -118,7 +121,7 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
 extern "C" int nvn2_lower(const uint8_t *control, const uint8_t *code, const uint8_t **out_control,
                           const uint8_t **out_code) {
     const uint64_t key = gfx_shader_nvn2_hash(control, code);
-    if (!key) return 0;
+    if (!key) return rt_log("nvn2: stage with a control block of unexpected sizes: not lowered"), 0;
     std::lock_guard<std::mutex> g(lock);
     auto [it, fresh] = cache.try_emplace(key, nullptr);
     if (fresh && (it->second = lower(control, code))) it->second->origin = key;

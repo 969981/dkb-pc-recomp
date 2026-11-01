@@ -15,6 +15,8 @@
 #include "../runtime/nvn2_lower.cpp"
 
 static std::map<std::string, int> reasons;
+static std::map<std::string, std::string> example;   // reason -> one stage that fails with it
+static std::string current;
 // runtime/gfx_shader.c gfx_shader_nvn2_hash: FNV-1a over the control (size at +0x30) and the code with its inline
 // constants (up to +0x44 when that is past +0x38)
 extern "C" uint64_t gfx_shader_nvn2_hash(const uint8_t *ctl, const uint8_t *code) {
@@ -33,7 +35,8 @@ extern "C" void rt_log(const char *fmt, ...) {
     std::vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     std::string s{buf};
-    ++reasons[s.substr(s.find(": ") == std::string::npos ? 0 : s.find(": ") + 2)];
+    const auto why = s.substr(s.find(": ") == std::string::npos ? 0 : s.find(": ") + 2);
+    if (!reasons[why]++) example[why] = current;
 }
 
 static std::vector<uint8_t> slurp(const std::filesystem::path &p) {
@@ -56,6 +59,7 @@ int main(int argc, char **argv) {
         std::memcpy(&c1_end, ctl.data() + 0x44, 4);
         if (c1_end > code.size() && c1_end <= 0x400000) code.resize(c1_end);
         ++total;
+        current = e.path().stem().string();
         const uint8_t *nctl, *ncode;
         if (!nvn2_lower(ctl.data(), code.data(), &nctl, &ncode)) continue;
         ++ok;
@@ -76,6 +80,6 @@ int main(int argc, char **argv) {
     }
     if (!out.empty()) jobs << "\n]\n";
     std::printf("%d of %d stages lower (%.1f%%)\n", ok, total, total ? 100.0 * ok / total : 0.0);
-    for (const auto &[why, n] : reasons) std::printf("%6d  %s\n", n, why.c_str());
+    for (const auto &[why, n] : reasons) std::printf("%6d  %s  (%s)\n", n, why.c_str(), example[why].c_str());
     return 0;
 }

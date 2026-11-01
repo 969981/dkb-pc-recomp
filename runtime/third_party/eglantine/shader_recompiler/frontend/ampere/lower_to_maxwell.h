@@ -739,9 +739,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             const u32 width = insn.Bits(73, 3);
             const u32 target = uniform_register(uniform_dest);
             const u32 index_target = opcode == 0xabb ? uniform_register(index_reg) : 255U;
-            if (target == ~0U || target == 255 || (width != 4 && width != 5) ||
+            // DKB Recomp: also U8/S8/U16/S16 (width 0-3, aligned to their size), as Maxwell LDC's size field: UI
+            // fragment shaders unpack an RGBA8 colour with ULDC.U8.
+            if (target == ~0U || target == 255 || width > 5 ||
                 (width == 5 && ((uniform_dest & 1) || uniform_register(uniform_dest + 1) != target + 1)) ||
-                bank() >= 18 || insn.Bits(38, 16) % 4 || insn.Bits(62, 2) ||
+                bank() >= 18 || insn.Bits(38, 16) % (width >= 4 ? 4 : width >= 2 ? 2 : 1) || insn.Bits(62, 2) ||
                 (insn.words[2] & ~0xe00U) != (opcode == 0xab9 ? 0U : 0x08000000U) ||
                 index_target == ~0U)
                 return fail(index, "native uniform constant load mode");
@@ -1248,7 +1250,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
         case 0x919: case 0x9c3: { // S2R / S2UR thread, workgroup and geometry invocation identities.
             const u32 special = insn.Bits(72, 8);
             if (insn.words[1] || insn.words[2] != (special << 8) ||
-                (special != 0 && special != 17 && special != 29 && special != 33 && special != 34 && special != 35 &&
+                // DKB Recomp: 19, SR_THREAD_KILL (helper invocation), which Maxwell's S2R reads the same way.
+                (special != 0 && special != 17 && special != 19 && special != 29 && special != 33 && special != 34 && special != 35 &&
                  special != 37 && special != 38 && special != 39 &&
                  special != 56 && special != 57 && special != 58 && special != 59 && special != 60))
                 return fail(index, "native special register");
@@ -1747,11 +1750,12 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             }
             break;
         }
-        case 0x307: { // FRND.F32, round to an integral floating-point value
+        case 0x307: case 0xb07: { // FRND.F32, round to an integral floating-point value (0xb07: c[] source)
+            // DKB Recomp: the constant-buffer source form, as Maxwell F2F's (FRND.FLOOR R0, c[0xa][0x8c]).
             if (insn.Bits(75, 2) != 2 || insn.Bits(84, 2) != 2 || insn.Bits(81, 3) ||
-                insn.Bits(86, 6)) return fail(index, "native floating round format");
-            emit(base(0x5ca8000000000000ULL) | (u64{2} << 8) | (u64{2} << 10) |
-                 (u64{insn.Bits(32, 8)} << 20) | (u64{8 + insn.Bits(78, 2)} << 39) |
+                insn.Bits(86, 6) || (opcode == 0xb07 && !valid_cbuf())) return fail(index, "native floating round format");
+            emit(base(opcode == 0xb07 ? 0x4ca8000000000000ULL : 0x5ca8000000000000ULL) | (u64{2} << 8) | (u64{2} << 10) |
+                 (opcode == 0xb07 ? cbuf() : u64{insn.Bits(32, 8)} << 20) | (u64{8 + insn.Bits(78, 2)} << 39) |
                  (u64{insn.Bits(80, 1)} << 44) | (u64{insn.Bits(63, 1)} << 45) |
                  (u64{insn.Bits(62, 1)} << 49));
             break;
@@ -1992,16 +1996,19 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
         }
         case 0x306: case 0xd06: { // I2F.F32.U8, low byte, round-to-nearest (0xd06: uniform source)
             const u32 source = opcode == 0xd06 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
-            if (opcode == 0x306 && insn.words[2] == 0x00101000 && !(insn.words[1] & 0xcfffff00U)) {
+            // DKB Recomp: the uniform-source form too (0xd06, words[2] 0x08101000: I2F.U16 Rd, URs.H1).
+            if (insn.words[2] == (opcode == 0xd06 ? 0x08101000U : 0x00101000U) && !(insn.words[1] & 0xcfffff00U) &&
+                source != ~0U) {
                 // I2F.U16 Rd, Rs(.H1): Maxwell's 16-bit source format, byte selector 0 or 2.
                 emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{1} << 10) | (u64{source} << 20) |
                      (u64{insn.Bits(60, 2) * 2} << 41));
                 break;
             }
+            // DKB Recomp: any source byte (I2F.U8 R3, R18.B3: selector in bits 60-61, Maxwell's in bits 41-42).
             if (insn.words[2] != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
-                (insn.words[1] & 0xffffff00U) || source == ~0U)
+                (insn.words[1] & 0xcfffff00U) || source == ~0U)
                 return fail(index, "native byte-to-float conversion mode");
-            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{source} << 20));
+            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{source} << 20) | (u64{insn.Bits(60, 2)} << 41));
             break;
         }
         case 0x245: case 0xa45: case 0xc45: { // I2FP.F32.U32
@@ -2396,7 +2403,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             } else if (insn.Bits(87, 4) != 7) {
                 return fail(index, "native extra branch condition");
             }
-            const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
+            // DKB Recomp: bit 32 is BRA's .U (uniform) flag, not part of the offset (BRA.U 0x7a0 encodes 0x281).
+            const u64 raw = (insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32)) & ~u64{3};
             const s64 relative = static_cast<s64>(raw << 14) >> 14;
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native branch destination alignment");
