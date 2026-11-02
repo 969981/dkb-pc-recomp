@@ -90,6 +90,9 @@ typedef struct { int32_t prim, itype; uint64_t ibuf, ind; } p_draw_idx_ind;
 typedef struct { uint64_t ind, caller; } p_dispatch_ind;   // OP_DISPATCH_IND: ind = GPU address of the 3 group counts
 // OP_CLEAR_BUF: size bytes at addr filled with the 32-bit value in GPU order (ClearBuffer; ReportValue is a 4-byte one)
 typedef struct { uint64_t addr, size; uint32_t value, pad; } p_clear_buf;
+// OP_PUSH_CONST: NVN 2 Push{Graphics,Compute}Constants; bytes at byte offset into root table `table` of the graphics
+// (compute 0) or compute (compute 1) pipeline. Shaders read the root table as constant bank 24 (nvn_api_nvn2.c).
+typedef struct { int32_t compute, table, offset, bytes; uint32_t w[64]; } p_push_const;
 _Static_assert(sizeof(p_signal_event) == 16 && sizeof(p_report_counter) == 16 && sizeof(p_copy_b2b) == 24 &&
                sizeof(p_update_ub) == 16, "op payload layouts of hle_nvn.c");
 static inline const op_hdr *nvn_op_first(uint64_t handle) { return (const op_hdr *)(uintptr_t)handle; }   // OP_BEGIN

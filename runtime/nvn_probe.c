@@ -27,6 +27,8 @@
 #define NVN_PROC(n) void nvnp_##n(Cpu *c);
 #include "nvn_procs.inc"
 #undef NVN_PROC
+void nvnp_nvnCommandBufferPushGraphicsConstants(Cpu *c);   // NVN 2 procs the command checks record
+void nvnp_nvnCommandBufferPushComputeConstants(Cpu *c);
 
 typedef struct { const char *name; void (*fn)(Cpu *); } ProcRow;
 static const ProcRow procs[] = {
@@ -92,7 +94,7 @@ static void probe_device_and_pools(void) {
     int abi[2] = {0, 0};
     CALL(nvnDeviceGetInteger, U(&dev), 0, U(&abi[0]));
     CALL(nvnDeviceGetInteger, U(&dev), 1, U(&abi[1]));
-    CHECK(abi[0] == 55 && abi[1] >= 15, "device ABI %d.%d", abi[0], abi[1]);
+    CHECK(abi[0] == 231 && abi[1] >= 16, "device ABI %d.%d", abi[0], abi[1]);   // Bananza needs NVN 2's 231.16
 
     pmem = mem_kernel_alloc(PROBE_POOL_SIZE, 0x1000);
     gmem = mem_kernel_alloc(PROBE_GPOOL_SIZE, 0x1000);
@@ -457,6 +459,9 @@ static uint64_t record_all(void) {
     REC(OP_DISPATCH_IND, CALL(nvnCommandBufferDispatchComputeIndirect, U(c), 0xc100));
     REC(OP_CLEAR_BUF, CALL(nvnCommandBufferClearBuffer, U(c), 0xc200, 0x40, 0xdeadbeef));
     REC(OP_CLEAR_BUF, CALL(nvnCommandBufferReportValue, U(c), 0x1234, 0xc300));
+    static const uint32_t pushed[4] = {0x39b60b61, 0x3a21d13a, 0x45340000, 0x44ca8000};   // 1/2880, 1/1620, 2880, 1620
+    REC(OP_PUSH_CONST, CALL(nvnCommandBufferPushGraphicsConstants, U(c), 0, 0x10, sizeof pushed, U(pushed)));
+    CALL(nvnCommandBufferPushComputeConstants, U(c), 0, 0, 2, U(pushed));   // under 4 bytes: dropped, as the driver does
     static const int thresholds[4] = {1, 2, 3, 4};
     CALL(nvnCommandBufferSetColorReductionEnable, U(c), 1);   // hints: nothing recorded
     CALL(nvnCommandBufferSetColorReductionThresholds, U(c), 0, U(thresholds));
@@ -679,6 +684,12 @@ static void parse_all(uint64_t h) {
             const p_clear_buf *p = a;
             CHECK((p->addr == 0xc200 && p->size == 0x40 && p->value == 0xdeadbeef) ||
                       (p->addr == 0xc300 && p->size == 4 && p->value == 0x1234), "CLEAR_BUF payload (ClearBuffer, ReportValue)");
+            break;
+        }
+        case OP_PUSH_CONST: {
+            const p_push_const *p = a;
+            CHECK(!p->compute && p->table == 0 && p->offset == 0x10 && p->bytes == 16 && p->w[0] == 0x39b60b61 &&
+                      p->w[3] == 0x44ca8000, "PUSH_CONST payload");
             break;
         }
         default: CHECK(0, "unexpected op %s", nvn_op_name(o->op)); break;

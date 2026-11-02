@@ -934,15 +934,21 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         // to bank 17 (never bound by games). For a blit over the whole render area (Eglantine, ir_opt/position_pass.cpp
         // BlitConstantsPass): texel size at 0x0/0x4 and 0x10/0x14, size at 0x8/0xc, UV scale 1 at 0x18/0x1c, UV clamp
         // rectangle 0,0..1,1 at 0x30-0x3c, zero dither bias, integer source rectangle 0,0..W-1,H-1 at 0x50-0x5c.
+        // Bank 24 is NVN 2's graphics root table 0: the words the game pushed (OP_PUSH_CONST) replace the guess
+        // (Bananza pushes 1/w, 1/h, w, h). No Bananza compute stage reads bank 24; one that did would get zeros plus
+        // the compute pushes, never the graphics guess.
         float w = ex->pass_w ? (float)ex->pass_w : 1.0f, h = ex->pass_h ? (float)ex->pass_h : 1.0f;
-        float f[24] = {1 / w, 1 / h, w, h, 1 / w, 1 / h, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1};
-        uint32_t *u = (uint32_t *)f;
-        u[22] = (uint32_t)(w - 1), u[23] = (uint32_t)(h - 1);
+        union { float f[64]; uint32_t u[64]; } blk = {{1 / w, 1 / h, w, h, 1 / w, 1 / h, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1}};
+        blk.u[22] = (uint32_t)(w - 1), blk.u[23] = (uint32_t)(h - 1);
+        int k = st == NVN_STAGE_CS;
+        if (k) memset(&blk, 0, sizeof blk);
+        for (int i = 0; i < 64; i++)
+            if (ex->push_set[k] >> i & 1) blk.u[i] = ex->push[k][i];
         VkBuffer b;
         VkDeviceSize o;
         RS.volatile_ = 1;
-        memcpy(scratch(ex, sizeof f, &b, &o), f, sizeof f);
-        return (VkDescriptorBufferInfo){b, o, sizeof f};
+        memcpy(scratch(ex, sizeof blk, &b, &o), &blk, sizeof blk);
+        return (VkDescriptorBufferInfo){b, o, sizeof blk};
     } else if (slot >= 3 && slot - 3 < 18) {
         const p_bind_buf *b = &ex->ubo[st][slot - 3];
         if (b->size && vk_usnap_find(b->addr, b->size < max ? b->size : max, align, &bi)) {   // as of the submit call
@@ -2470,6 +2476,19 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     case OP_BIND_UBO: {
         const p_bind_buf *b = payload;
         if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 18) ex->ubo[b->stage][b->index] = *b;
+        bind_gen++;
+        break;
+    }
+    case OP_PUSH_CONST: {
+        const p_push_const *p = payload;
+        if (p->table != 0) {   // ponytail: only root table 0 maps to bank 24; Bananza pushes no other table so far
+            static int warned;
+            if (!warned++) rt_log("vk: push constants into root table %d dropped", p->table);
+            break;
+        }
+        int k = p->compute != 0, w0 = p->offset / 4, n = p->bytes / 4;
+        memcpy(&ex->push[k][w0], p->w, 4 * (size_t)n);
+        ex->push_set[k] |= (n >= 64 ? ~0ull : ((1ull << n) - 1)) << w0;
         bind_gen++;
         break;
     }

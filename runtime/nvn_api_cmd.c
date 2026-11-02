@@ -660,6 +660,31 @@ NVN_API(nvnCommandBufferBindUniformBuffer) { bind_buffer(c, OP_BIND_UBO); }
 NVN_API(nvnCommandBufferBindUniformBuffers) { bind_buffers(c, OP_BIND_UBO); }
 NVN_API(nvnCommandBufferBindStorageBuffer) { bind_buffer(c, OP_BIND_SSBO); }
 NVN_API(nvnCommandBufferBindStorageBuffers) { bind_buffers(c, OP_BIND_SSBO); }
+// void nvnCommandBufferPush{Graphics,Compute}Constants(NVNcommandBuffer *, int table, int offset, int bytes,
+// const void *data), NVN 2. The driver (sdk+0x5d34b0 graphics, sdk+0x5d3a30 compute) clamps bytes to 0x100, drops
+// calls under 4 bytes and writes words: graphics as SET_ROOT_TABLE_SELECTOR (method 0x504, table & 7 | offset << 8)
+// plus LOAD_ROOT_TABLE (0x508), compute through MME macro 0x53. Graphics shaders read table 0 as constant bank 24:
+// the full-screen blits get their texel size and size this way (1/w, 1/h, w, h at 0x0..0xc in Bananza's runs). Where
+// compute shaders read their pushes is not known yet; no Bananza compute stage reads bank 24.
+static void push_constants(const Cpu *c, int compute) {
+    cmd_t *o = cmd_of(c);
+    int table = (int)(arg_x(c, 1) & 7), offset = (int)arg_x(c, 2);
+    uint32_t bytes = (uint32_t)arg_x(c, 3);
+    if (bytes > 0x100) bytes = 0x100;
+    if (bytes < 4) return;
+    if (offset < 0 || offset + bytes > 0x100 || (offset & 3)) {
+        rt_log("nvn: Push%sConstants offset %#x bytes %#x past the 256-byte root table", compute ? "Compute" : "Graphics",
+               offset, bytes);
+        return;
+    }
+    uint32_t n = bytes / 4;
+    p_push_const *r = RECN(o, OP_PUSH_CONST, p_push_const, w, n);   // holds only n words of w: set fields one by one
+    r->compute = compute, r->table = table, r->offset = offset, r->bytes = (int32_t)(n * 4);
+    memcpy(r->w, arg_p(c, 4), n * 4);
+    hw_fix(o, 4 * ((size_t)n + 2));   // method header, selector or macro parameter, n words
+}
+NVN_API(nvnCommandBufferPushGraphicsConstants) { push_constants(c, 0); }
+NVN_API(nvnCommandBufferPushComputeConstants) { push_constants(c, 1); }
 // Texture, image and separate handle binds. A deferred bind (NVN 55 *Deferred entry points, the fallback of the inline
 // fast paths) keeps the pointer to the game's handle array: the original driver (sdk+0x46cc00 BindTexturesDeferred)
 // reads the handles when the command buffer is submitted, and the game fills its material handle tables after
@@ -967,7 +992,7 @@ const char *nvn_op_name(uint32_t op) {
         "BIND_VSTREAM", "BIND_VBUF", "BIND_UBO", "BIND_SSBO", "BIND_TEX", "BIND_SAMP", "STENCIL", "POLY_OFFSET", "DRAW",
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
-        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF",
+        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "PUSH_CONST",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";
