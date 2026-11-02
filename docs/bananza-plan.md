@@ -53,10 +53,8 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 - [~] GPU fault about 2 s after the first guide movie, in about 6 of 10 runs. Cause: out-of-bounds shared memory
       access in the neural upscaler. Translator patch 0013 clamps shared and local memory indices. One run with
       the patch passed the movie. A longer series is still to run. [#9]
-- [ ] `nvnCommandBufferPush{Graphics,Compute}Constants`: the driver writes them as root tables
-      (`SET_ROOT_TABLE_SELECTOR` 0x504, then `LOAD_ROOT_TABLE` 0x508), one per stage. The likely bank is 24, read
-      only by the full-screen blit shaders, where the host now guesses the values. Commit 75d5e7b logs the first
-      calls. [#2]
+- [x] `nvnCommandBufferPush{Graphics,Compute}Constants`: recorded in the command stream as OP_PUSH_CONST and replayed
+      into Vulkan constant banks (both c0 and bank 17 / lowered bank 24 root tables). [#2]
 - [ ] Colour grading: the 3D LUT comes out empty. [#4]
 - [ ] Some textures look blocky (checkerboard rocks): probably a format or deswizzle case. [#5]
 - [ ] Getting past the tutorial cave. [#7]

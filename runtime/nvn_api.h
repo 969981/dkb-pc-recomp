@@ -48,6 +48,7 @@ int nvn_depth_minus_w(void);                               // 1 after DeviceSetD
 void nvn_guest_written(uint64_t addr, uint64_t size);      // the host or the game wrote pool storage: back end re-reads
 // TOTK_TRACE=perf: MemoryPoolFlushMappedRange [0] and BufferFlushMappedRange [1] calls [0] and bytes [1] by the pool's
 // CPU class (0 CPU_CACHED, 1 CPU_UNCACHED, 2 other) since the previous call.
+void cmd_push_constants(cmd_t *o, int stage, int offset, int bytes, const void *data, int deferred);
 void nvn_flush_stats(uint64_t out[2][3][2]);
 void nvn_submit_prepare(const uint64_t *handles, int n);   // weak no-op; the command-buffer slice reads deferred binds
 // Asynchronous replay: as nvn_submit_prepare, writing the handles to replay to out (a clone where a still queued

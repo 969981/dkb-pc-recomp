@@ -129,7 +129,7 @@ static struct {
     VkBuffer c0_buf[3];
     VkDeviceSize c0_off[3];
     int c0_valid[3];
-    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; uint8_t lay[5]; uint32_t imax[8][2]; } c0_in[3];   // what vk_c0_fill read for c0[k]
+    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; uint8_t lay[5]; uint32_t imax[8][2]; uint32_t push_gen; } c0_in[3];   // what vk_c0_fill read for c0[k]
     VkPipelineLayout ds_layout;          // graphics layout the sets below were last pushed or bound with
     VkDescriptorSet ds_bound[2];         // allocated set bound per set number (0: none or pushed since)
     VkDescriptorSet ds_last[2];          // last allocated and written set per set number, contents in DS
@@ -886,11 +886,22 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     if (st == NVN_STAGE_CS) memcpy(in.ubo, ex->ubo[st], sizeof in.ubo), memcpy(in.dim, c0_dim, sizeof in.dim);
     else in.binst = c0_binst;
     if (st == NVN_STAGE_CS && c0_lay) memcpy(in.lay, c0_lay, 4), in.lay[4] = 1, memcpy(in.imax, c0_imax, sizeof in.imax);
+    in.push_gen = ex->push_gen[st];
     if (B.c0_valid[k] && !memcmp(&in, &B.c0_in[k], sizeof in))
         return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
     B.c0_in[k] = in;
     uint8_t tmp[VK_C0_BYTES];
     vk_c0_fill(tmp, st, ex->ssbo[st], ex->ubo[st], c0_dim, c0_binst);
+    for (int i = 0; i < 16; i++) {
+        uint32_t m = ex->push_const_mask[st][i];
+        if (!m) continue;
+        for (int bit = 0; bit < 32; bit++) {
+            if (m & (1u << bit)) {
+                int dw = i * 32 + bit;
+                memcpy(tmp + dw * 4, ex->push_const[st] + dw * 4, 4);
+            }
+        }
+    }
     if (!B.c0_valid[k] || memcmp(tmp, B.c0[k], VK_C0_BYTES)) {
         memcpy(scratch(ex, VK_C0_BYTES, &B.c0_buf[k], &B.c0_off[k]), tmp, VK_C0_BYTES);
         memcpy(B.c0[k], tmp, VK_C0_BYTES);
@@ -938,6 +949,17 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         float f[24] = {1 / w, 1 / h, w, h, 1 / w, 1 / h, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1};
         uint32_t *u = (uint32_t *)f;
         u[22] = (uint32_t)(w - 1), u[23] = (uint32_t)(h - 1);
+        for (int i = 0; i < 16; i++) {
+            uint32_t m = ex->push_const_mask[st][i];
+            if (!m) continue;
+            for (int bit = 0; bit < 32; bit++) {
+                if (m & (1u << bit)) {
+                    int dw = i * 32 + bit;
+                    if (dw * 4 + 4 <= (int)sizeof f)
+                        memcpy((uint8_t *)f + dw * 4, ex->push_const[st] + dw * 4, 4);
+                }
+            }
+        }
         VkBuffer b;
         VkDeviceSize o;
         RS.volatile_ = 1;
@@ -1613,8 +1635,11 @@ static const RsList *rs_list(const VkExec *ex, const VkPipeInfo *info) {
             } else if (b->kind == GFX_RES_UBO) {
                 for (uint32_t k = 0; k < cnt; k++) {
                     int slot = r->slot + (int)k;
-                    if (slot == 0 && c0_on()) c0 = 1, rs_add(tmp, &n, ex, ex->ssbo[st], sizeof ex->ssbo[st]);
-                    else if (slot >= 3 && slot - 3 < 18) rs_add(tmp, &n, ex, &ex->ubo[st][slot - 3], sizeof(p_bind_buf));
+                    if (slot == 0 && c0_on()) {
+                        c0 = 1;
+                        rs_add(tmp, &n, ex, ex->ssbo[st], sizeof ex->ssbo[st]);
+                        rs_add(tmp, &n, ex, &ex->push_gen[st], sizeof ex->push_gen[st]);
+                    } else if (slot >= 3 && slot - 3 < 18) rs_add(tmp, &n, ex, &ex->ubo[st][slot - 3], sizeof(p_bind_buf));
                 }   // slot 1: the program (bind_sig); others: the zero buffer
             } else if (b->kind == GFX_RES_SSBO) {   // every descriptor of the binding is the same range
                 int ubo, slot = ssbo_slot(r, st, &ubo);
@@ -2501,6 +2526,21 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         bind_handles(b->stage >= 0 && b->stage < 6 ? ex->img[b->stage] : NULL, 32, b);
         ex->tex_serial++;   // the shader memo's handle check (feedback_scan reads only textures: a rescan at most)
         bind_gen++;
+        break;
+    }
+    case OP_PUSH_CONST: {
+        const p_push_const *b = payload;
+        if (b->stage >= 0 && b->stage < 6 && b->offset >= 0 && b->bytes > 0 && b->offset + b->bytes <= (int)VK_C0_BYTES) {
+            memcpy(ex->push_const[b->stage] + b->offset, b->data, (size_t)b->bytes);
+            int dw_first = b->offset / 4;
+            int dw_cnt = (b->bytes + 3) / 4;
+            for (int i = 0; i < dw_cnt; i++) {
+                int dw = dw_first + i;
+                ex->push_const_mask[b->stage][dw / 32] |= 1u << (dw % 32);
+            }
+            ex->push_gen[b->stage]++;
+            bind_gen++;
+        }
         break;
     }
     case OP_UPDATE_UB: op_update_ub(ex, payload); break;
