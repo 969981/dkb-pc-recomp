@@ -45,6 +45,10 @@ static void ov_initialize_graphics(Cpu *c) {
            (unsigned long long)size);
 }
 
+// void nv::InitCheck(): aborts unless nv::InitializeGraphics ran, and that call is the host's (above), so the SDK's own
+// flag is never set. Bananza calls it before nn::codec::video::Initialize when a tutorial guide movie starts.
+static void ov_init_check(Cpu *c) { (void)c; }
+
 // ---- nn::vi: the identities are small zeroed blocks in the guest-visible kernel region, in case SDK code reads them
 static int vi_ready;
 static void *display, *layer, *window;
@@ -150,6 +154,7 @@ __attribute__((constructor)) static void ov_nvn_procs_register(void) { nvn_procs
 
 HOST_OVERRIDE("_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", ov_graphics_allocator);
 HOST_OVERRIDE("_ZN2nv18InitializeGraphicsEPvm", ov_initialize_graphics);
+HOST_OVERRIDE("_ZN2nv9InitCheckEv", ov_init_check);
 HOST_OVERRIDE("_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", ov_devtools_allocator);
 HOST_OVERRIDE("_ZN2nn2vi10InitializeEv", ov_vi_initialize);
 HOST_OVERRIDE("_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE", ov_open_display);
