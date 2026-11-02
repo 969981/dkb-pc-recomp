@@ -870,6 +870,23 @@ NVN_API(nvnCommandBufferWaitEvent) { (void)c; }
 NVN_API(nvnCommandBufferSetShaderScratchMemory) { (void)c; }
 NVN_API(nvnCommandBufferSetPatchSize) { (void)c; }
 
+void cmd_push_constants(cmd_t *o, int stage, int offset, int bytes, const void *data, int deferred) {
+    if (bytes <= 0 || bytes > 256 || offset < 0 || offset + bytes > (int)VK_C0_BYTES || stage < 0 || stage >= 6) return;
+    int words = (bytes + 3) / 4;
+    p_push_const *p = RECN(o, OP_PUSH_CONST, p_push_const, data, words);
+    p->stage = stage;
+    p->offset = offset;
+    p->bytes = bytes;
+    if (deferred) {
+        p->src = (uint64_t)(uintptr_t)data;
+        if (data) memcpy(p->data, data, (size_t)bytes);
+    } else {
+        p->src = 0;
+        if (data) memcpy(p->data, data, (size_t)bytes);
+    }
+    hw_fix(o, 12 + 4 * (size_t)words);
+}
+
 // ---------- submit
 // What the console reads at the submit call is read here, on the game thread: every handle must be a live recording,
 // and deferred binds take the handles the game's arrays hold now (the game fills its tables for the next frame as soon
@@ -906,6 +923,21 @@ static int resolve_deferred(const uint8_t *p, int depth) {   // returns the numb
                         NVN_LOG("deferred bind read new handles at submit: stage %d slot %d, %#llx at record -> %#llx",
                                 b->stage, b->first, (unsigned long long)b->h[0], (unsigned long long)cur[0]);
                     memcpy(b->h, cur, 8 * (size_t)b->n);
+                }
+            }
+        } else if (h.op == OP_PUSH_CONST) {
+            p_push_const *b = (p_push_const *)(uintptr_t)(p + 8);
+            if (b->src && b->bytes > 0 && b->bytes <= 256) {
+                nd++;
+                uint32_t cur[64];
+                size_t nwords = ((size_t)b->bytes + 3) / 4;
+                memcpy(cur, (const void *)(uintptr_t)b->src, nwords * 4);
+                __atomic_fetch_add(&def_reads, 1, __ATOMIC_RELAXED);
+                if (memcmp(cur, b->data, nwords * 4)) {
+                    if (__atomic_fetch_add(&def_changed, 1, __ATOMIC_RELAXED) < 6)
+                        NVN_LOG("deferred push constants read new data at submit: stage %d offset %#x bytes %#x",
+                                b->stage, b->offset, b->bytes);
+                    memcpy(b->data, cur, nwords * 4);
                 }
             }
         }
@@ -967,7 +999,7 @@ const char *nvn_op_name(uint32_t op) {
         "BIND_VSTREAM", "BIND_VBUF", "BIND_UBO", "BIND_SSBO", "BIND_TEX", "BIND_SAMP", "STENCIL", "POLY_OFFSET", "DRAW",
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
-        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF",
+        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "PUSH_CONST",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";
