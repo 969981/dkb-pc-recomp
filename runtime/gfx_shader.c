@@ -1115,7 +1115,7 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
         o += sprintf(o, "},\"fout\":{");
         for (int i = 0; i < 8; i++)
             if (a->frag_out_type[i]) o += sprintf(o, "%s\"%d\":\"%s\"", sep, i, attr_name(a->frag_out_type[i])), sep = ",";
-        o += sprintf(o, "},\"shared\":%u", a->shared_bytes ? a->shared_bytes : nvn2_shared(control));
+        o += sprintf(o, "},\"shared\":%u", a->shared_bytes > nvn2_shared(control) ? a->shared_bytes : nvn2_shared(control));
     }
     if (!a && nvn2_shared(control)) o += sprintf(o, ",\"shared\":%u", nvn2_shared(control));
     if (!strcmp(stage, "cs")) {

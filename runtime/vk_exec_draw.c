@@ -569,6 +569,10 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
         VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                           .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
         if (blocks) ci.pNext = &use;   // not the BC image's sampling and transfer usages
+        // A view in another format (an sRGB target over a UNORM texture) drops the image's storage usage, which that
+        // format may lack: every colour texture that allows it is made with storage usage (vk_texture.c create_tex).
+        else if (format != img->format && (img->usage & VK_IMAGE_USAGE_STORAGE_BIT))
+            use.usage = img->usage & ~VK_IMAGE_USAGE_STORAGE_BIT, ci.pNext = &use;
         if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS)
             rt_fatal("vk: render target view (format %d) could not be created", (int)format);
         ViewNode *n = malloc(sizeof *n);
