@@ -1,6 +1,6 @@
-# TotK Recomp
+# DKB Recomp
 
-Static recompilation of *Tears of the Kingdom* (Switch, ARM64) into a native Windows x86-64 exe with a Vulkan renderer. Design: [docs/architecture.md](docs/architecture.md). Toolchain, build commands and tests: [docs/building.md](docs/building.md).
+Static recompilation of *Donkey Kong Bananza* (Switch 2, ARM64, base 1.0.0) into a native Windows x86-64 exe with a Vulkan renderer, built on TotK Recomp (*Tears of the Kingdom*, Switch 1). Most of the lifter, host and Vulkan back end is TotK Recomp's; the Bananza-specific parts are the NVN 2 front end (`runtime/nvn_api_nvn2.c` and the NVN 2 paths in `runtime/gfx_shader.c`), the Ampere shader lowering (`runtime/nvn2_lower.cpp`, `runtime/third_party/eglantine/`) and the `nn::codec` movie decoder (`runtime/ov_codec.c`). Design: [docs/architecture.md](docs/architecture.md). Plan: [docs/bananza-plan.md](docs/bananza-plan.md). Shader notes: [docs/bananza-shaders.md](docs/bananza-shaders.md). Toolchain, build commands and tests: [docs/building.md](docs/building.md). Running and testing Bananza: [docs/dkb-testing.md](docs/dkb-testing.md).
 
 ## Game content boundary
 

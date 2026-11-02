@@ -1,51 +1,87 @@
-# Shaders do Bananza (base 1.0.0)
+# Bananza shaders (base 1.0.0)
 
-- RomFS `Shader/`: `SilverStarMaterial...Nin_Ounce_NVN2.bfsha.zs` (12,2 MB zstd; o grosso), `Project...release.sarc.zs`
-  (660 KB), `PhotoFilter...bfsha.zs` (14 KB). "Ounce" = codinome do Switch 2.
-- `bfsha` = contêiner `FSHA` com `BNSH` dentro (e `grsc`): mesma família de formato do Switch 1; o que muda é o código
-  de GPU (Ampere) dentro do BNSH.
-- `Lib/sead/primitive_renderer/primitive_drawer_nvn_shader.bin` (7168 B) e `..._nvn2_shader.bin` (6912 B): o MESMO
-  shader compilado para NVN 1 (Maxwell) e NVN 2 (Ampere). Pedra de Roseta para o decodificador Ampere: o tradutor
-  Maxwell do TotK já entende o primeiro. Os dois têm o magic de controle NVN `0x98761234` em +0x10; o campo seguinte é
-  `0x01` (NVN 1) e `0xC9` (NVN 2).
+Notes on the NVN 2 shader format and on how DKB Recomp turns the game's Ampere shaders into SPIR-V. The plan is in
+[bananza-plan.md](bananza-plan.md); open shader work is in the issues labelled
+[area: shaders](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aopen+label%3A%22area%3A+shaders%22).
 
-## Controle NVN 2 x NVN 1 (sead primitive_drawer, estágio 0; tools/ctlcmp.py)
-Layouts totalmente diferentes; o NVN 2 é um formato novo (versão +0x04 = 0xC9 = 201; NVN 1 = 1).
-NVN 2, primeiros campos lidos:
-- +0x00 0x98761234 magic; +0x04 0xC9 versão; +0x08 0x0B (?); +0x0C 0x000E0170 (?)
-- +0x18 0x00200004, +0x1C 0x00288000 (?)
-- +0x20..+0x2C hash de 128 bits
-- +0x30 0x930 = tamanho do controle (o estágio 1 começa em 0x10 + 0x930 = 0x940)
-- +0x38 0x400 = tamanho do código (vértice 0xD00..0x1100); +0x40 e +0x44 também 0x400
-- +0x4C 0x11 (?); +0x98 0x930 (repetido)
-Código Ampere começa direto (sem o cabeçalho 0x12345678 do NVN 1). Instruções de 128 bits (SM70+).
-Plano F3: (1) decifrar o resto do controle com mais pares de shaders; (2) decodificador SM86 a partir do
-`refs/mesa/src/nouveau/compiler/nak/sm70_encode.rs` (MIT); (3) entrar no IR do tradutor Ryujinx que o TotK usa
-(tools/vendor/ryujinx, MIT) como um frontend novo, reaproveitando o gerador SPIR-V.
+## Where the shaders are
 
-## Corpus do jogo (01/11, 2.656 estágios via DKB_SHADER_DUMP; tools/ctlstats.py, tools/sphstats.py)
-- Controle NVN 2 do jogo: 0xD8 bytes (2.654); o do sead tem 0x930. 96 estágios trazem 0 em +0x30 (variante, a ver).
-- Constantes: +0x00 magic, +0x04 0xC9, +0x0C 0x000E0170 (alvo? SM86), +0x10/+0x14 0, +0xA4 0x1000000.
-- +0x20..+0x2C hash de 128 bits (1.907 distintos). +0x30 = tamanho do controle (repetido em +0x98, +0xC4, +0xC8).
-- +0x38 = tamanho do código; +0x40/+0x44 parecidos (= código em 1.358 casos): talvez código sem constantes.
-- +0x4C pequeno (0x24..0x48): candidato a contagem de registradores. +0x54/+0x60 múltiplos de 0x1000.
-- +0x08 = 0xB (2.626) ou 0x7 (30): NÃO é o estágio.
-- **Estágio vem do SPH no código**: gráficos começam com SPH v4 (32 palavras = 0x80 bytes, NAK sph.rs), word0 bits 0-4
-  sph_type (1 VTG, 2 PS), 5-9 versão (4), 10-13 shaderType (1 vertex, 5 pixel). 1.460 vertex, 1.138 pixel, 58 compute
-  (compute sem SPH). Instruções começam em +0x80 nos gráficos.
-- Próximo: decodificador SM86 validado contra o nvdisasm (CUDA toolkit, `-b SM86`), usando sm70_encode.rs do NAK.
-- nvdisasm SM86 sobre o VS do sead (código após o SPH): ALD.96 a[0x80] / ALD a[0xa0] → duas matrizes 4x4 em c[0x4] e
-  c[0x3] (FMUL/FFMA/FADD .FTZ) → AST.128 a[0x80] (cor), AST.128 a[0x70] (posição), EXIT. Atributos no layout clássico
-  (a[0x70] = posição, a[0x80+] genéricos): o mapeamento do Ryujinx para Maxwell deve servir.
+- RomFS `Shader/`: `SilverStarMaterial...Nin_Ounce_NVN2.bfsha.zs` (12.2 MB zstd, most of them),
+  `Project...release.sarc.zs` (660 KB) and `PhotoFilter...bfsha.zs` (14 KB). "Ounce" is the Switch 2 code name.
+- `bfsha` is an `FSHA` container with `BNSH` inside (and `grsc`), the same format family as on Switch 1. What changes is
+  the GPU code inside the BNSH: Ampere instead of Maxwell.
+- `Lib/sead/primitive_renderer/primitive_drawer_nvn_shader.bin` (7168 bytes) and `..._nvn2_shader.bin` (6912 bytes)
+  are the same shader compiled for NVN 1 (Maxwell) and NVN 2 (Ampere): a Rosetta stone, since TotK Recomp's Maxwell
+  translator already understands the first. Both carry the NVN control magic `0x98761234` at +0x10; the next field is
+  `0x01` for NVN 1 and `0xC9` for NVN 2.
 
-## Integração (f080197 em diante)
-- Caminho: nvnProgramSetShaders → runtime/nvn2_lower.cpp (Eglantine) → controle NVN 1 sintético → totk_xlate.
-  Offline (`tools/dkb_lower_test.cpp` + `totk_xlate jobs.json`): 2.597/2.656 rebaixam, 2.564 viram SPIR-V.
-  Fechar o buffer com um grupo de EXIT Maxwell foi o que tirou 855 IndexOutOfRange do decodificador do Ryujinx.
-- Banco do driver c0: gráficos usam o MESMO layout do NVN 1 (VS sbuf 0x110, PS 0x510); compute é outro
-  (0x10-0x2c dimensões?, sbuf 0x60+16r até 0x1e0). Texturas: handles combinados em c2 0x20+8s, como no NVN 1.
-- Restam: 33 "GlobalMemory" no Ryujinx (LDG/STG sem base em cbuf), 59 destinos de BRA desalinhados (captura lê
-  além do fim).
-- Do NX2_NOTES do Eglantine (a fazer): banco 24 = bloco de parâmetros de blit do console (sintetizar da área de
-  render); ASTC com swizzle de GOB do Switch 2 (o deswizzle do TotK é o do Switch 1); mesh/task shaders
-  (ISBEWR/ISBERD); texturas virtuais 8192x8192x68 ASTC (alocar esparsas); IPA com modos de interpolação.
+## The NVN 2 control section
+
+The layout differs completely from NVN 1's (`tools/ctlcmp.py` compares the sead pair; `tools/ctlstats.py` and
+`tools/sphstats.py` read the whole corpus). Fields known so far, over the 2,656 stages of the game's corpus
+(`DKB_SHADER_DUMP`, see `runtime/gfx_shader.c`, `gfx_shader_nvn2_dump`):
+
+| Offset | Meaning |
+| --- | --- |
+| +0x00 | Magic `0x98761234` |
+| +0x04 | Version `0xC9` (201); NVN 1 has 1 |
+| +0x08 | `0xB` (2,626 stages) or `0x7` (30); not the stage |
+| +0x0C | `0x000E0170`, constant (target, probably SM86) |
+| +0x20..+0x2C | 128-bit hash (1,907 distinct) |
+| +0x30 | Control size, `0xD8` in the game (`0x930` in sead); repeated at +0x98, +0xC4, +0xC8. 182 stages leave it 0 and are treated as `0xD8` |
+| +0x38 | Code size |
+| +0x40, +0x44 | Inline constants (bank 1) follow the code from +0x40 to +0x44 (`runtime/nvn2_lower.cpp`) |
+| +0x4C | Small (0x24..0x48): likely the register count |
+| +0x54, +0x60 | Multiples of 0x1000 |
+| +0x64 | Compute shared memory size |
+| +0xA4 | `0x1000000`, constant |
+| +0xB1, +0xB2, +0xB3, +0xB6 | Compute bank counts: uniform buffers, storage buffers, textures, images (`NVN2_C0_LAYOUT` in `runtime/gfx_shader.c`) |
+
+The Ampere code starts right away, without NVN 1's `0x12345678` header, as 128-bit instructions (SM70 and later).
+Graphics stages begin with a version 4 SPH (32 words, 0x80 bytes, as in Mesa NAK `sph.rs`): word 0 bits 0-4 are the
+SPH type (1 VTG, 2 PS), bits 5-9 the version (4), bits 10-13 the shader type (1 vertex, 5 pixel). Compute stages have
+no SPH. The corpus holds 1,460 vertex, 1,138 pixel and 58 compute stages.
+
+`nvdisasm -b SM86 -raw` (CUDA toolkit 13.4.92) disassembles the code after the SPH cleanly. The sead vertex shader:
+`ALD.96 a[0x80]` / `ALD a[0xa0]`, two 4x4 matrices from `c[0x4]` and `c[0x3]` (`FMUL`/`FFMA`/`FADD .FTZ`),
+`AST.128 a[0x80]` (colour), `AST.128 a[0x70]` (position), `EXIT`. Attributes keep the classic layout (a[0x70] position,
+a[0x80] and up generic), so Ryujinx's Maxwell mapping applies.
+
+## From Ampere to SPIR-V
+
+`nvnProgramSetShaders` → `runtime/nvn2_lower.cpp` → Eglantine's Ampere-to-Maxwell lowering
+(`runtime/third_party/eglantine/`) → Maxwell code plus a synthetic NVN 1 control section → TotK Recomp's translator
+(`totk_xlate`, Ryujinx's shader translator with the patches in `tools/xlate/patches/`) → SPIR-V. Offline, the same path
+runs with `tools/dkb_lower_test.cpp` and `totk_xlate jobs.json`.
+
+Fixes on top of Eglantine are marked "DKB Recomp" in its files. The ones that mattered most:
+
+- closing the lowered program with a group of Maxwell `EXIT`s (855 `IndexOutOfRange` in the translator's decoder);
+- the self-branch end marker, which otherwise became `while (true)`;
+- bit 32 of `BRA` is the `.U` flag, not part of the offset (173 stages failed on branch alignment);
+- `ULDC.U8/S8/U16/S16`, `I2F.U16` from a uniform register, `I2F.U8` of any byte, `FRND` with a constant buffer
+  source, `S2R SR_THREAD_KILL`.
+
+Result: every stage of the first 3D scene lowers and translates (4,820 of 4,820). The translator side also clamps every
+shared and local memory index (patch 0013), because the game's neural upscaler reads shared memory out of bounds
+([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
+
+## Constant banks
+
+- **c0, driver bank.** Graphics stages use NVN 1's layout (vertex storage buffers at 0x110, pixel at 0x510). Compute
+  is packed per program from the control counts: a 0x10 head, one rectangle per image, the uniform buffer and storage
+  buffer tables, then texture and image handles.
+- **c1**: the inline constants after the code.
+- **c2**: combined texture handles at 0x20 + 8 × slot, as in NVN 1.
+- **c24**: read only by full-screen blit shaders (3 vertex, 2 pixel), at offsets 0x0 to 0xc. Maxwell has 18 banks, so
+  the lowering moves it to bank 17, and the host fills bank 17 with a blit block computed from the render area
+  (`runtime/vk_exec_draw.c`, the `slot == 17` branch; Eglantine's `BlitConstantsPass`). NVN 2 push constants are
+  written as Ampere root tables, one per stage, and bank 24 is the likely place shaders read them from; if so, the game
+  supplies these values itself. See [#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2).
+
+## Still to handle
+
+From Eglantine's `NX2_NOTES` and our runs: ASTC with the Switch 2 GOB swizzle (TotK Recomp's deswizzle is the Switch 1
+one), mesh and task shaders (`ISBEWR`/`ISBERD`), 8192×8192×68 ASTC virtual textures (sparse allocation), and `IPA`
+interpolation modes. The NVN 2 command buffer calls the host does not record yet are listed in
+[#6](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/6).

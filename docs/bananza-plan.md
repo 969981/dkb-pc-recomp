@@ -52,16 +52,31 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 - [x] Tutorial guide movies: `nn::codec` VP9 decoding on the host with libvpx (`runtime/ov_codec.c`).
 - [~] GPU fault about 2 s after the first guide movie, in about 6 of 10 runs. Cause: out-of-bounds shared memory
       access in the neural upscaler. Translator patch 0013 clamps shared and local memory indices. One run with
-      the patch passed the movie. A longer series is still to run.
+      the patch passed the movie. A longer series is still to run. [#9]
 - [ ] `nvnCommandBufferPush{Graphics,Compute}Constants`: the driver writes them as root tables
-      (`SET_ROOT_TABLE_SELECTOR` 0x504, then `LOAD_ROOT_TABLE` 0x508). It is not yet known which constant bank the
-      shaders read them from, so the host drops them. Commit 75d5e7b logs the first calls.
-- [ ] Colour grading: the 3D LUT comes out empty.
-- [ ] Some textures look blocky (checkerboard rocks): probably a format or deswizzle case.
+      (`SET_ROOT_TABLE_SELECTOR` 0x504, then `LOAD_ROOT_TABLE` 0x508), one per stage. The likely bank is 24, read
+      only by the full-screen blit shaders, where the host now guesses the values. Commit 75d5e7b logs the first
+      calls. [#2]
+- [ ] Colour grading: the 3D LUT comes out empty. [#4]
+- [ ] Some textures look blocky (checkerboard rocks): probably a format or deswizzle case. [#5]
+- [ ] Getting past the tutorial cave. [#7]
 - [ ] Saves: the save is created; saving and loading are not tested yet.
 - [ ] Performance: so far the game presents every third vsync (20 fps). Nobody has profiled it yet.
+- [ ] Testing on other GPUs. [#3]
 - [ ] Installer on TotK Recomp's model (`docs/installer.md`): extraction from the user's dump, generation and build
-      on their machine.
+      on their machine. [#8]
+
+Issues: [#2] [#3] [#4] [#5] [#7] [#8] [#9]; the whole list is the
+[roadmap](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10). The progress so far, by date:
+[devlog.md](devlog.md).
+
+[#2]: https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2
+[#3]: https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/3
+[#4]: https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/4
+[#5]: https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/5
+[#7]: https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/7
+[#8]: https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/8
+[#9]: https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9
 - **Milestone:** play from the start to the end of the first level without a crash.
 
 ## Later
