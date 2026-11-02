@@ -55,6 +55,9 @@ before committing; CI runs the same check.
 
 Bug reports use the issue forms. Include your GPU and driver, the log and the steps to reproduce.
 
+If you want to support the work without writing code, tips go to [ko-fi.com/lucasblippng](https://ko-fi.com/lucasblippng).
+A tip pays for time on the project; it buys no game files, builds or early access.
+
 ## Building from source
 
 The toolchain is TotK Recomp's ([docs/building.md](docs/building.md)): MSYS2 UCRT64 Clang, Ninja, Python 3.12 and the
