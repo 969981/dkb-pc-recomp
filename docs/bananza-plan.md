@@ -50,9 +50,10 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 
 - [x] Controller input in the menu and in gameplay (walking, punching).
 - [x] Tutorial guide movies: `nn::codec` VP9 decoding on the host with libvpx (`runtime/ov_codec.c`).
-- [ ] GPU fault (or a freeze) right after the first guide movie frame, in most runs. Translator patch 0013 (clamped
-      shared and local memory) did not stop it. The fault type, an invalid instruction pointer, points at shader
-      code freed while in use; being tested with synchronous pipeline builds. [#9]
+- [ ] GPU fault (an invalid instruction pointer; the freeze was the same fault, 86fb7cc) right after the first guide
+      movie frame. It is the first draw of one instanced light-quad vertex shader, and its fragment stage (one of the
+      123 that read a storage buffer at c0+0x530) does not matter. Its fragment code, its data and rasterisation are
+      ruled out; leaving out only the draw command passes. [#9]
 - [~] `nvnCommandBufferPush{Graphics,Compute}Constants`: recorded (33628c7). Graphics root table 0 is bank 24, read by
       the full-screen blits, which now get the pushed `{1/w, 1/h, w, h}`. Where compute shaders read their pushes
       is not known: no compute stage reads bank 24. [#2]
