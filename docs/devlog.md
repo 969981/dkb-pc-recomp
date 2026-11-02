@@ -5,6 +5,14 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 2 November 2026
 
+- **The freeze after the first guide movie is the same GPU fault.** A debugger on a frozen run found a game thread
+  spinning in `vk_upload_flush` (`runtime/vk_memory.c`): the device was already lost, `vkWaitForFences` returned at
+  once and the loop never checked it. The wait now reports the loss, and 4 of 4 runs end with the same device fault
+  (invalid instruction pointer) instead of a freeze. The fault itself is still open
+  ([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
+- **Eglantine is the default reference** for NVN 2, GPU and Switch 2 service bugs; `tools/fetch_refs.sh` fetches it.
+  Compared at this fault: it serves the movie through the `gsv` service, and at its default GPU accuracy it does not
+  copy GPU-written textures back on CPU reads, which we do.
 - **NVN 2 push constants recorded** (33628c7). A run confirmed the lead: the game pushes `{1/w, 1/h, w, h}` into
   graphics root table 0, exactly what its full-screen blit shaders read from bank 24, and the replay now binds those
   values instead of a guessed block. No compute shader reads bank 24, so where compute reads its pushes is still open
@@ -19,8 +27,9 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
   shaders read is bank 24, in the full-screen blit shaders. The lead is in
   [#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2).
 - **GPU fault after the first guide movie: first lead** (eaac181). The game's neural upscaler reads shared memory
-  with data-dependent indices, and padding shared memory to 48 KB gave 0 faults in 4 runs. Translator patch 0013
-  clamps every shared and local memory index; it turned out not to be enough (see above).
+  with data-dependent indices, and padding shared memory to 48 KB seemed to stop the fault, but those runs froze
+  instead, which the count missed (see above). Translator patch 0013 clamps every shared and local memory index; it
+  turned out not to be enough.
 
 ## 1 November 2026 (night)
 

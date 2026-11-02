@@ -1919,7 +1919,13 @@ uint64_t vk_upload_flush(int wait) {
     }
     if (c && wait) {
         while (ninflight && done_seq < seq) {
-            vkWaitForFences(c->device, 1, &inflight[0].fence, VK_TRUE, UINT64_MAX);
+            // A lost device returns at once and its fence never signals: without this check the loop spins forever
+            // (a guest thread at 100% of a core and an idle GPU, with no fault reported).
+            VkResult w = vkWaitForFences(c->device, 1, &inflight[0].fence, VK_TRUE, UINT64_MAX);
+            if (w != VK_SUCCESS && w != VK_TIMEOUT) {
+                vk_device_fault_report(w);
+                rt_fatal("vk: upload wait failed (%d)", (int)w);
+            }
             retire(c, 0);
         }
     }
