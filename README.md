@@ -58,7 +58,10 @@ The longer version is in [docs/architecture.md](docs/architecture.md) (shared wi
 ## How to help
 
 Each open problem is a separate, well-bounded job with its own issue. Pick one, say in the issue that you are on it,
-and keep each pull request to one topic.
+and keep each pull request to one topic. Issues labelled
+[`in progress`](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aopen+label%3A%22in+progress%22) are
+already taken, and the top of the [roadmap](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10) says what is
+being worked on right now.
 
 **No code needed**, only your PC and your own copy of the game:
 

@@ -5,7 +5,7 @@
 - [Roadmap to playable](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10) lists what is done and what is open.
 - Issues labelled [good first issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aopen+label%3A%22good+first+issue%22) need no code: testing on your GPU and playing further.
 - Issues labelled [help wanted](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aopen+label%3A%22help+wanted%22) each name the files to start from.
-- Say in the issue that you are working on it, so two people do not do the same job.
+- Say in the issue that you are working on it, before you start, so two people do not do the same job. A maintainer then assigns it to you and adds the `in progress` label. Issues that already carry that label are taken: ask in the issue first. The top of the [roadmap](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10) lists what is being worked on now.
 - Questions go to [Discussions](https://github.com/Lucas-blip-png/dkb-pc-recomp/discussions).
 - [docs/architecture.md](docs/architecture.md) explains how the pieces fit, [docs/bananza-plan.md](docs/bananza-plan.md) has the plan and [docs/bananza-shaders.md](docs/bananza-shaders.md) the shader work.
 
