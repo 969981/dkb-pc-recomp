@@ -102,9 +102,22 @@ NVN2_NOT_RECORDED(nvnCommandBufferPushDebugGroupCompute)
 NVN2_NOT_RECORDED(nvnCommandBufferPushDebugGroupGraphics)
 NVN2_NOT_RECORDED(nvnCommandBufferPopDebugGroupCompute)
 NVN2_NOT_RECORDED(nvnCommandBufferPopDebugGroupGraphics)
-NVN2_NOT_RECORDED(nvnCommandBufferPushComputeConstants)
+// void nvnCommandBufferPush{Graphics,Compute}Constants(NVNcommandBuffer *, int stage, int offset, int bytes,
+// const void *data): the driver writes them as root tables (SET_ROOT_TABLE_SELECTOR 0x504 with stage | offset << 8,
+// then LOAD_ROOT_TABLE 0x508, up to 64 words). Not recorded yet: the first calls are logged with their data, to find
+// which constant bank the shaders read them from.
+static void push_log(Cpu *c, const char *kind) {
+    static volatile int32_t n;
+    if (__atomic_fetch_add(&n, 1, __ATOMIC_RELAXED) >= 24) return;
+    const uint32_t *d = arg_p(c, 4);
+    uint32_t bytes = (uint32_t)arg_x(c, 3);
+    rt_log("nvn2: Push%sConstants stage %d offset %#x bytes %#x: %08x %08x %08x %08x", kind, (int)arg_x(c, 1),
+           (unsigned)arg_x(c, 2), bytes, d && bytes > 0 ? d[0] : 0, d && bytes > 4 ? d[1] : 0, d && bytes > 8 ? d[2] : 0,
+           d && bytes > 12 ? d[3] : 0);
+}
+NVN_API(nvnCommandBufferPushComputeConstants) { push_log(c, "Compute"); }
+NVN_API(nvnCommandBufferPushGraphicsConstants) { push_log(c, "Graphics"); }
 NVN2_NOT_RECORDED(nvnCommandBufferPushComputeConstantsDeferred)
-NVN2_NOT_RECORDED(nvnCommandBufferPushGraphicsConstants)
 NVN2_NOT_RECORDED(nvnCommandBufferPushGraphicsConstantsDeferred)
 NVN2_NOT_RECORDED(nvnCommandBufferSetComputeEnable)
 NVN2_NOT_RECORDED(nvnCommandBufferSetComputeEnableConditional)
