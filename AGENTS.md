@@ -30,6 +30,7 @@ This repository is public. Game data lives outside it and every derived file sta
 - Every lifter change passes the differential tests against Unicorn ([docs/building.md](docs/building.md), "Checks"). After changing `recomp/jumptables.py`, `tests\jumptables_check.py` reports 0 disagreements on 1.2.1 and 1.4.3.
 - `recomp/layout.py` alone decides module bases.
 - Graphics bugs: [docs/maxwell.md](docs/maxwell.md) lists the Maxwell behaviour the Vulkan path must match and the TotK bugs other ports fixed.
+- Bananza bugs (NVN 2, the GPU, Switch 2 services such as `nn::codec`): first read how `refs/eglantine` handles the same point. That emulator plays the game, so it is the default reference. Where it departs from the hardware on purpose (Eden's default GPU accuracy skips texture downloads on CPU reads, `RasterizerVulkan::MustFlushRegion`), say so instead of copying the shortcut.
 - Comments say what the code does and why, in words that stand on their own. Cite our code by file plus function (a line number may follow as a hint) and upstream code by project, file and function: `refs/` moves, so its line numbers rot. Commit hashes belong to the attribution of copied code.
 
 ## Writing
