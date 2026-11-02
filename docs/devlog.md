@@ -5,15 +5,22 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 2 November 2026
 
+- **NVN 2 push constants recorded** (33628c7). A run confirmed the lead: the game pushes `{1/w, 1/h, w, h}` into
+  graphics root table 0, exactly what its full-screen blit shaders read from bank 24, and the replay now binds those
+  values instead of a guessed block. No compute shader reads bank 24, so where compute reads its pushes is still open
+  ([#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2)).
+- **The GPU fault after the first guide movie is not solved.** Translator patch 0013 alone did not stop it; with push
+  constants in place, one run of two faulted and the other froze, both right after the first movie frame. The fault
+  type (invalid instruction pointer) now points at shader code that goes away while the GPU still runs it; runs with
+  synchronous pipeline builds test that ([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
 - **The repository opens for contributors**: roadmap issue, one issue per open task, a tester guide
   ([dkb-testing.md](dkb-testing.md)) and issue forms for Bananza.
 - **Push constants located.** NVN 2 writes them as Ampere root tables, and the only constant bank above 17 the game's
   shaders read is bank 24, in the full-screen blit shaders. The lead is in
   [#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2).
-- **GPU fault after the first guide movie: cause found** (eaac181). The game's neural upscaler reads shared memory out
-  of bounds with data-dependent indices; the console tolerates it, a PC GPU faults about 6 runs in 10. Translator patch
-  0013 clamps every shared and local memory index. Validation runs are in
-  [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9).
+- **GPU fault after the first guide movie: first lead** (eaac181). The game's neural upscaler reads shared memory
+  with data-dependent indices, and padding shared memory to 48 KB gave 0 faults in 4 runs. Translator patch 0013
+  clamps every shared and local memory index; it turned out not to be enough (see above).
 
 ## 1 November 2026 (night)
 

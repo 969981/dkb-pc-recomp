@@ -50,13 +50,12 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 
 - [x] Controller input in the menu and in gameplay (walking, punching).
 - [x] Tutorial guide movies: `nn::codec` VP9 decoding on the host with libvpx (`runtime/ov_codec.c`).
-- [~] GPU fault about 2 s after the first guide movie, in about 6 of 10 runs. Cause: out-of-bounds shared memory
-      access in the neural upscaler. Translator patch 0013 clamps shared and local memory indices. One run with
-      the patch passed the movie. A longer series is still to run. [#9]
-- [ ] `nvnCommandBufferPush{Graphics,Compute}Constants`: the driver writes them as root tables
-      (`SET_ROOT_TABLE_SELECTOR` 0x504, then `LOAD_ROOT_TABLE` 0x508), one per stage. The likely bank is 24, read
-      only by the full-screen blit shaders, where the host now guesses the values. Commit 75d5e7b logs the first
-      calls. [#2]
+- [ ] GPU fault (or a freeze) right after the first guide movie frame, in most runs. Translator patch 0013 (clamped
+      shared and local memory) did not stop it. The fault type, an invalid instruction pointer, points at shader
+      code freed while in use; being tested with synchronous pipeline builds. [#9]
+- [~] `nvnCommandBufferPush{Graphics,Compute}Constants`: recorded (33628c7). Graphics root table 0 is bank 24, read by
+      the full-screen blits, which now get the pushed `{1/w, 1/h, w, h}`. Where compute shaders read their pushes
+      is not known: no compute stage reads bank 24. [#2]
 - [ ] Colour grading: the 3D LUT comes out empty. [#4]
 - [ ] Some textures look blocky (checkerboard rocks): probably a format or deswizzle case. [#5]
 - [ ] Getting past the tutorial cave. [#7]

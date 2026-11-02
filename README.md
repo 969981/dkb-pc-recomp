@@ -33,7 +33,7 @@ There is no release and no installer. Progress, day by day: [docs/devlog.md](doc
 | F2 NVN 2 | ✅ | 700 NVN 2 entry points answered; the game loop runs. 51 new command buffer calls (mesh shaders, VRS, DLSS, push constants…) are accepted but not recorded yet. |
 | F3 Shaders | ✅ | All 4,820 Ampere shader stages of the first 3D scene go through Eglantine's Ampere-to-Maxwell lowering and TotK Recomp's translator to SPIR-V. |
 | F4 Vulkan | ✅ | The title screen and the tutorial's 3D scene render. |
-| F5 Playable | 🚧 | Controller and guide movies (VP9) work. Open: a GPU fault after the first movie (fix being validated), push constants, colour grading, some textures, saves, performance, installer. |
+| F5 Playable | 🚧 | Controller, guide movies (VP9) and graphics push constants work. Open: a GPU fault or freeze right after the first movie frame, compute push constants, colour grading, some textures, saves, performance, installer. |
 
 The plan, phase by phase: [docs/bananza-plan.md](docs/bananza-plan.md). What is open right now:
 [Roadmap to playable](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
@@ -65,13 +65,13 @@ and keep each pull request to one topic.
 - [#3](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/3) **Test on your GPU.** Everything so far was checked
   on one NVIDIA card. Runs on AMD, Intel and other NVIDIA cards, with logs, show what breaks there.
 - [#7](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/7) **Play past the tutorial** and report where it stops.
-- [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9) **Validate the GPU fault fix** with a few runs past
-  the first guide movie.
+- [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9) **The GPU fault after the first guide movie**: runs
+  on other GPUs show whether it is ours or one driver's.
 
 **Code** ([help wanted](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aopen+label%3A%22help+wanted%22)):
 
-- [#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2) **NVN 2 push constants**: likely bank 24 of each
-  stage; record them in the Vulkan replay.
+- [#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2) **NVN 2 compute push constants**: graphics ones are
+  done (bank 24); find where compute shaders read theirs.
 - [#4](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/4) **Colour grading 3D LUT** comes out empty.
 - [#5](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/5) **Checkerboard textures** on some rock surfaces.
 - [#6](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/6) **NVN 2 calls not recorded yet**: mesh shaders, VRS,
