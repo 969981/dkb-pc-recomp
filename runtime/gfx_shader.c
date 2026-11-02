@@ -45,6 +45,21 @@
 #include "platform/platform.h"
 
 #define CONTROL_SIZE 0x880
+// NVN 2 compute driver bank c0, packed per program from counts in the NVN 2 control (images +0xb6, uniform buffers
+// +0xb1, storage buffers +0xb2, textures +0xb3): 0x10 bytes, then per image a 16-byte rectangle {x offset, y offset,
+// x max, y max} (the code adds the offsets to its store coordinates and clamps them to the maxima), the uniform and
+// then the storage buffers as {u64 address, u32 size} every 16 bytes, the texture handles and then the image handles,
+// 8 bytes each. Read from Bananza's compute code; the total size the control gives at +0xba matches it for every
+// layout of its first 3D scene. nvn2_lower.cpp stores the counts here as "DKC0" + 4 bytes, the translator job
+// carries them as "c0" and the translator echoes them in the reflection.
+#define NVN2_C0_LAYOUT 0x860
+
+// Shared memory bytes of a lowered NVN 2 compute stage (nvn2_lower.cpp, after the bank counts), 0 otherwise.
+static uint32_t nvn2_shared(const uint8_t *control) {
+    uint32_t n = 0;
+    if (!memcmp(control + NVN2_C0_LAYOUT, "DKC0", 4)) memcpy(&n, control + NVN2_C0_LAYOUT + 8, 4);
+    return n;
+}
 #define CODE_SKIP 0x30                                     // graphics code starts after the first 0x30 bytes of the program
 #define BUCKETS 4096
 #define LINE_MAX_LEN 4096
@@ -86,6 +101,8 @@ struct GfxShader {
     uint32_t in_mask, out_mask;                            // user Locations of Input / Output variables
     GfxShaderIo in[32], out[32];
     uint32_t local[3];
+    uint8_t c0[4];                                         // NVN 2 compute bank counts (NVN2_C0_LAYOUT), when has_c0
+    int has_c0;
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -676,6 +693,16 @@ static int handle_slot(int kind, int cbuf_slot, int handle, int separate) {
     return bytes >= 0x20 && bytes < 0x120 ? (bytes - 0x20) / 8 : -1;
 }
 
+// Byte offset of part k of an NVN 2 compute bank (NVN2_C0_LAYOUT): 0 image rectangles, 1 uniform buffers, 2 storage
+// buffers, 3 texture handles, 4 image handles.
+static int c0_part(const uint8_t c0[4], int k) {
+    static const int size[4] = {16, 16, 16, 8};
+    const int count[4] = {c0[0], c0[1], c0[2], c0[3]};
+    int at = 0x10;
+    for (int i = 0; i < k; i++) at += size[i] * count[i];
+    return at;
+}
+
 static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
     GfxShaderRes *r = &s->res[kind][s->nres[kind]++];
     r->set = 0;
@@ -687,6 +714,12 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
             r->cbuf_slot = (int8_t)json_int(o, e, "cb_slot", -1);
             r->handle = (uint16_t)json_int(o, e, "cb_offset", 0);
             r->flags = (uint8_t)json_int(o, e, "flags", 0);
+            // NVN 2 compute: the address's place in the packed bank, as the NVN 1 compute offset of the same buffer
+            // (uniform buffer u at 0x210 + 16u, storage buffer k at 0x310 + 16k), which is what vk_exec_draw.c's
+            // ssbo_slot reads. vk_c0_fill puts the addresses at the packed offsets the shader reads.
+            int off = r->handle * 4, ub = c0_part(s->c0, 1), sb = c0_part(s->c0, 2), end = c0_part(s->c0, 3);
+            if (s->has_c0 && r->cbuf_slot == 0 && off >= ub && off < end && (off - ub) % 16 == 0)
+                r->handle = (uint16_t)((off < sb ? 0x210 + (off - ub) : 0x310 + (off - sb)) / 4);
         }
         return;
     }
@@ -702,6 +735,11 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
     r->count = (uint16_t)json_int(o, e, "array", 1);
     r->separate = sep && *sep == 't';
     r->slot = (int16_t)handle_slot(kind, r->cbuf_slot, handle, r->separate);
+    if (s->has_c0 && (r->cbuf_slot <= 0 || r->cbuf_slot == 2)) {   // NVN 2 compute: packed-bank handles, 8 bytes each
+        int bytes = (handle & 0x3fff) * 4, at = c0_part(s->c0, kind == GFX_RES_IMG ? 4 : 3);
+        int n = kind == GFX_RES_IMG ? s->c0[0] : s->c0[3];
+        r->slot = (int16_t)(bytes >= at && bytes < at + 8 * n && (bytes - at) % 8 == 0 ? (bytes - at) / 8 : -1);
+    }
 }
 
 // SPIR-V opcodes and enumerants used below (SPIR-V 1.6 specification, section 3).
@@ -764,6 +802,12 @@ static void reflect(GfxShader *s) {
     char stage[8];
     json_str(js, js + strlen(js), "stage", stage, sizeof stage);
     s->stage = !strcmp(stage, "cs") ? GFX_STAGE_CS : !strcmp(stage, "ps") ? GFX_STAGE_FS : GFX_STAGE_VS;
+    const char *c0 = json_key(js, js + strlen(js), "c0");   // NVN 2 compute bank counts, echoed by the translator
+    if (c0 && *c0 == '[') {
+        char *q = (char *)c0 + 1;
+        for (int i = 0; i < 4; i++, q += *q == ',') s->c0[i] = (uint8_t)strtoul(q, &q, 10);
+        s->has_c0 = 1;
+    }
     for (int k = 0; k < GFX_RES_KINDS; k++) {
         int count = json_objects(js, kinds[k], NULL, s, k);
         s->res[k] = calloc(count ? count : 1, sizeof *s->res[k]);
@@ -1071,13 +1115,16 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
         o += sprintf(o, "},\"fout\":{");
         for (int i = 0; i < 8; i++)
             if (a->frag_out_type[i]) o += sprintf(o, "%s\"%d\":\"%s\"", sep, i, attr_name(a->frag_out_type[i])), sep = ",";
-        o += sprintf(o, "},\"shared\":%u", a->shared_bytes);
+        o += sprintf(o, "},\"shared\":%u", a->shared_bytes ? a->shared_bytes : nvn2_shared(control));
     }
+    if (!a && nvn2_shared(control)) o += sprintf(o, ",\"shared\":%u", nvn2_shared(control));
     if (!strcmp(stage, "cs")) {
         uint32_t l[3] = {1, 1, 1};
         if (a && (a->local[0] | a->local[1] | a->local[2])) l[0] = a->local[0], l[1] = a->local[1], l[2] = a->local[2];
         else memcpy(l, control + 0x748, 12);
         o += sprintf(o, ",\"local\":[%u,%u,%u]", l[0], l[1], l[2]);
+        const uint8_t *lay = control + NVN2_C0_LAYOUT;
+        if (!memcmp(lay, "DKC0", 4)) o += sprintf(o, ",\"c0\":[%u,%u,%u,%u]", lay[4], lay[5], lay[6], lay[7]);
     }
     /* Control byte +0x718 of a fragment shader: early fragment tests (the NVN driver's early-Z-force, MacNativeGames
        ae8f4f4). Without it a shader that stores to memory is depth-tested late, and the G-buffer draws' EQUAL test
@@ -1712,6 +1759,8 @@ int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res)
     if (res) *res = s->res[kind];
     return s->nres[kind];
 }
+
+const uint8_t *gfx_shader_c0_layout(const GfxShader *s) { return s && s->has_c0 ? s->c0 : NULL; }
 
 // The slots of the use mask: answers outside it select the same translation (mask_answers), so a caller may leave
 // their texture and image types zero. Parses the reflection: callers keep the result.

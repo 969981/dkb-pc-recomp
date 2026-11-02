@@ -50,6 +50,16 @@ static class SwshXlate
         {
             (int off0, _, _) = TextureHandle.UnpackOffsets(handle);
             int bytes = off0 * 4;
+            // "c0": [images, uniform buffers, storage buffers, textures] of an NVN 2 compute bank (the host's gfx_shader.c,
+            // NVN2_C0_LAYOUT): texture handles after 0x10 + 16 bytes per image, uniform and storage buffer, then the
+            // image handles, 8 bytes each. Textures answer with their slot, images with theirs.
+            if (_job["c0"] is JsonArray c && c.Count == 4)
+            {
+                int tex = 0x10 + 16 * ((int)c[0] + (int)c[1] + (int)c[2]), img = tex + 8 * (int)c[3];
+                if (bytes >= tex && bytes < img && (bytes - tex) % 8 == 0) return (bytes - tex) / 8;
+                if (bytes >= img && bytes < img + 8 * (int)c[0] && (bytes - img) % 8 == 0) return (bytes - img) / 8;
+                return -1;
+            }
             return (cbufSlot < 0 || (cbufSlot & 0xffff) == 2) && bytes >= TexBase && bytes < SampBase && (bytes - TexBase) % 8 == 0 ? (bytes - TexBase) / 8 : -1;
         }
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1)
@@ -146,6 +156,7 @@ static class SwshXlate
                 foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
                 foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })
                     foreach (var t in list) res[name].AsArray().Add((JsonNode)new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
+                if (job["c0"] is JsonNode c0) res["c0"] = c0.DeepClone();   // NVN 2 compute bank counts, for the host
                 File.WriteAllText(Path.Combine(outDir, key + ".res.json"), res.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
                 return null;
             }

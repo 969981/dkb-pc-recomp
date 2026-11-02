@@ -30,7 +30,10 @@
 #include "platform/platform.h"
 
 #define MAX_BINDINGS 128
-#define NVN2_C0 (!rt_game_version)   // Bananza (no TotK build): NVN 2 driver banks (vk_c0_fill)
+// NVN 2 compute bank counts of the program being dispatched (gfx_shader_c0_layout), NULL for an NVN 1 layout: read by
+// vk_c0_fill, set by the dispatch ops around bind_resources like c0_dim.
+static const uint8_t *c0_lay;
+static uint32_t c0_imax[8][2];   // its image rectangles: the last x and y of compute image slot i (c0_lay_set)
 #define MAX_DESC 1024
 #define CHUNK_BYTES (4u << 20)
 #define ZERO_BYTES 65536u
@@ -39,6 +42,18 @@
 #define NVN_STAGE_FS 1
 #define NVN_STAGE_CS 5
 #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
+
+static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
+    c0_lay = gfx_shader_c0_layout(cs);
+    memset(c0_imax, 0, sizeof c0_imax);
+    for (int i = 0; c0_lay && i < c0_lay[0] && i < 8; i++) {
+        uint64_t h = ex->img[NVN_STAGE_CS][i];
+        const VkTexImage *t = h ? vk_texture_by_id((int)(h & 0xfffff), NULL, NULL) : NULL;
+        // No image in the slot: no clamp. The upscaler's texel fetch clamps with rectangle 0 while only image 1 is
+        // bound, and a zero maximum read texel (0, 0) for every pixel.
+        c0_imax[i][0] = t ? t->width - 1 : 0x7fffffff, c0_imax[i][1] = t ? t->height - 1 : 0x7fffffff;
+    }
+}
 
 enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
 
@@ -114,7 +129,7 @@ static struct {
     VkBuffer c0_buf[3];
     VkDeviceSize c0_off[3];
     int c0_valid[3];
-    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; } c0_in[3];   // what vk_c0_fill read for c0[k]
+    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; uint8_t lay[5]; uint32_t imax[8][2]; } c0_in[3];   // what vk_c0_fill read for c0[k]
     VkPipelineLayout ds_layout;          // graphics layout the sets below were last pushed or bound with
     VkDescriptorSet ds_bound[2];         // allocated set bound per set number (0: none or pushed since)
     VkDescriptorSet ds_last[2];          // last allocated and written set per set number, contents in DS
@@ -818,15 +833,21 @@ static void c0_table(uint8_t *at, const p_bind_buf b[16]) {
 void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16], const p_bind_buf ubo[16],
                 const uint32_t dispatch[3], uint32_t base_instance) {
     memset(bank, 0, VK_C0_BYTES);
-    if (stage == NVN_STAGE_CS && NVN2_C0) {
-        // NVN 2 compute: {u64 address, u32 size} every 16 bytes from 0x60, the 14 uniform buffers first and the storage
-        // buffers after them (0x140). Read from Bananza's compute code: entries 4-6 go unread where the code reads c7
-        // (uniform buffer 4) directly, and its atomic counters are the last storage buffers. The driver's compute
-        // binds (sdk BindStorageBuffer / BindUniformBuffer, stage 5) write a driver table at dword 0x248 + 3i and
-        // 0x360 + 3i that the dispatch turns into this bank. The dispatch size is not placed yet.
-        // ponytail: uniform buffers 14-15 are not in the table (the 0x60 table holds 14); add them if a bind shows up
-        c0_table(bank + 0x60, ubo);
-        c0_table(bank + 0x140, ssbo);
+    if (stage == NVN_STAGE_CS && c0_lay) {
+        // NVN 2 compute: the bank packed for the dispatched program (gfx_shader.c NVN2_C0_LAYOUT). Image rectangles
+        // with no offset and the bound image's last x and y; the buffer tables; handles stay zero (bound by slot).
+        // ponytail: the 0x10-byte head is left zero (not seen read yet)
+        int at = 0x10;
+        for (int i = 0; i < c0_lay[0]; i++, at += 16) {
+            const uint32_t rect[4] = {0, 0, i < 8 ? c0_imax[i][0] : 0x7fffffff, i < 8 ? c0_imax[i][1] : 0x7fffffff};
+            memcpy(bank + at, rect, 16);
+        }
+        for (int k = 0; k < 2; k++)
+            for (int i = 0; i < c0_lay[1 + k] && i < 16 && at + 16 <= VK_C0_BYTES; i++, at += 16) {
+                const p_bind_buf *b = k ? &ssbo[i] : &ubo[i];
+                uint32_t n = (uint32_t)b->size;
+                memcpy(bank + at, &b->addr, 8), memcpy(bank + at + 8, &n, 4);
+            }
         return;
     }
     int base =stage == NVN_STAGE_VS ? 0x110 : stage == NVN_STAGE_FS ? 0x510 : stage == NVN_STAGE_CS ? 0x310 : -1;
@@ -860,6 +881,7 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     memcpy(in.ssbo, ex->ssbo[st], sizeof in.ssbo);
     if (st == NVN_STAGE_CS) memcpy(in.ubo, ex->ubo[st], sizeof in.ubo), memcpy(in.dim, c0_dim, sizeof in.dim);
     else in.binst = c0_binst;
+    if (st == NVN_STAGE_CS && c0_lay) memcpy(in.lay, c0_lay, 4), in.lay[4] = 1, memcpy(in.imax, c0_imax, sizeof in.imax);
     if (B.c0_valid[k] && !memcmp(&in, &B.c0_in[k], sizeof in))
         return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
     B.c0_in[k] = in;
@@ -938,11 +960,6 @@ static int ssbo_slot(const GfxShaderRes *r, int st, int *ubo) {
     *ubo = 0;
     if (r->cbuf_slot != 0) return -1;
     int off = r->handle * 4, base = st == NVN_STAGE_VS ? 0x110 : st == NVN_STAGE_FS ? 0x510 : st == NVN_STAGE_CS ? 0x310 : -1;
-    if (st == NVN_STAGE_CS && NVN2_C0) {   // vk_c0_fill: uniform buffers 0-13 from 0x60, storage buffers from 0x140
-        if (off < 0x60 || off % 16) return -1;
-        if (off < 0x140) return *ubo = 1, (off - 0x60) / 16;
-        return off < 0x140 + 0x100 ? (off - 0x140) / 16 : -1;
-    }
     if (st == NVN_STAGE_CS && off >= 0x210 && off < 0x310 && (off - 0x210) % 16 == 0) {
         *ubo = 1;
         return (off - 0x210) / 16;
@@ -2324,6 +2341,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     vk_exec_barrier(ex);   // ends the pass; earlier writes are visible to the shader
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     c0_dim[0] = (uint32_t)d->x, c0_dim[1] = (uint32_t)d->y, c0_dim[2] = (uint32_t)d->z;
+    c0_lay_set(ex, cs);
     twin_dispatch = 1;
     bind_resources(ex, info);
     twin_dispatch = 0;
@@ -2351,6 +2369,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     VK_MEM_USE(ip);
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     c0_dim[0] = c0_dim[1] = c0_dim[2] = 0;
+    c0_lay_set(ex, cs);
     B.c0_valid[2] = 0;   // a fresh c0 range: the copy below must not change one an earlier dispatch reads
     twin_dispatch = 1;
     bind_resources(ex, info);

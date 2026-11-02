@@ -329,8 +329,11 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     int ds = f.depth || f.stencil;
     if (ds && (ff & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     if (!ds && (ff & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && samples == 1)
-        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    // Storage usage for every single-sample colour texture whose format allows it, not only those created with
+    // NVN_TEXTURE_FLAGS_IMAGE: NVN 2 binds textures made without the flag as images (Bananza's upscaler writes its
+    // 2880x1620 r11g11b10f output, flags 0), and an image without the usage got a stand-in, so the frame stayed the
+    // clear colour. Vulkan cannot add the usage later.
+    if (!ds && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && samples == 1) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     VkImageCreateFlags flags = ds ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // format-reinterpreting views
     // Cube compatible only for cube targets: the replay makes cube views of nothing else (vk_exec_draw.c get_view checks
     // the image's own view type). The flag on every square array of 6+ layers changed how AMD's Windows driver lays such
