@@ -1,5 +1,9 @@
 # Installer
 
+> [!NOTE]
+> This page comes from TotK Recomp and describes its installer for *Tears of the Kingdom*. DKB Recomp has no installer
+> yet: bringing this one to Bananza is [#8](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/8).
+
 A public release that turns the player's own game files into a playable TotK folder. The release carries no game
 data and no code derived from the game: the installer builds the game on the player's machine. The installed folder
 holds only the game; the installer and its tools stay outside it.

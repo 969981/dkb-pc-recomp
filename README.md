@@ -1,62 +1,103 @@
 # DKB Recomp
 
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+[![Content guard](https://github.com/Lucas-blip-png/dkb-pc-recomp/actions/workflows/content-guard.yml/badge.svg?branch=bananza)](https://github.com/Lucas-blip-png/dkb-pc-recomp/actions/workflows/content-guard.yml)
+[![Stars](https://img.shields.io/github/stars/Lucas-blip-png/dkb-pc-recomp?style=flat)](https://github.com/Lucas-blip-png/dkb-pc-recomp/stargazers)
+[![Help wanted](https://img.shields.io/github/issues/Lucas-blip-png/dkb-pc-recomp/help%20wanted?label=help%20wanted)](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aopen+label%3A%22help+wanted%22)
+[![Discussions](https://img.shields.io/github/discussions/Lucas-blip-png/dkb-pc-recomp)](https://github.com/Lucas-blip-png/dkb-pc-recomp/discussions)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support%20the%20work-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/lucasblippng)
+
 **DKB Recomp** is a static recompilation of *Donkey Kong Bananza* (Nintendo Switch 2, 2025) into a native Windows
-x86-64 application with a Vulkan renderer. It is built on [TotK Recomp](https://github.com/valentderah/totk-pc-recomp),
-which does the same for *Tears of the Kingdom* on the original Switch.
+x86-64 application with a Vulkan renderer. There is no emulator at run time: the game's ARM64 code is translated to C
+ahead of time and compiled into one executable, and its graphics calls are answered by a host implementation of
+NVN 2. It is built on [TotK Recomp](https://github.com/valentderah/totk-pc-recomp), which does the same for *Tears of
+the Kingdom* on the original Switch.
+
+As far as we know, no other static recompilation of a Switch 2 game is public.
 
 > [!IMPORTANT]
 > **No game files are included, and none ever will be.** You need your own copy of *Donkey Kong Bananza*, dumped
-> from your own console. Instructions for obtaining those files will not be provided.
+> from your own console. Instructions for obtaining those files will not be provided. There are no downloadable
+> builds: everyone builds from their own dump.
 
 ## Status
 
 **Not playable yet.** The game boots, goes through the title screen into the tutorial cave, renders the 3D scene and
 answers the controller: punching opens the first guide movie. It still crashes often, and many effects are missing.
-There is no release and no installer.
+There is no release and no installer. Progress, day by day: [docs/devlog.md](docs/devlog.md).
 
-| Part | State |
-| --- | --- |
-| CPU (ARM64 → C) | Done for base 1.0.0. `main` and `sdk` lift with no unsupported instruction (ARMv8.3 pointer authentication and `LDAPR` added). Differential tests against Unicorn pass. |
-| OS (Horizon on Switch 2) | Boots, mounts the RomFS, creates the save, plays audio and reads the controller, all on TotK Recomp's host with the Switch 2 differences added. |
-| Graphics (NVN 2) | The title screen and the tutorial's 3D scene render on Vulkan. 51 NVN 2 command buffer calls (mesh shaders, VRS, DLSS, push constants…) are accepted but not recorded yet. |
-| Shaders (Ampere) | Every stage of the first 3D scene (4,820) goes through Eglantine's Ampere-to-Maxwell lowering and TotK Recomp's translator to SPIR-V. |
-| Movies | The tutorial guide movies (VP9) decode on the host with libvpx. |
-| Known crash | A GPU fault about 2 s after the first guide movie (an out-of-bounds shared memory access in the neural upscaler). Fixed in the translator, still being validated. |
-| Not done | Push constants, colour grading LUT, blocky textures on some surfaces, saving and loading, performance, installer, update 458752. |
+| Phase | | State |
+| --- | --- | --- |
+| F0 CPU | ✅ | `main` and `sdk` (180,061 functions) lift with no unsupported instruction (ARMv8.3 pointer authentication and `LDAPR` added). Differential tests against Unicorn pass. |
+| F1 OS | ✅ | Boots on TotK Recomp's Horizon host with the Switch 2 differences: RomFS, save, audio, controller. |
+| F2 NVN 2 | ✅ | 700 NVN 2 entry points answered; the game loop runs. 51 new command buffer calls (mesh shaders, VRS, DLSS, push constants…) are accepted but not recorded yet. |
+| F3 Shaders | ✅ | All 4,820 Ampere shader stages of the first 3D scene go through Eglantine's Ampere-to-Maxwell lowering and TotK Recomp's translator to SPIR-V. |
+| F4 Vulkan | ✅ | The title screen and the tutorial's 3D scene render. |
+| F5 Playable | 🚧 | Controller and guide movies (VP9) work. Open: a GPU fault after the first movie (fix being validated), push constants, colour grading, some textures, saves, performance, installer. |
 
-The full plan, phase by phase: [docs/bananza-plan.md](docs/bananza-plan.md). Shader notes:
-[docs/bananza-shaders.md](docs/bananza-shaders.md). The design TotK Recomp and this port share:
-[docs/architecture.md](docs/architecture.md).
+The plan, phase by phase: [docs/bananza-plan.md](docs/bananza-plan.md). What is open right now:
+[Roadmap to playable](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph offline["At build time, on your PC"]
+        exefs["Your dump: main + sdk<br/>(ARM64)"] --> lifter["Lifter<br/>recomp/"] --> c["C code"] --> clang["Clang"] --> exe["dkb.exe"]
+    end
+    subgraph runtime["At run time"]
+        exe --> host["Horizon host<br/>threads, files, audio, input"]
+        exe --> nvn["NVN 2 front end<br/>runtime/nvn_*"] --> vk["Vulkan back end"]
+        sass["Ampere shaders"] --> lower["Eglantine lowering<br/>Ampere → Maxwell"] --> xlate["Translator<br/>tools/xlate"] --> spirv["SPIR-V"] --> vk
+    end
+```
+
+The longer version is in [docs/architecture.md](docs/architecture.md) (shared with TotK Recomp) and
+[docs/bananza-shaders.md](docs/bananza-shaders.md) (the NVN 2 shader work).
 
 ## How to help
 
-The project is at the point where each problem is a separate, well-bounded job. Pick one, say in an issue that you are
-on it, and keep each pull request to one topic. These are open now:
+Each open problem is a separate, well-bounded job with its own issue. Pick one, say in the issue that you are on it,
+and keep each pull request to one topic.
 
-- **NVN 2 push constants.** `nvnCommandBufferPush{Graphics,Compute}Constants` are written by the driver as GPU root
-  tables (methods 0x504 and 0x508). Find which constant bank the shaders read them from, then record them in the
-  Vulkan replay. Start at `runtime/nvn_api_nvn2.c`.
-- **Testing on other GPUs.** Everything so far was checked on one NVIDIA card. Runs on AMD and Intel, with logs, show
-  what breaks there. [docs/tester-guide.md](docs/tester-guide.md) has the switches.
-- **Rendering bugs.** The colour grading 3D LUT comes out empty, and some rock surfaces look like a checkerboard (a
-  texture format or deswizzle case). [docs/maxwell.md](docs/maxwell.md) lists the GPU behaviour the Vulkan path must
-  match.
-- **NVN 2 calls not recorded yet.** Each is logged on its first use (`NVN2_NOT_RECORDED` in
-  `runtime/nvn_api_nvn2.c`). If a scene needs one, that scene tells you which.
-- **Getting further into the game.** Play past the tutorial, find the next crash or hang, and report or fix it.
-- **Installer.** Bring TotK Recomp's installer ([docs/installer.md](docs/installer.md)) to Bananza: extract the user's
-  dump, generate and build on their machine.
-- **Symbols.** Function names help debugging. They come from [GRAnimated/DKBananza](https://github.com/GRAnimated/DKBananza),
-  which welcomes contributions too.
+**No code needed**, only your PC and your own copy of the game:
+
+- [#3](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/3) **Test on your GPU.** Everything so far was checked
+  on one NVIDIA card. Runs on AMD, Intel and other NVIDIA cards, with logs, show what breaks there.
+- [#7](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/7) **Play past the tutorial** and report where it stops.
+- [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9) **Validate the GPU fault fix** with a few runs past
+  the first guide movie.
+
+**Code** ([help wanted](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aopen+label%3A%22help+wanted%22)):
+
+- [#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2) **NVN 2 push constants**: likely bank 24 of each
+  stage; record them in the Vulkan replay.
+- [#4](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/4) **Colour grading 3D LUT** comes out empty.
+- [#5](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/5) **Checkerboard textures** on some rock surfaces.
+- [#6](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/6) **NVN 2 calls not recorded yet**: mesh shaders, VRS,
+  DLSS and others.
+- [#8](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/8) **Installer** on TotK Recomp's model.
+- **Symbols.** Function names help debugging. They come from
+  [GRAnimated/DKBananza](https://github.com/GRAnimated/DKBananza), which welcomes contributions too.
+
+Your first contribution, step by step:
+
+1. Build from your own dump ([Building from source](#building-from-source)).
+2. Run it as in [docs/dkb-testing.md](docs/dkb-testing.md) and note how far it gets on your machine.
+3. Report it on #3 or #7, or pick an issue above.
 
 Before you open a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md). Its hard rule: nothing that came out of the
 game goes into the repository, not in commits, issues or pull requests. Run `python tools/check_content.py --staged`
-before committing; CI runs the same check.
+before committing; CI runs the same check. Questions go to
+[Discussions](https://github.com/Lucas-blip-png/dkb-pc-recomp/discussions). Everyone taking part follows the
+[code of conduct](CODE_OF_CONDUCT.md).
 
-Bug reports use the issue forms. Include your GPU and driver, the log and the steps to reproduce.
+## Support the project
 
-If you want to support the work without writing code, tips go to [ko-fi.com/lucasblippng](https://ko-fi.com/lucasblippng).
-A tip pays for time on the project; it buys no game files, builds or early access.
+If you want to support the work without writing code, tips go to
+[ko-fi.com/lucasblippng](https://ko-fi.com/lucasblippng). A tip pays for time on the project; it buys no game files,
+builds or early access, and everything stays open source here. Starring the repository and sharing it with people who
+know GPUs, ARM64 or the Switch also helps.
 
 ## Building from source
 
@@ -72,7 +113,27 @@ The toolchain is TotK Recomp's ([docs/building.md](docs/building.md)): MSYS2 UCR
 ```
 
 Everything the build writes stays under `build\` and `generated\`, which git ignores. The game uses about 13 GB of
-RAM, so 16 GB is the minimum for now.
+RAM, so 16 GB is the minimum for now. Running and testing: [docs/dkb-testing.md](docs/dkb-testing.md).
+
+## FAQ
+
+**Can I play it?** Not yet. It reaches the tutorial and crashes often. Follow the
+[roadmap](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10) or the [devlog](docs/devlog.md).
+
+**Will there be a download?** No. The executable is made from the game's own code, so it cannot be shared. Everyone
+builds it from their own dump; an installer that does this for you is planned
+([#8](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/8)).
+
+**Which version of the game?** Base 1.0.0. Update 458752 has a different layout and is not supported yet.
+
+**Linux?** TotK Recomp's toolchain supports Linux, so it is possible; nobody has tried with Bananza yet.
+
+**Why GPL?** The shader lowering comes from Eglantine (Eden Emulator Project), which is GPL. Files that came from TotK
+Recomp keep their MIT terms.
+
+**How is AI used?** Most of the code and documentation is written by AI coding agents (Claude Code), as in TotK
+Recomp, and checked by running the game and the differential tests. AI-assisted pull requests are welcome; you are
+responsible for having read and run them.
 
 ## Credits
 
@@ -98,5 +159,3 @@ The license grants nothing for Nintendo's game.
 
 DKB Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Donkey Kong
 Bananza* and *Nintendo Switch 2* are trademarks of Nintendo.
-
-Most of the code and documentation is written by AI coding agents (Claude Code), as in TotK Recomp.
