@@ -1,32 +1,33 @@
 name: Crash
-description: The game closes, freezes or shows a FATAL message.
+description: The game closes, freezes, shows a FATAL message or loses the GPU.
 labels: [bug, crash]
 body:
   - type: markdown
     attributes:
       value: |
-        Check the pinned issues at the top of the issue list first: they cover the known crashes and their workarounds.
+        DKB Recomp is not playable yet, so crashes are expected. A good report still helps: it shows where the next problem is.
+        Check the pinned issues first, and see [docs/dkb-testing.md](https://github.com/Lucas-blip-png/dkb-pc-recomp/blob/bananza/docs/dkb-testing.md) for how to run and where the log is.
 
-        Do not attach or link game files, keys, firmware or builds. Issues that do are closed.
+        Do not attach or link game files, keys, firmware, builds, shader caches or screenshots of the game. Issues that do are closed.
   - type: checkboxes
     id: duplicates
     attributes:
       label: Existing issues
       options:
-        - label: I read the pinned issues and [searched open and closed issues](https://github.com/valentderah/totk-pc-recomp/issues?q=is%3Aissue) for this crash.
+        - label: I read the pinned issues and [searched open and closed issues](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aissue) for this crash.
           required: true
   - type: input
     id: version
     attributes:
-      label: Version
-      description: The title line of the settings menu (F1), for example "TotK Recomp 0.1.0, game 1.4.3".
+      label: Commit
+      description: The commit you built, from `git rev-parse --short HEAD`. The game must be base version 1.0.0.
     validations:
       required: true
   - type: input
     id: system
     attributes:
       label: GPU, driver and Windows version
-      description: Copy system info in the menu's Advanced tab puts them on the clipboard.
+      description: For example "Radeon RX 7800 XT, Adrenalin 25.10.1, Windows 11 24H2".
     validations:
       required: true
   - type: dropdown
@@ -34,32 +35,35 @@ body:
     attributes:
       label: When does it crash?
       options:
-        - At startup, before the Nintendo logo
-        - Between the Nintendo logo and the title screen
-        - While loading a save
-        - In gameplay
-        - In a cutscene
+        - At startup, before any picture
+        - Before or on the title screen
+        - Loading into the tutorial cave
+        - In the tutorial cave
+        - During or right after a guide movie
+        - Further into the game
     validations:
       required: true
   - type: dropdown
-    id: blocker
+    id: repeat
     attributes:
-      label: Can you keep playing?
+      label: Does it happen every time?
       options:
-        - "Yes, it does not happen again after a restart, or I can avoid it"
-        - "No, it happens every time at the same point"
+        - "Yes, at the same point every run"
+        - "Sometimes"
+        - "Only once so far"
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
       label: What you did before the crash
+      description: Fresh profile or an existing save? Keyboard or controller? Any settings changed?
     validations:
       required: true
   - type: textarea
     id: log
     attributes:
       label: Log
-      description: Attach logs\totk.log from the folder of totk.exe. Copy it before you start the game again, because the next start overwrites it.
+      description: Attach logs\totk.log from the folder of dkb.exe. Copy it before you start the game again, because the next start renames it.
     validations:
       required: true
