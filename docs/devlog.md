@@ -5,6 +5,11 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **ASTC textures written by buffer-to-image copies decode on the GPU** (#38, by Kvinkxerli). Such a copy into an ASTC
+  texture used to be skipped; with the GPU decoder on, tight copies now go through it in the replay, which then
+  rebinds its own compute state. Copies with padded rows are still skipped. Kvinkxerli's run got through the Ingot
+  Isle Cave-In cutscene to the Baboonburg save point with it. In the tutorial here, the one ASTC copy still skipped is a
+  different kind (texture to texture, clear or readback), and 2 runs of 600 s showed no regression.
 - **The later GPU fault is skipped too** (6da41ba, [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
   In 9 runs of 600 s, every run where one more light quad (NVN 2 vertex stage cae0ef8e9fe9147f) drew faulted, with its
   draw in flight at the device loss, and the runs where it never drew did not. Its fragment stage does not read
