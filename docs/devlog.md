@@ -5,6 +5,15 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **A replay part that runs long on the GPU names its work** (d4c27e2,
+  [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). philneitz's log of the respawn stall showed the
+  GPU itself busy for about 16.8 s per frame inside the replay, with uploads and the present near zero and no device
+  loss. With `TOTK_TRACE=perf`, a part that runs at least `TOTK_PERF_SLOW_GPU_MS` (default 100) on the GPU now logs
+  its draw and dispatch counts, its largest direct one and the NVN 2 names of its stages.
+- **ASTC chunk breadcrumbs are written by the recorder thread** (#40, by monsterlag). They used to go into the command
+  buffer from the submitting thread while the recorder thread owned it, which Khronos validation reported as two
+  threading errors. The PR's new `--probe-vkcopy-astc` passes 5 of 5 cases and 5,526 checks with 0 validation errors
+  on an RTX 5060 Ti as well.
 - **The #9 skip no longer slows every draw** ([#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). The
   skip of the later GPU fault (6da41ba) looks up the NVN 2 name of each draw's vertex stage, and that lookup scanned
   the whole lowering cache under a lock. A profile of the render thread put 72 % of its samples there. In heavy
