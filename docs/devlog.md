@@ -9,10 +9,10 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
   waits on the decoder's submission-ready event, which `nn::codec` signalled only once. The player stopped at its
   second picture, the flat yellow card the movies open with, so the guide window showed a yellow box. Reserving an
   output buffer now signals the event, and the window shows the movie.
-- **Contributors' fixes merged**: the Switch 2 counter at 31.25 MHz (#25) and timestamp reports at submit time
-  (#26) take the tutorial from a steady 20 to a steady 30 FPS here; also the README's missing patch table (#16),
-  the replay drain (#23), compute overlap mode (#18), interface array reflection (#21) and IPC session lifetime
-  (#17).
+- **Contributors' fixes merged**: the Switch 2 counter at 31.25 MHz (#25), timestamp reports at submit time (#26),
+  the README's missing patch table (#16), the replay drain (#23), compute overlap mode (#18), interface array
+  reflection (#21) and IPC session lifetime (#17). The tutorial still runs at 20 FPS most of the time here; one run
+  reached 30 FPS for its last minute. The game's own pacer accounts for most of each frame.
 
 ## 2 November 2026
 
