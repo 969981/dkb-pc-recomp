@@ -376,7 +376,11 @@ static void check_memory(void) {
     CHECK(q.state == 0 && q.base == g->alias.base && q.size == g->alias.size, "QueryMemory on the free alias region");
     CHECK(mem_map_physical(a, 0x1000) == 0 && LD64(a + 0x10) == 0 && mem_unmap_physical(a, 0x1000) == 0,
           "remapped physical memory is not zeroed");
-    CHECK(mem_map_physical(a, 0x100000000ull) == 0x10801, "MapPhysicalMemory beyond the pool is not LimitReached");
+    CHECK(mem_info(6, &v) && v == g->pool, "GetInfo 6 (total memory) %#llx", (unsigned long long)v);
+    uint64_t beyond_pool = (g->pool + 0x1000ull) & ~0xfffull;
+    CHECK(beyond_pool > g->pool && a >= g->alias.base && a - g->alias.base <= g->alias.size &&
+          beyond_pool <= g->alias.size - (a - g->alias.base) && mem_map_physical(a, beyond_pool) == 0x10801,
+          "MapPhysicalMemory beyond the pool is not LimitReached");
     mem_query(RT_HOSTFN_BASE + 0x40, &q);
     CHECK(q.state == 0x10 && q.base == RT_HOSTFN_BASE, "QueryMemory on the host-function window");
     mem_query(g->alias.base + g->alias.size + 0x1000, &q);
