@@ -1460,6 +1460,10 @@ static void thread_main(void *p) {
     Cpu *c = t->cpu;
     c->sp = t->stack_top & ~15ull;
     if (!setjmp(t->exit_jmp)) {
+#ifdef _WIN32   // the CRT needs this frame to validate longjmp when SetContextIpValidation is enabled
+        if (!((_JUMP_BUFFER *)t->exit_jmp)->Frame)
+            rt_fatal("kernel: setjmp recorded no frame; ExitThread would fail fast");
+#endif
         rt_call(c, t->entry, 1, t->arg);
         char d[128];
         rt_fatal("guest thread %#x: entry %s returned (Horizon threads end with ExitThread)", t->handle,
@@ -1519,7 +1523,13 @@ static void guest_main(void *p) {
     void (*fn)(Cpu *) = (void (*)(Cpu *))p;
     Cpu *c;
     kern_main_thread(&c);
-    if (!setjmp(tcur->exit_jmp)) fn(c);
+    if (!setjmp(tcur->exit_jmp)) {
+#ifdef _WIN32   // the CRT needs this frame to validate longjmp when SetContextIpValidation is enabled
+        if (!((_JUMP_BUFFER *)tcur->exit_jmp)->Frame)
+            rt_fatal("kernel: setjmp recorded no frame; ExitThread would fail fast");
+#endif
+        fn(c);
+    }
     thread_finish(tcur);
     return;
 }
