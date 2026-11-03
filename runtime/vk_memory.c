@@ -1741,7 +1741,43 @@ typedef struct {
     uint64_t seq;
     Staging *stg;
     int nstg, cap;
+    int ts, timed;   // its timestamp pair in up_pool (-1: none), and whether this use of it writes the pair
 } Batch;
+
+// The perf line's upload figures (TOTK_TRACE=perf, the full overlay). Upload batches go to the queue outside
+// vk_sync.c's timed submissions, and the ASTC decoding of texture uploads records into them, so their GPU time, their
+// count, the bytes staged for them and the time threads wait for them are counted here (perf_gpu_line). Each batch owns
+// one timestamp pair, kept with its reused command buffer; batches past UP_PAIRS go untimed.
+#define UP_PAIRS 256
+static VkQueryPool up_pool;
+static int up_state, up_pairs;   // up_state: 0 not set up, 1 ready, -1 no timestamps
+static float up_period;
+static volatile int64_t up_gpu_ns, up_timed, up_batches, up_wait_ns, up_bytes;
+
+static int up_ts_ready(VkCtx *c) {
+    if (up_state) return up_state > 0;
+    up_state = -1;
+    uint32_t nq = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, NULL);
+    VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
+    if (!qp) return 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, qp);
+    uint32_t bits = c->gfx_family < nq ? qp[c->gfx_family].timestampValidBits : 0;
+    free(qp);
+    VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                .queryCount = 2 * UP_PAIRS};
+    if (bits < 64 || c->props.limits.timestampPeriod <= 0 || vkCreateQueryPool(c->device, &qi, NULL, &up_pool) != VK_SUCCESS)
+        return 0;   // ponytail: a counter narrower than 64 bits goes untimed; mask it as vk_sync.c does if one shows up
+    up_period = c->props.limits.timestampPeriod;
+    up_state = 1;
+    return 1;
+}
+
+void vk_upload_perf(uint64_t *gpu_ns, uint64_t *timed, uint64_t *batches, uint64_t *wait_ns, uint64_t *bytes) {
+    *gpu_ns = (uint64_t)plat_xchg64(&up_gpu_ns, 0), *timed = (uint64_t)plat_xchg64(&up_timed, 0);
+    *batches = (uint64_t)plat_xchg64(&up_batches, 0), *wait_ns = (uint64_t)plat_xchg64(&up_wait_ns, 0);
+    *bytes = (uint64_t)plat_xchg64(&up_bytes, 0);
+}
 
 enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA };
 typedef struct { int kind; uint64_t handle; VmaAllocation alloc; uint64_t seq, tl; } Dead;
@@ -1784,6 +1820,12 @@ static void retire(VkCtx *c, int wait_all) {
         Batch *b = &inflight[k];
         if (wait_all) vkWaitForFences(c->device, 1, &b->fence, VK_TRUE, UINT64_MAX);
         else if (vkGetFenceStatus(c->device, b->fence) != VK_SUCCESS) break;
+        uint64_t v[2];
+        if (b->timed && vkGetQueryPoolResults(c->device, up_pool, 2 * (uint32_t)b->ts, 2, sizeof v, v, sizeof v[0],
+                                              VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && v[1] >= v[0]) {
+            plat_add64(&up_gpu_ns, (int64_t)((double)(v[1] - v[0]) * up_period));
+            plat_inc64(&up_timed);
+        }
         free_staging(c, b);
         done_seq = b->seq;
         if (nspare == cap_spare) grow((void **)&spare, &cap_spare, sizeof *spare);
@@ -1827,10 +1869,11 @@ VkCommandBuffer vk_upload_begin(void) {
     memset(&open_b, 0, sizeof open_b);
     if (nspare) {
         Batch s = spare[--nspare];
-        open_b.cb = s.cb, open_b.fence = s.fence, open_b.stg = s.stg, open_b.cap = s.cap;
+        open_b.cb = s.cb, open_b.fence = s.fence, open_b.stg = s.stg, open_b.cap = s.cap, open_b.ts = s.ts;
         vkResetCommandBuffer(open_b.cb, 0);
         vkResetFences(c->device, 1, &open_b.fence);
     } else {
+        open_b.ts = up_pairs < UP_PAIRS ? up_pairs++ : -1;
         VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cmd_pool,
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
         VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -1841,6 +1884,11 @@ VkCommandBuffer vk_upload_begin(void) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     vkBeginCommandBuffer(open_b.cb, &bi);
+    if (open_b.ts >= 0 && perf_gpu_timing() && up_ts_ready(c)) {
+        vkCmdResetQueryPool(open_b.cb, up_pool, 2 * (uint32_t)open_b.ts, 2);
+        vkCmdWriteTimestamp(open_b.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, up_pool, 2 * (uint32_t)open_b.ts);
+        open_b.timed = 1;
+    }
     open_b.seq = ++next_seq;
     vk_crumb(open_b.cb, VK_CRUMB_UPLOAD, open_b.seq);
     open_active = 1;
@@ -1887,6 +1935,7 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     VmaAllocation a;
     VkResult r = vmaCreateBuffer(c->vma, &bi, &aci, &b, &a, &info);
     if (r != VK_SUCCESS) rt_fatal("vk: staging buffer of %llu bytes failed (%d)", (unsigned long long)size, (int)r);
+    plat_add64(&up_bytes, (int64_t)bi.size);
     *buf = b;
     if (alloc) *alloc = a;   // the caller destroys it (vmaDestroyBuffer) after vk_upload_flush(1)
     else {
@@ -1904,7 +1953,10 @@ uint64_t vk_upload_flush(int wait) {
     if (c && open_active) {
         for (int i = 0; i < open_b.nstg; i++) vmaFlushAllocation(c->vma, open_b.stg[i].alloc, 0, VK_WHOLE_SIZE);
         vk_crumb(open_b.cb, VK_CRUMB_UPLOAD_END, open_b.seq);
+        if (open_b.timed)
+            vkCmdWriteTimestamp(open_b.cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, up_pool, 2 * (uint32_t)open_b.ts + 1);
         vkEndCommandBuffer(open_b.cb);
+        plat_inc64(&up_batches);
         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &open_b.cb};
         vk_queue_lock();
         VkResult r = vkQueueSubmit(c->gfx_queue, 1, &si, open_b.fence);
@@ -1918,6 +1970,7 @@ uint64_t vk_upload_flush(int wait) {
         open_active = 0;
     }
     if (c && wait) {
+        uint64_t w0 = ninflight && done_seq < seq ? kern_now_ns() : 0;
         while (ninflight && done_seq < seq) {
             // A lost device returns at once and its fence never signals: without this check the loop spins forever
             // (a guest thread at 100% of a core and an idle GPU, with no fault reported).
@@ -1928,6 +1981,7 @@ uint64_t vk_upload_flush(int wait) {
             }
             retire(c, 0);
         }
+        if (w0) plat_add64(&up_wait_ns, (int64_t)(kern_now_ns() - w0));
     }
     if (c) collect_locked(c);
     plat_rmutex_unlock(&cmd_lock);

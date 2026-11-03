@@ -58,6 +58,7 @@ typedef struct {
     int have_gpu, have_vram, vram_exact;
     uint64_t gpu_ns, gpu_parts, gpu_missed;     // busy time, submission parts timed, parts left untimed
     uint64_t vram_used, vram_budget;
+    uint64_t up_gpu_ns, up_timed, up_batches, up_wait_ns, up_bytes;   // upload batches (vk_memory.c, vk_upload_perf)
 } PerfGpu;
 extern void (*perf_gpu_stats)(PerfGpu *out);
 // The performance overlay (perfmon.c): mode 0 off, 1 fps, 2 full. While it is on, perf_present hands every frame to

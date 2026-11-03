@@ -196,15 +196,19 @@ static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share,
     if (g.have_vram) snprintf(vs, sizeof vs, "vram %.0f of %.0f MiB%s", g.vram_used / 1048576.0, g.vram_budget / 1048576.0,
                               g.vram_exact ? "" : " (own allocations of the heap size)");
     else snprintf(vs, sizeof vs, "vram n/a");
+    char us[160];   // upload batches: outside the timed submission parts, so not in "gpu avg"
+    snprintf(us, sizeof us, "uploads %llu batches, %.1f MiB staged, gpu %.2f ms per frame (%llu timed), waited %.2f ms per frame",
+             (unsigned long long)g.up_batches, g.up_bytes / 1048576.0, g.up_gpu_ns / 1e6 / n, (unsigned long long)g.up_timed,
+             g.up_wait_ns / 1e6 / n);
     uint64_t res, prv;
     plat_process_memory(&res, &prv);
     double ws = res / 1048576.0, priv = prv / 1048576.0;
     const char *bound = pace_share >= 0.15 ? "pace"
                       : g.have_gpu ? (gpu_ms >= 0.8 * interval_ms ? "gpu" : "cpu")
                       : (rw + ow >= 0.5 * interval_ms ? "gpu" : "cpu");
-    rt_log("perf: frame %llu: %s; fence wait per frame: render thread %.2f ms, other threads %.2f ms; %s; ram working set "
-           "%.0f MiB, private %.0f MiB; bound: %s",
-           (unsigned long long)frame, gs, rw, ow, vs, ws, priv, bound);
+    rt_log("perf: frame %llu: %s; %s; fence wait per frame: render thread %.2f ms, other threads %.2f ms; %s; ram working "
+           "set %.0f MiB, private %.0f MiB; bound: %s",
+           (unsigned long long)frame, gs, us, rw, ow, vs, ws, priv, bound);
 }
 
 int rt_ab(void) {
