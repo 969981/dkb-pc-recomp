@@ -57,7 +57,7 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 - [~] `nvnCommandBufferPush{Graphics,Compute}Constants`: recorded (33628c7). Graphics root table 0 is bank 24, read by
       the full-screen blits, which now get the pushed `{1/w, 1/h, w, h}`. Where compute shaders read their pushes
       is not known: no compute stage reads bank 24. [#2]
-- [ ] Colour grading: the 3D LUT comes out empty. [#4]
+- [x] Colour grading: the 3D LUT is filled (8x8x8 R11G11B10F, checked in the mining tunnel); the empty LUT was an old build. [#4]
 - [ ] Some textures look blocky (checkerboard rocks) [#5]: the deswizzle now uses the Switch 2 GOB layout, which fixes the gold rock in the tutorial cave; the other rock surfaces still need a check.
 - [ ] Getting past the tutorial cave. [#7]
 - [ ] Saves: the save is created; saving and loading are not tested yet.

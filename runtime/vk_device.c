@@ -408,6 +408,16 @@ void vk_device_fault_report(VkResult r) {
     done = 1;
     vk_crumbs_report();
     VkCtx *c = vk_ctx();
+    if (c && c->vma) {   // how full each heap was: a fault under memory pressure reads differently
+        VmaBudget b[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(c->vma, b);
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(c->phys, &mp);
+        for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
+            rt_log("vk: device lost: heap %u usage %llu MiB of budget %llu MiB (VMA blocks %llu MiB)", i,
+                   (unsigned long long)(b[i].usage >> 20), (unsigned long long)(b[i].budget >> 20),
+                   (unsigned long long)(b[i].statistics.blockBytes >> 20));
+    }
     PFN_vkGetDeviceFaultInfoEXT get =
         c && c->has_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(c->device, "vkGetDeviceFaultInfoEXT")
                                  : NULL;

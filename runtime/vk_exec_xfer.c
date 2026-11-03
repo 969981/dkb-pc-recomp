@@ -90,16 +90,27 @@ static void event_cb(void *arg) {
     free(e);
 }
 
-// NVNcounterData = {counter, timestamp}; timestamps are Tegra 19.2 MHz ticks (the base of GetSystemTick).
-static void write_counter(uint64_t addr, uint64_t counter) {
-    uint64_t rec[2] = {counter, (uint64_t)((unsigned __int128)kern_now_ns() * 12 / 625)};
+// NVNcounterData = {counter, timestamp}; timestamps are guest counter ticks (the base of GetSystemTick, rt_tick_hz).
+static void write_counter_at(uint64_t addr, uint64_t counter, uint64_t ticks) {
+    uint64_t rec[2] = {counter, ticks};
     memcpy((void *)(uintptr_t)addr, rec, sizeof rec);
 }
+static void write_counter(uint64_t addr, uint64_t counter) {
+    write_counter_at(addr, counter, rt_ns_to_ticks(kern_now_ns()));
+}
 
+// A timestamp report. On the console the GPU runs a submission as soon as the game submits it and its work takes a few
+// milliseconds; here the replay comes first (up to a frame later with TOTK_REPLAY_ASYNC), and the completion is seen
+// later still, so "now" at completion is mostly the replay's delay. Bananza paces itself on (end-of-frame timestamp -
+// CPU frame start): with that delay in it, it measured every frame as longer than 1/60 s and dropped to a longer present
+// interval. For a Switch 2 game the report carries the time the game submitted the work (nvn_submit_ticks).
+typedef struct { uint64_t addr, fence; } CounterWrite;
 static void counter_cb(void *arg) {
-    uint64_t *addr = arg;
-    write_counter(*addr, 0);
-    free(addr);
+    CounterWrite *w = arg;
+    uint64_t at = rt_game_version ? 0 : nvn_submit_ticks(w->fence);
+    if (at) write_counter_at(w->addr, 0, at);
+    else write_counter(w->addr, 0);
+    free(w);
 }
 
 // Reports queued by the replay that the GPU has not finished. The condition of RENDER_COND reads a timestamp one as 0
@@ -284,9 +295,9 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
     vk_mem_count(m.cls, VK_MUSE_GPU_WRITE, sizeof(NVNcounterData));
     if (samples) oq_report(ex, p->addr);
     else {
-        uint64_t *a = malloc(sizeof *a);
+        CounterWrite *a = malloc(sizeof *a);
         if (!a) rt_fatal("vk: out of memory");
-        *a = p->addr;
+        *a = (CounterWrite){p->addr, ex->fence};
         vk_completion_add(ex->fence, counter_cb, a);
     }
     pending[pending_head++ % PENDING] = (typeof(pending[0])){p->addr, ex->fence, samples};
