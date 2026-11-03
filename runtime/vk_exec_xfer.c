@@ -495,7 +495,77 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     }
 }
 
+// Decoded ASTC copies operate on host RGBA8 texels, not on the guest's compressed blocks. Keep their view and
+// block-edge checks separate from the native-format path, which also supports blits, resolves and other targets.
+static int decoded_astc_sub(const tex_t *t, const view_t *v, int has_v, const NVNcopyRegion *r,
+                            const TexVkFormat *f, const VkTexImage *img, Sub *s) {
+    if (!img || (t->d.target != NVN_TEXTURE_TARGET_2D && t->d.target != NVN_TEXTURE_TARGET_2D_ARRAY) ||
+        img->type != VK_IMAGE_TYPE_2D || img->samples != 1 || img->aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
+        img->format != f->vk || !img->image || img->bound ||
+        (img->usage & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) !=
+            (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return 0;
+    if (has_v && (v->set_format || v->set_target || v->set_swizzle || v->set_dsmode)) return 0;
+    memset(s, 0, sizeof *s);
+    s->img = img, s->aspect = VK_IMAGE_ASPECT_COLOR_BIT, s->f = *f;
+    s->level = has_v && v->set_levels ? v->base_level : 0;
+    s->layer0 = has_v && v->set_layers ? v->min_layer : 0;
+    uint32_t levels = has_v && v->set_levels ? v->nlevels : img->levels;
+    uint32_t layers = has_v && v->set_layers ? v->nlayers : img->layers;
+    // Validate before shifting, and bound the complete view as well as the one selected mip/region.
+    if (s->level >= img->levels || s->level >= 32 || !levels || levels > img->levels - s->level ||
+        s->layer0 >= img->layers || !layers || layers > img->layers - s->layer0 ||
+        r->xoffset < 0 || r->yoffset < 0 || r->zoffset < 0 || r->width < 0 || r->height < 0 || r->depth < 0) return 0;
+    uint32_t w = max1(img->width >> s->level), h = max1(img->height >> s->level);
+    s->x = r->xoffset, s->y = r->yoffset, s->z = r->zoffset;
+    if ((uint32_t)s->x >= w || (uint32_t)s->y >= h) return 0;
+    s->w = r->width ? (uint32_t)r->width : w - (uint32_t)s->x;
+    s->h = r->height ? (uint32_t)r->height : h - (uint32_t)s->y;
+    s->nz = r->depth ? (uint32_t)r->depth : 1;
+    if ((uint64_t)s->x + s->w > w || (uint64_t)s->y + s->h > h || (uint64_t)s->z + s->nz > layers) return 0;
+    // An incomplete ASTC block is legal only at that mip's edge on both sides of the copy.
+    if (s->x % f->astc_bw || s->y % f->astc_bh ||
+        (s->w % f->astc_bw && (uint32_t)s->x + s->w != w) ||
+        (s->h % f->astc_bh && (uint32_t)s->y + s->h != h)) return 0;
+    return 1;
+}
+
+// Returns one for decoded-ASTC sources, including deliberate unsupported skips. Native ASTC and all other source
+// formats continue through copy_t2t unchanged. In create_tex, !bound means a separate vmaCreateImage allocation;
+// different guest ranges alone would not prove nonaliasing for images bound into a pool.
+static int copy_decoded_astc(VkExec *ex, const p_copy_t2t *p) {
+    if (!p->src || p->src->d.format < 0x79 || p->src->d.format > 0x94) return 0;
+    TexVkFormat f;
+    if (!tex_vk_format(p->src->d.format, &f) || !f.astc_bw) return 0;
+    if (!p->dst || p->src->d.format != p->dst->d.format || f.astc_bc || p->flags ||
+        (f.vk != VK_FORMAT_R8G8B8A8_UNORM && f.vk != VK_FORMAT_R8G8B8A8_SRGB)) {
+        warn_once(W_COPY, "decoded ASTC copy requires matching RGBA8 formats and no copy flags: skipped");
+        return 1;
+    }
+    uint64_t sa = (uintptr_t)p->src->mem, da = (uintptr_t)p->dst->mem;
+    if (!sa || !da || !p->src->L.size || !p->dst->L.size ||
+        (sa <= da ? da - sa < p->src->L.size : sa - da < p->dst->L.size)) {
+        warn_once(W_COPY, "decoded ASTC copy between overlapping guest storage: skipped");
+        return 1;
+    }
+    const VkTexImage *si = vk_texture_get(p->src), *di = vk_texture_get(p->dst);
+    Sub s, d;
+    if (!decoded_astc_sub(p->src, &p->sv, p->has_sv, &p->sr, &f, si, &s) ||
+        !decoded_astc_sub(p->dst, &p->dv, p->has_dv, &p->dr, &f, di, &d) || si->image == di->image ||
+        s.w != d.w || s.h != d.h || s.nz != d.nz) {
+        warn_once(W_COPY, "decoded ASTC copy requires distinct non-bound 2D images, valid views/block regions and equal extents: skipped");
+        return 1;
+    }
+    vk_exec_pass_end(ex);
+    vk_exec_barrier(ex);
+    VkImageCopy cp = {sub_layers(&s), sub_offset(&s), sub_layers(&d), sub_offset(&d), sub_extent(&s)};
+    vkCmdCopyImage(ex->cb, si->image, VK_IMAGE_LAYOUT_GENERAL, di->image, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
+    ex->recorded++;
+    vk_texture_gpu_written(p->dst);
+    return 1;
+}
+
 static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
+    if (copy_decoded_astc(ex, p)) return;
     Sub s, d;
     if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, 0, &s)) return;
     if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, 0, &d)) return;
