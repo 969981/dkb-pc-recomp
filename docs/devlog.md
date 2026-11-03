@@ -5,6 +5,12 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Every GPU submission is timed on the perf line** (eb542bc, 6a49228). Upload batches, which also carry the ASTC
+  decoding of texture uploads, and the present (blit, colour adjustment, FSR, overlay) went to the queue without
+  timestamps. With `TOTK_TRACE=perf` the perf line now gives their GPU time per frame, the batches and bytes staged,
+  and the time threads wait for uploads. It is for the respawn stall in the Ingot Isle Cave-In section
+  ([#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)), where the GPU ran at 100 % while the timed parts
+  showed about 0.6 ms of a 16.8 s frame.
 - **ASTC textures written by buffer-to-image copies decode on the GPU** (#38, by Kvinkxerli). Such a copy into an ASTC
   texture used to be skipped; with the GPU decoder on, tight copies now go through it in the replay, which then
   rebinds its own compute state. Copies with padded rows are still skipped. Kvinkxerli's run got through the Ingot
