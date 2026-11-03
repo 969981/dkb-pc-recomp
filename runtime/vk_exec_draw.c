@@ -55,7 +55,7 @@ static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
     }
 }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -2025,6 +2025,28 @@ typedef struct {
     uint64_t tex[2][32], img[2][32];
     VkPipeState pipe;
 } MemoKey;
+
+// Workaround for the GPU fault after the first guide movie (#9). On NVIDIA (drivers 617.14, 617.42 and 621.01) the
+// draws of Bananza's instanced light quads whose vertex stage fetches ten per-instance streams (an input at Location
+// 9) and whose fragment stage reads the storage buffer at c0+0x530 fault the device with an invalid instruction
+// pointer, or crash the driver's shader compiler. Leaving out one such shader moves the fault to another of the
+// family, and the same SPIR-V drawn on its own does not fault, so the cause is still open. Skipping these draws
+// loses those lights; the family's quads with eight or nine streams draw as before. It is a mitigation, not a fix:
+// in 600 s runs on an RTX 5060 Ti the fault came minutes later in one run of two (another shader), where without it
+// every run faulted right after the first guide movie. TOTK_FIX_VS_FAULT=0 draws them.
+static int light_quad_fault_skip(const GfxShader *vs, const GfxShader *fs) {
+    static int on = -1;
+    if (on < 0) on = !rt_game_version && cfg_bool("TOTK_FIX_VS_FAULT") && vk_ctx()->props.vendorID == 0x10de;   // 0: Bananza
+    if (!on || !vs || !fs) return 0;
+    const GfxShaderRes *r;
+    int n = gfx_shader_resources(fs, GFX_RES_SSBO, &r), lights = 0;
+    for (int i = 0; i < n; i++) lights |= r[i].cbuf_slot == 0 && r[i].handle * 4 == 0x530;
+    GfxShaderIo io[32];
+    if (!lights || !(gfx_shader_inputs(vs, io) >> 9 & 1)) return 0;
+    warn_once(W_FAULT_SKIP, "light-quad draws with ten instance streams are skipped on NVIDIA (#9; TOTK_FIX_VS_FAULT=0 draws them)");
+    return 1;
+}
+
 static struct { int on, valid, has_fs; MemoKey k; const GfxShader *vs, *fs; } SM = {-1};
 
 static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
@@ -2133,6 +2155,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (vs_wait) vs = shader_for(ex, NVN_STAGE_VS, &has_vs, NULL, 1);
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
     }
+    if (light_quad_fault_skip(vs, fs)) return 0;
     if (!vs || (has_fs && !fs)) return 0;
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
