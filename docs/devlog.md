@@ -12,9 +12,9 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 - **The respawn stall draws garbage** ([#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). philneitz's
   run with the new line reads back every indirect argument of the slow parts: the largest asks for 2,309,897,600
   indices from index 55,377,280, and each part adds up to about 2.2 trillion indices x instances. No real draw
-  looks like that. The same log binds a zero buffer to a compute storage buffer addressed from c1. If that dispatch
-  should write the arguments, the draws read stale memory. This is not proven yet; #42 changes how such addresses
-  are resolved.
+  looks like that. The compute stage that gets a zero storage buffer from c1 is not the writer: it only reads that
+  buffer and is not among the slow parts' stages. The slow-part line now names the shader that last stored over the
+  largest draw's arguments in that part, or says none did (a38643c).
 - **Guide movies loop after a Continue** (15152da). At the end of a movie the player flushes and starts again with
   the two buffers it still holds, and submits its third packet before it releases one. The decoder refused that
   packet, nothing released a buffer after that, and the guide window kept the movie's first picture, a flat yellow
