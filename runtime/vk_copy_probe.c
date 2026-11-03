@@ -1,4 +1,4 @@
-// --probe-vkcopy-astc: original valid ASTC blocks through OP_COPY_B2T and the real Vulkan replay.
+// --probe-vkcopy-astc: original valid ASTC blocks through OP_COPY_B2T/OP_COPY_T2T and the real Vulkan replay.
 // No game, shader census or translated guest program. Requires GPU decode to RGBA8, synchronous replay and no splits.
 // The first texture is uploaded normally and waited for before replay: first-decode table staging in a replay
 // submission has a separate known lifetime gap. This probe deliberately does not exercise that gap.
@@ -223,6 +223,138 @@ done:
     return bad;
 }
 
+typedef struct {
+    const char *name;
+    uint32_t width, height, levels, source_layers, destination_layers;
+    int has_sv, has_dv, copied, same_image;
+    view_t sv, dv;
+    NVNcopyRegion sr, dr;
+} T2tCase;
+
+static const uint8_t *t2t_color(uint32_t level, uint32_t layer, uint32_t x, uint32_t y) {
+    return colors[(level * 3 + layer * 5 + (y / 8) * 2 + x / 8) % 8];
+}
+
+static int fill_t2t_storage(tex_t *t, int source) {
+    uint8_t blocks[4 * 4 * 16];
+    for (uint32_t level = 0; level < t->d.levels; level++) {
+        uint32_t w = level_size(t->d.width, level), h = level_size(t->d.height, level);
+        uint32_t columns = (w + 7) / 8, rows = (h + 7) / 8;
+        if ((uint64_t)columns * rows * 16 > sizeof blocks) return 0;
+        for (uint32_t layer = 0; layer < t->d.depth; layer++) {
+            for (uint32_t y = 0; y < rows; y++)
+                for (uint32_t x = 0; x < columns; x++)
+                    solid_block(blocks + (y * columns + x) * 16,
+                        source ? t2t_color(level, layer, x * 8, y * 8) : sentinel);
+            if (nvn_swizzle(&t->d, level, layer, blocks, columns * 16, t->mem)) return 0;
+        }
+    }
+    return 1;
+}
+
+static const uint8_t *t2t_expected(const T2tCase *one, uint32_t level, uint32_t layer, uint32_t x, uint32_t y) {
+    uint32_t dl = one->has_dv && one->dv.set_levels ? one->dv.base_level : 0;
+    uint32_t first = (one->has_dv && one->dv.set_layers ? one->dv.min_layer : 0) + (uint32_t)one->dr.zoffset;
+    uint32_t dx = (uint32_t)one->dr.xoffset, dy = (uint32_t)one->dr.yoffset;
+    if (!one->copied || level != dl || layer < first || layer - first >= (uint32_t)one->dr.depth ||
+        x < dx || x - dx >= (uint32_t)one->dr.width || y < dy || y - dy >= (uint32_t)one->dr.height) return sentinel;
+    uint32_t sl = one->has_sv && one->sv.set_levels ? one->sv.base_level : 0;
+    uint32_t source_layer = (one->has_sv && one->sv.set_layers ? one->sv.min_layer : 0) +
+        (uint32_t)one->sr.zoffset + layer - first;
+    return t2t_color(sl, source_layer, (uint32_t)one->sr.xoffset + x - dx, (uint32_t)one->sr.yoffset + y - dy);
+}
+
+static int t2t_case(const GfxBackend *backend, uint8_t *guest, const T2tCase *one, unsigned index, unsigned *checks) {
+    int bad = 1, initialized[2] = {0};
+    pool_t pools[2] = {{0}};
+    tex_t textures[2] = {{0}};
+    const VkTexImage *images[2] = {0};
+    uint8_t *pixels = NULL, *storage_before = NULL;
+    REQUIRE(vk_astc_mode() == VK_ASTC_GPU && vk_astc_gpu() && !vk_astc_bc(), "requires GPU ASTC decode to RGBA8");
+    for (unsigned i = 0; i < 2; i++) {
+        pool_t *pool = &pools[i];
+        *pool = (pool_t){.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + i * POOL_BYTES,
+            .size = POOL_BYTES, .game_mem = guest + i * POOL_BYTES};
+        REQUIRE(backend->pool_init(pool), "T2T pool %u initialization", i);
+        initialized[i] = 1;
+        memset(pool->mem, 0xa5, POOL_BYTES);
+        tex_t *t = &textures[i];
+        t->magic = NVN_TEX_MAGIC;
+        t->d.target = (i ? one->destination_layers : one->source_layers) == 1 ?
+            NVN_TEXTURE_TARGET_2D : NVN_TEXTURE_TARGET_2D_ARRAY;
+        t->d.format = NVN_FORMAT_RGBA_ASTC_8x8_SRGB;
+        t->d.width = one->width, t->d.height = one->height, t->d.levels = one->levels;
+        t->d.depth = i ? one->destination_layers : one->source_layers;
+        t->pool = pool, t->off = TEXTURE_OFFSET, t->mem = pool->mem + TEXTURE_OFFSET;
+        t->serial = 0x54325400u + index * 2 + i;
+        nvn_tex_layout(&t->d, &t->L);
+        REQUIRE(t->L.size <= POOL_BYTES - TEXTURE_OFFSET, "T2T texture %u storage bounds", i);
+        REQUIRE(fill_t2t_storage(t, !i), "T2T texture %u original block layout", i);
+        images[i] = vk_texture_get(t);
+        REQUIRE(images[i] && images[i]->format == VK_FORMAT_R8G8B8A8_SRGB && !images[i]->bound &&
+            images[i]->type == VK_IMAGE_TYPE_2D && images[i]->samples == 1 &&
+            images[i]->levels == one->levels && images[i]->layers == t->d.depth && !images[i]->gpu_owned,
+            "T2T texture %u must be a separately allocated decoded RGBA8 sRGB image", i);
+    }
+    REQUIRE(images[0]->image != images[1]->image, "T2T images must be distinct");
+    vk_upload_flush(1);   // normal uploads, including first-decode staging, finish before replay
+    pixels = malloc((size_t)one->width * one->height *
+        (one->source_layers > one->destination_layers ? one->source_layers : one->destination_layers) * 4);
+    storage_before = malloc(2 * POOL_BYTES);
+    REQUIRE(pixels && storage_before, "T2T comparison allocations");
+    memcpy(storage_before, pools[0].mem, POOL_BYTES);
+    memcpy(storage_before + POOL_BYTES, pools[1].mem, POOL_BYTES);
+    uint64_t before, after, ignored_texels;
+    vk_astc_stats(&before, &ignored_texels);
+    _Alignas(8) uint8_t stream[512];
+    uint8_t *end = put_op(stream, OP_BEGIN, NULL, 0);
+    p_copy_t2t copy = {.src = &textures[0], .dst = &textures[one->same_image ? 0 : 1],
+        .sv = one->sv, .dv = one->dv, .has_sv = (uint8_t)one->has_sv, .has_dv = (uint8_t)one->has_dv,
+        .sr = one->sr, .dr = one->dr};
+    end = put_op(end, OP_COPY_T2T, &copy, sizeof copy);
+    end = put_op(end, OP_END, NULL, 0);
+    REQUIRE((size_t)(end - stream) <= sizeof stream, "T2T recording size");
+    uint64_t handle = (uint64_t)(uintptr_t)stream;
+    uint64_t fence = backend->submit(&handle, 1, rt_ticks());
+    REQUIRE(backend->fence_wait(fence, 5000000000ull), "T2T fence wait");
+    vk_astc_stats(&after, &ignored_texels);
+    REQUIRE(after == before, "T2T must copy existing RGBA8 texels without another ASTC decode");
+    for (unsigned i = 0; i < 2; i++) {
+        images[i] = vk_texture_get(&textures[i]);
+        REQUIRE(images[i], "T2T texture %u after subsequent lookup", i);
+        REQUIRE(!memcmp(storage_before + i * POOL_BYTES, pools[i].mem, POOL_BYTES),
+            "T2T texture %u guest storage/pool canaries changed", i);
+        for (uint32_t level = 0; level < one->levels; level++) {
+            uint32_t w = level_size(one->width, level), h = level_size(one->height, level);
+            REQUIRE(read_level(images[i], level, pixels), "T2T texture %u mip %u direct readback", i, level);
+            for (uint32_t layer = 0; layer < images[i]->layers; layer++)
+                for (uint32_t y = 0; y < h; y++)
+                    for (uint32_t x = 0; x < w; x++) {
+                        const uint8_t *got = pixels + (((size_t)layer * h + y) * w + x) * 4;
+                        const uint8_t *want = i ? t2t_expected(one, level, layer, x, y) : t2t_color(level, layer, x, y);
+                        REQUIRE(!memcmp(got, want, 4),
+                            "T2T texture %u mip %u layer %u pixel %u,%u = %u,%u,%u,%u expected %u,%u,%u,%u",
+                            i, level, layer, x, y, got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
+                    }
+        }
+        REQUIRE(!!images[i]->gpu_owned == (int)(i && one->copied),
+            "T2T texture %u ownership after subsequent lookup", i);
+    }
+    printf("probe-vkcopy-astc: %s passed (%s; source and all untouched pixels/mips/layers preserved)\n",
+        one->name, one->copied ? "T2T copied" : "unsupported T2T policy skipped");
+    bad = 0;
+done:
+    backend->finish();
+    for (unsigned i = 0; i < 2; i++)
+        if (initialized[i]) {
+            backend->texture_release(&textures[i]);
+            backend->pool_fini(&pools[i]);
+        }
+    free(storage_before);
+    free(pixels);
+    return bad;
+}
+
 void vk_exec_draw_shutdown(void);
 void vk_exec_xfer_shutdown(void);
 
@@ -249,12 +381,56 @@ int probe_vkcopy_astc(void) {
             .view = {.set_levels = 1, .base_level = 1, .nlevels = 1, .set_layers = 1, .min_layer = 1, .nlayers = 3},
             .region = {4, 4, 1, 8, 8, 2}},
     };
+    const T2tCase t2t_cases[] = {
+        {.name = "T2T 8x8 sRGB 2D to array", .width = 16, .height = 16, .levels = 1,
+            .source_layers = 1, .destination_layers = 2, .copied = 1,
+            .sr = {0, 0, 0, 16, 16, 1}, .dr = {0, 0, 0, 16, 16, 1}},
+        {.name = "T2T offset subrectangle", .width = 32, .height = 32, .levels = 3,
+            .source_layers = 1, .destination_layers = 2, .copied = 1,
+            .sr = {8, 0, 0, 16, 16, 1}, .dr = {0, 8, 1, 16, 16, 1}},
+        {.name = "T2T selected mip and view layer", .width = 32, .height = 32, .levels = 3,
+            .source_layers = 1, .destination_layers = 3, .copied = 1, .has_sv = 1, .has_dv = 1,
+            .sv = {.set_levels = 1, .base_level = 1, .nlevels = 1},
+            .dv = {.set_levels = 1, .base_level = 1, .nlevels = 1, .set_layers = 1, .min_layer = 1, .nlayers = 2},
+            .sr = {0, 0, 0, 16, 16, 1}, .dr = {0, 0, 0, 16, 16, 1}},
+        {.name = "T2T two layers with view offsets", .width = 16, .height = 16, .levels = 2,
+            .source_layers = 4, .destination_layers = 4, .copied = 1, .has_sv = 1, .has_dv = 1,
+            .sv = {.set_layers = 1, .min_layer = 1, .nlayers = 3},
+            .dv = {.set_layers = 1, .min_layer = 0, .nlayers = 3},
+            .sr = {0, 0, 1, 16, 16, 2}, .dr = {0, 0, 1, 16, 16, 2}},
+        {.name = "T2T 4x4 mip edge", .width = 32, .height = 32, .levels = 6,
+            .source_layers = 1, .destination_layers = 2, .copied = 1, .has_sv = 1, .has_dv = 1,
+            .sv = {.set_levels = 1, .base_level = 3, .nlevels = 1},
+            .dv = {.set_levels = 1, .base_level = 3, .nlevels = 1},
+            .sr = {0, 0, 0, 4, 4, 1}, .dr = {0, 0, 1, 4, 4, 1}},
+        {.name = "T2T 2x2 mip edge", .width = 32, .height = 32, .levels = 6,
+            .source_layers = 1, .destination_layers = 2, .copied = 1, .has_sv = 1, .has_dv = 1,
+            .sv = {.set_levels = 1, .base_level = 4, .nlevels = 1},
+            .dv = {.set_levels = 1, .base_level = 4, .nlevels = 1},
+            .sr = {0, 0, 0, 2, 2, 1}, .dr = {0, 0, 1, 2, 2, 1}},
+        {.name = "T2T 1x1 mip edge", .width = 32, .height = 32, .levels = 6,
+            .source_layers = 1, .destination_layers = 2, .copied = 1, .has_sv = 1, .has_dv = 1,
+            .sv = {.set_levels = 1, .base_level = 5, .nlevels = 1},
+            .dv = {.set_levels = 1, .base_level = 5, .nlevels = 1},
+            .sr = {0, 0, 0, 1, 1, 1}, .dr = {0, 0, 1, 1, 1, 1}},
+        {.name = "T2T explicit format view skipped", .width = 16, .height = 16, .levels = 1,
+            .source_layers = 1, .destination_layers = 2, .has_sv = 1,
+            .sv = {.set_format = 1, .format = NVN_FORMAT_RGBA_ASTC_8x8_SRGB},
+            .sr = {0, 0, 0, 16, 16, 1}, .dr = {0, 0, 0, 16, 16, 1}},
+        {.name = "T2T nonoverlapping self-copy skipped", .width = 16, .height = 16, .levels = 1,
+            .source_layers = 1, .destination_layers = 2, .same_image = 1,
+            .sr = {0, 0, 0, 8, 8, 1}, .dr = {8, 8, 0, 8, 8, 1}},
+    };
     printf("probe-vkcopy-astc: normal upload warmup precedes replay; first-decode replay lifetime gap excluded\n");
-    unsigned checks = 0, completed = 0;
+    unsigned checks = 0, completed = 0, skipped = 0;
     int bad = 0;
     for (unsigned i = 0; i < sizeof cases / sizeof cases[0] && !bad; i++) {
         bad = copy_case(&gfx_vulkan_backend, (uint8_t *)(uintptr_t)heap, &cases[i], i, &checks);
-        if (!bad) completed++;
+        if (!bad) completed++, skipped += !cases[i].copied;
+    }
+    for (unsigned i = 0; i < sizeof t2t_cases / sizeof t2t_cases[0] && !bad; i++) {
+        bad = t2t_case(&gfx_vulkan_backend, (uint8_t *)(uintptr_t)heap, &t2t_cases[i], i, &checks);
+        if (!bad) completed++, skipped += !t2t_cases[i].copied;
     }
     gfx_vulkan_backend.finish();
     vk_pipeline_shutdown();
@@ -262,8 +438,9 @@ int probe_vkcopy_astc(void) {
     vk_exec_xfer_shutdown();
     vk_backend_shutdown();
     long errors = vk_validation_errors_total();
-    printf("probe-vkcopy-astc: %s (%u/5 cases, %u checks, %ld validation errors)\n",
-        bad || errors ? "FAILED" : "passed", completed, checks, errors);
+    unsigned total = sizeof cases / sizeof cases[0] + sizeof t2t_cases / sizeof t2t_cases[0];
+    printf("probe-vkcopy-astc: %s (%u/%u cases, %u intentional skips, %u checks, %ld validation errors)\n",
+        bad || errors ? "FAILED" : "passed", completed, total, skipped, checks, errors);
     printf("probe-vkcopy-astc: independent image pitch, compute-program restoration, native/CPU/BC modes not covered\n");
     return bad || errors;
 }
