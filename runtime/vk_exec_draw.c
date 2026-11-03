@@ -1025,7 +1025,13 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
                        written, &bi)) {
-            if (written && bi.buffer != VK_NULL_HANDLE) note_written(ex, b->addr - lead, bi.range);
+            if (written && bi.buffer != VK_NULL_HANDLE) {
+                note_written(ex, b->addr - lead, bi.range);
+                const uint8_t *ctl, *code;
+                uint32_t len;
+                if (vk_sync_noting() && ex->prog && find_stage(ex->prog, st, &ctl, &code, &len))
+                    vk_sync_note_write(b->addr - lead, bi.range, nvn2_origin(code));
+            }
             return bi;
         }
         if (b->addr) warn_once(W_SSBO_ALIGN, "storage buffer %#llx is not backed or not aligned: a zero buffer is bound",

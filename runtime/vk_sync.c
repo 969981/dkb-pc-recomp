@@ -95,8 +95,10 @@ static void ts_setup(VkCtx *c) {
 // for at least TOTK_PERF_SLOW_GPU_MS (default 100) gets a line naming its work, at most 200 lines. A respawn in the
 // Ingot Isle Cave-In section (#10) spent about 16.8 s of GPU time per frame inside the replay's parts.
 #define NOTE_PAIRS 6
-#define NOTE_ARGS 65536   // indirect argument addresses kept per part
-typedef struct { uint64_t addr, a, b; } NoteArg;
+#define NOTE_ARGS 65536   // indirect argument addresses and storage writes kept per part
+// size 0: an indirect draw's arguments at addr, drawn by stages a/b; else a storage write of [addr, addr+size) by
+// stage a, in recording order with the draws.
+typedef struct { uint64_t addr, a, b, size; } NoteArg;
 typedef struct {
     uint32_t draws, draws_ind, dispatches, dispatches_ind, pairs;
     uint64_t max_work, max_a, max_b;               // the largest direct draw (vertices x instances) or dispatch (groups)
@@ -109,7 +111,7 @@ static PartNote note;   // the part being recorded (sub_lock, like ts_cur)
 
 int vk_sync_noting(void) { return ts_cur >= 0; }
 
-void vk_sync_note_args(uint64_t addr) {
+static void note_push(NoteArg e) {
     if (ts_cur < 0 || note.nargs >= NOTE_ARGS) return;
     if (note.nargs == note.cap) {
         uint32_t cap = note.cap ? 2 * note.cap : 256;
@@ -117,7 +119,13 @@ void vk_sync_note_args(uint64_t addr) {
         if (!p) return;
         note.args = p, note.cap = cap;
     }
-    note.args[note.nargs++] = (NoteArg){addr, note.last_a, note.last_b};
+    note.args[note.nargs++] = e;
+}
+
+void vk_sync_note_args(uint64_t addr) { note_push((NoteArg){addr, note.last_a, note.last_b, 0}); }
+
+void vk_sync_note_write(uint64_t addr, uint64_t size, uint64_t stage) {
+    if (size) note_push((NoteArg){addr, stage, 0, size});
 }
 
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work) {
@@ -158,7 +166,7 @@ static void slow_part(const TsRead *t, double ms) {
     uint64_t total = 0, max = 0;
     uint32_t read = 0, best = 0, w[5] = {0}, bw[5] = {0};
     for (uint32_t i = 0; i < n->nargs; i++) {
-        if (!plat_mem_readable(n->args[i].addr, sizeof w)) continue;
+        if (n->args[i].size || !plat_mem_readable(n->args[i].addr, sizeof w)) continue;
         memcpy(w, (const void *)(uintptr_t)n->args[i].addr, sizeof w);
         uint64_t work = (uint64_t)w[0] * w[1];   // indices x instances
         read++, total += work;
@@ -169,6 +177,20 @@ static void slow_part(const TsRead *t, double ms) {
                "%llu (%u indices from %u, vertex offset %d, %u instances from %u; %016llx/%016llx)", read, n->draws_ind,
                (unsigned long long)total, (unsigned long long)max, bw[0], bw[2], (int32_t)bw[3], bw[1], bw[4],
                (unsigned long long)(read ? n->args[best].a : 0), (unsigned long long)(read ? n->args[best].b : 0));
+    if (!read) return;
+    // Who stored over those arguments earlier in this part: the last shader write that covers them before the draw.
+    // None means the CPU or an earlier part wrote them, or a shader whose storage the host bound to a stand-in.
+    uint64_t at = n->args[best].addr, by = 0;
+    uint32_t writes = 0;
+    for (uint32_t i = 0; i < best; i++)
+        if (n->args[i].size && at + sizeof w > n->args[i].addr && at < n->args[i].addr + n->args[i].size)
+            writes++, by = n->args[i].a;
+    if (writes)
+        rt_log("perf:   the largest one's arguments at %#llx were written in this part by %u shader stores, the last by %016llx",
+               (unsigned long long)at, writes, (unsigned long long)by);
+    else
+        rt_log("perf:   the largest one's arguments at %#llx were not written by a shader earlier in this part",
+               (unsigned long long)at);
 }
 
 static void ts_read_cb(void *arg) {   // completion thread, in submission order
