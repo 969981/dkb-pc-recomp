@@ -3,6 +3,17 @@
 Milestones of DKB Recomp, newest first. The plan they follow is [bananza-plan.md](bananza-plan.md); open work is in
 the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
+## 3 November 2026
+
+- **The tutorial's guide movies play** (f5f1a23). Their player sends packets until one comes back not ready, then
+  waits on the decoder's submission-ready event, which `nn::codec` signalled only once. The player stopped at its
+  second picture, the flat yellow card the movies open with, so the guide window showed a yellow box. Reserving an
+  output buffer now signals the event, and the window shows the movie.
+- **Contributors' fixes merged**: the Switch 2 counter at 31.25 MHz (#25) and timestamp reports at submit time
+  (#26) take the tutorial from a steady 20 to a steady 30 FPS here; also the README's missing patch table (#16),
+  the replay drain (#23), compute overlap mode (#18), interface array reflection (#21) and IPC session lifetime
+  (#17).
+
 ## 2 November 2026
 
 - **Ten minutes into the tutorial with a workaround for the GPU fault.** Dropping the lighting draws whose fragment
