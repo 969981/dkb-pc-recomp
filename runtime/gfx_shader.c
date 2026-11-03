@@ -853,7 +853,7 @@ static int reflect(GfxShader *s, int require_c0) {
     int storage_version = storage_contract_version(js, end);
     if ((require_c0 && storage_version != GFX_STORAGE_CANDIDATES_VERSION) ||
         (storage_version && (storage_version != GFX_STORAGE_CANDIDATES_VERSION ||
-                             !require_c0 || !s->has_c0 || s->stage != GFX_STAGE_CS))) {
+                             !s->has_c0 || s->stage != GFX_STAGE_CS))) {
         rt_log("gfx_shader: incompatible guarded storage contract; rebuild the shader translator");
         return 0;
     }
