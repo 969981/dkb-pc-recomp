@@ -222,6 +222,33 @@ int main(void) {
     CHECK(ssbo_info(&ex,NVN_STAGE_CS,&user,0).range==1,"user UBO pointer pair must fit the declared block");
     user.cbuf_slot=2; user.handle=0;
     CHECK(ssbo_info(&ex,NVN_STAGE_CS,&user,0).range==1,"unsupported cbuf never fabricates a backing");
+
+    // ubo_info reserves c17 for the zero-filled compute push bank, not UBO14.
+    GfxShaderRes pushed={.cbuf_slot=17,.flags=GFX_RES_SSBO_GUARDED};
+    uint64_t pushed_addr=b+4;
+    memcpy(ex.push[1][0],&pushed_addr,8); ex.push_set[1][0]=3;
+    ex.ubo[NVN_STAGE_CS][14]=(p_bind_buf){.addr=(uint64_t)(uintptr_t)pointer_block,.size=16};
+    CHECK(guarded_storage_binding(&ex,NVN_STAGE_CS,&pushed).addr==pushed_addr &&
+          ssbo_info(&ex,NVN_STAGE_CS,&pushed,0).buffer==(VkBuffer)(uintptr_t)2,
+          "c17 sees the actual compute pushes rather than unrelated user UBO14");
+    ex.ubo[NVN_STAGE_CS][14]=(p_bind_buf){0};
+    CHECK(ssbo_info(&ex,NVN_STAGE_CS,&pushed,0).buffer==(VkBuffer)(uintptr_t)2,
+          "c17 push pointer does not require a bound user UBO14");
+    ex.push_set[1][0]=2;
+    CHECK(guarded_storage_binding(&ex,NVN_STAGE_CS,&pushed).addr==b,
+          "unset low push word reads zero even if stale raw storage is nonzero");
+    ex.push_set[1][0]=1;
+    CHECK(guarded_storage_binding(&ex,NVN_STAGE_CS,&pushed).addr==4 &&
+          ssbo_info(&ex,NVN_STAGE_CS,&pushed,0).range==1,
+          "unset high push word reads zero rather than stale pointer bits");
+    ex.push_set[1][0]=0;
+    CHECK(ssbo_info(&ex,NVN_STAGE_CS,&pushed,0).range==1,"unwritten c17 has no pointer backing");
+    pushed.handle=62; memcpy(ex.push[1][0]+62,&pushed_addr,8);
+    ex.push_set[1][0]=UINT64_C(3)<<62;
+    CHECK(guarded_storage_binding(&ex,NVN_STAGE_CS,&pushed).addr==pushed_addr,
+          "last complete c17 pair retains both pushed words");
+    pushed.handle=63;
+    CHECK(ssbo_info(&ex,NVN_STAGE_CS,&pushed,0).range==1,"c17 pointer pair cannot cross its bank end");
     free(update);
     printf("storage runtime: %u checks, %u failures\n",checks,failures);
     return failures!=0;

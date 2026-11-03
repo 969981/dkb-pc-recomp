@@ -1037,6 +1037,15 @@ static p_bind_buf guarded_storage_binding(const VkExec *ex, int st, const GfxSha
         memcpy(&c1, ctl + 0x700, 4);
         if (c1 > len || off > len - c1 || len - c1 - off < 8) return b;
         memcpy(&b.addr, code + c1 + off, 8);
+    } else if (r->cbuf_slot == 17) {
+        // ubo_info binds the synthetic compute push bank here, before its user-UBO mapping. Unwritten words are zero.
+        if (off > sizeof ex->push[1][0] - 8) return b;
+        uint32_t words[2] = {0};
+        for (unsigned i = 0; i < 2; i++) {
+            unsigned word = r->handle + i;
+            if (ex->push_set[1][0] >> word & 1) words[i] = ex->push[1][0][word];
+        }
+        memcpy(&b.addr, words, 8);
     } else if (ubo_ptr_res(r)) {
         b.addr = ubo_ptr(ex, st, r);
     }
