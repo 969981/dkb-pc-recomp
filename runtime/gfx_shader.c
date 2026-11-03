@@ -1393,6 +1393,45 @@ static int in_load(const uint8_t iid[32], Inputs *in) {
 
 // ---- translation
 
+// Opt-in local repro packets. The existing request serializer includes the exact draw and host answers and c1;
+// retain the same lowered bytes the child read, not a reconstructed default shader variant. These are game data.
+static void dump_failed_request(const char *hex, const char *request, const char *reply,
+                                const uint8_t *code, size_t size) {
+    const char *dir = getenv("DKB_SHADER_FAILURE_DUMP");
+    if (!dir || !*dir) return;
+    static volatile int64_t sequence;
+    char packet[PATH_CAP + 128], json[PATH_CAP + 208], binary[PATH_CAP + 208], error[PATH_CAP + 208];
+    int claimed = 0;
+    mkdir_p(dir);
+    // mkdir is an exclusive claim across runtimes and path aliases. Never replace another writer's packet;
+    // a reused process id or an incomplete older capture gets a new sequence instead.
+    for (int attempt = 0; attempt < 1024; attempt++) {
+        int n = snprintf(packet, sizeof packet, "%s/capture-%u-%llu", dir, (unsigned)plat_process_id(),
+                         (unsigned long long)plat_inc64(&sequence));
+        if (n < 0 || (size_t)n >= sizeof packet) break;
+        int status = plat_fs_mkdir(packet);
+        if (status == PLAT_FS_OK) { claimed = 1; break; }
+        if (status != PLAT_FS_EXISTS) break;
+    }
+    if (!claimed) {
+        rt_log("gfx_shader: cannot claim a failed-request packet directory in %s", dir);
+        return;
+    }
+    snprintf(json, sizeof json, "%s/%s.request.json", packet, hex);
+    // This must differ from translate_one's temporary <key>.code even if dir aliases the shader cache.
+    snprintf(binary, sizeof binary, "%s/%s.failed.code", packet, hex);
+    snprintf(error, sizeof error, "%s/%s.error.txt", packet, hex);
+    // Publish the JSON last: its presence means both the code and original error were written completely.
+    if (!plat_file_write_atomic(binary, code, size) ||
+        !plat_file_write_atomic(error, reply, strlen(reply)) ||
+        !plat_file_write_atomic(json, request, strlen(request))) {
+        rt_log("gfx_shader: cannot save failed translation %s in %s", hex, packet);
+        return;
+    }
+    rt_log("gfx_shader: saved failed translation %s in %s (game data: keep local; tools/replay_shader_failure.py replays it)",
+           hex, packet);
+}
+
 static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
                                       const GfxShaderAnswers *a) {
     const uint8_t *key = r->key;
@@ -1418,6 +1457,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     if (!req) return plat_file_delete(code_path), fail("out of memory", hex);
     build_request(req, hex, r->stage_name, code_path, r->c1, r->c1_len, a, control);
     int ok = svc_request(req, reply, sizeof reply);
+    if (ok && strncmp(reply, "ok ", 3)) dump_failed_request(hex, req, reply, code + skip, (size_t)(r->length - skip));
     free(req);
     plat_file_delete(code_path);
     if (!ok) return fail("translator unavailable", hex);
