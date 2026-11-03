@@ -9,6 +9,10 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
   `0x1`, which the host used to skip. Vulkan's clears ignore the write mask, so a full-screen triangle now replaces
   only the masked bits, in its own pass per layer, leaving depth and the other stencil bits alone. A 600 s run here
   had no fault and 0 validation errors. Nobody has shown yet whether this changes the black cave surfaces.
+- **Timestamp reports keep their submission's tick** (#37, by monsterlag). The tick a report carries used to be
+  looked up in a 1,024-slot ring by fence value, so a report that completed before the submit published its slot, or
+  after another fence reused it, fell back to the completion time and could run backwards (100 ms, then 20 ms). The
+  tick now travels with the submission to each report.
 - **The later GPU fault is not about pipeline timing.** With pipelines built synchronously (`TOTK_PIPE_SYNC=1`,
   `TOTK_PIPE_WAIT=draw`, as `--shot` does), 2 of 4 runs of 600 s still faulted around 7 minutes in, the same rate as
   with background builds. The vertex shader on the GPU changes from fault to fault
