@@ -8,6 +8,8 @@ No game data or GPU is used. The small evaluator executes only this fixture's em
 SPIR-V subset; it checks the requested numeric contract, not a driver's float controls.
 
 Usage: python tests/float_minmax_test.py --translator PATH [--spirv-val PATH]
+Build that translator with tools/build_xlate.py --defined-float-minmax. The default
+fast translator intentionally does not satisfy this strict numeric regression.
 """
 import argparse
 import json
