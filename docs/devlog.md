@@ -5,6 +5,13 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **An installer for Bananza** (#19, by monsterlag). From your own base 1.0.0 ExeFS and RomFS folders it packs the
+  RomFS, builds the shader translator, lifts the code with the patch table and builds `dkb.exe`, from this checkout
+  with the toolchain listed in [installer.md](installer.md).
+- **The GPU fault after the first guide movie is not one shader's.** Leaving out the vertex shader that faults moves
+  the fault to another vertex shader of the same instanced light-quad family. Three NVIDIA drivers hit it at the same
+  point: 621.01 and 617.42 with an invalid instruction pointer, 617.14 with a crash inside the driver's shader
+  compiler ([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
 - **The tutorial's guide movies play** (f5f1a23). Their player sends packets until one comes back not ready, then
   waits on the decoder's submission-ready event, which `nn::codec` signalled only once. The player stopped at its
   second picture, the flat yellow card the movies open with, so the guide window showed a yellow box. Reserving an

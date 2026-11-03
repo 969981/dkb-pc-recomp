@@ -24,7 +24,8 @@ As far as we know, no other static recompilation of a Switch 2 game is public.
 
 **Not playable yet.** The game boots, goes through the title screen into the tutorial cave, renders the 3D scene and
 answers the controller: punching opens the first guide movie. It still crashes often, and many effects are missing.
-There is no release and no installer. Progress, day by day: [docs/devlog.md](docs/devlog.md).
+There is no release. An installer builds the game from your own dump: [docs/installer.md](docs/installer.md).
+Progress, day by day: [docs/devlog.md](docs/devlog.md).
 
 | Phase | | State |
 | --- | --- | --- |
@@ -33,7 +34,7 @@ There is no release and no installer. Progress, day by day: [docs/devlog.md](doc
 | F2 NVN 2 | ✅ | 700 NVN 2 entry points answered; the game loop runs. 51 new command buffer calls (mesh shaders, VRS, DLSS, push constants…) are accepted but not recorded yet. |
 | F3 Shaders | ✅ | All 4,820 Ampere shader stages of the first 3D scene go through Eglantine's Ampere-to-Maxwell lowering and TotK Recomp's translator to SPIR-V. |
 | F4 Vulkan | ✅ | The title screen and the tutorial's 3D scene render. |
-| F5 Playable | 🚧 | Controller, guide movies (VP9) and graphics push constants work. Open: a GPU fault or freeze right after the first movie frame, compute push constants, colour grading, some textures, saves, performance, installer. |
+| F5 Playable | 🚧 | Controller, guide movies (VP9) and graphics push constants work. Open: a GPU fault or freeze right after the first movie frame, compute push constants, some textures, saves, performance. |
 
 The plan, phase by phase: [docs/bananza-plan.md](docs/bananza-plan.md). What is open right now:
 [Roadmap to playable](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
@@ -68,18 +69,16 @@ being worked on right now.
 - [#3](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/3) **Test on your GPU.** Everything so far was checked
   on one NVIDIA card. Runs on AMD, Intel and other NVIDIA cards, with logs, show what breaks there.
 - [#7](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/7) **Play past the tutorial** and report where it stops.
-- [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9) **The GPU fault after the first guide movie**: runs
-  on other GPUs show whether it is ours or one driver's.
+- [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9) **The GPU fault after the first guide movie**: seen
+  on three NVIDIA drivers (617.14, 617.42, 621.01); runs on AMD and Intel would show whether it is NVIDIA's.
 
 **Code** ([help wanted](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues?q=is%3Aopen+label%3A%22help+wanted%22)):
 
 - [#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2) **NVN 2 compute push constants**: graphics ones are
   done (bank 24); find where compute shaders read theirs.
-- [#4](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/4) **Colour grading 3D LUT** comes out empty.
 - [#5](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/5) **Checkerboard textures** on some rock surfaces. The Switch 2 GOB layout (f4f7b17) fixes the gold rock in the tutorial cave; the other surfaces still need a check.
 - [#6](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/6) **NVN 2 calls not recorded yet**: mesh shaders, VRS,
   DLSS and others.
-- [#8](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/8) **Installer** on TotK Recomp's model.
 - **Symbols.** Function names help debugging. They come from
   [GRAnimated/DKBananza](https://github.com/GRAnimated/DKBananza), which welcomes contributions too.
 
@@ -124,8 +123,7 @@ RAM, so 16 GB is the minimum for now. Running and testing: [docs/dkb-testing.md]
 [roadmap](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10) or the [devlog](docs/devlog.md).
 
 **Will there be a download?** No. The executable is made from the game's own code, so it cannot be shared. Everyone
-builds it from their own dump; an installer that does this for you is planned
-([#8](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/8)).
+builds it from their own dump; the installer does this for you ([docs/installer.md](docs/installer.md)).
 
 **Which version of the game?** Base 1.0.0. Update 458752 has a different layout and is not supported yet.
 
