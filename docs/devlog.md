@@ -5,6 +5,15 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Compute push constants land where the shaders read them** (#20, by monsterlag). NVN 2 packs a compute program's
+  root tables into c0 after its 16-byte head, each padded to 16 bytes, before the buffer tables; the shader control
+  gives each table's word count. A test run showed the game pushing 32 bytes into root table 0 of the upscaler: its two
+  image rectangles (`{0, 0, 1919, 1079}` at 1080p, changing with the dynamic resolution), which the host used to guess
+  from the bound images. The tutorial looks the same; the translator has to be rebuilt
+  ([#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2)).
+- **ExitThread works with Windows context IP validation** (#33, by zswxp59). The thread exit's `longjmp` now uses
+  MinGW's SEH-aware `setjmp`; the non-SEH form failed with `FAST_FAIL_INVALID_SET_OF_CONTEXT` on Windows 26300
+  ([#31](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/31)).
 - **An installer for Bananza** (#19, by monsterlag). From your own base 1.0.0 ExeFS and RomFS folders it packs the
   RomFS, builds the shader translator, lifts the code with the patch table and builds `dkb.exe`, from this checkout
   with the toolchain listed in [installer.md](installer.md).
