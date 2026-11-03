@@ -13,6 +13,12 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
   looked up in a 1,024-slot ring by fence value, so a report that completed before the submit published its slot, or
   after another fence reused it, fell back to the completion time and could run backwards (100 ms, then 20 ms). The
   tick now travels with the submission to each report.
+- **The later GPU fault comes from one stage pair** ([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
+  Logging every distinct stage pair showed that the runs where one instanced quad's vertex shader drew all faulted,
+  4 of 4, and the two where it never came up didn't. Leaving out only that vertex stage gave 0 faults in 4 runs of
+  600 s. Nothing in its SPIR-V is rare; what it shares with the early light quads is still being narrowed down.
+- **Guest thread exits check their jump frame** (#34, by monsterlag). After #33, both thread entry points stop with a
+  clear error if the CRT's `setjmp` recorded no frame, instead of failing fast later in `longjmp`.
 - **The later GPU fault is not about pipeline timing.** With pipelines built synchronously (`TOTK_PIPE_SYNC=1`,
   `TOTK_PIPE_WAIT=draw`, as `--shot` does), 2 of 4 runs of 600 s still faulted around 7 minutes in, the same rate as
   with background builds. The vertex shader on the GPU changes from fault to fault
