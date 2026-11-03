@@ -510,7 +510,7 @@ int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, cons
             bcp[i1 - i0] = (VkBufferCopy){rg[i1].src, in, region_in(&rg[i1], bw, bh)};
             in += region_in(&rg[i1], bw, bh), out += region_out(&rg[i1]);
         }
-        vk_crumb(cb, VK_CRUMB_ASTC, ++n_chunks);
+        rec_crumb(cb, VK_CRUMB_ASTC, ++n_chunks);
         if (chunks)   // the previous chunk's dispatches and image copy are done with the scratch
             mem_barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                         VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
