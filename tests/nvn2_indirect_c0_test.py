@@ -36,6 +36,22 @@ static struct { int c0_valid[3]; uint64_t c0_off[3]; VkBuffer c0_buf[3]; } B;
 static uint8_t bank[NVN2_C0_BYTES];
 static uint32_t arguments[4] = {0xdeadbeef,3,5,7}, groups[3];
 static unsigned copies, dispatches, barriers;
+static struct {
+    const VkExec *ex;
+    int kind, twin_dispatch;
+    uint64_t work;
+    unsigned calls, recorded, dispatches;
+} noted;
+// Keep the profiling callback bounded to one snapshot, including when the command was recorded.
+static void note_work(const VkExec *ex, int kind, uint64_t work) {
+    noted.ex = ex;
+    noted.kind = kind;
+    noted.work = work;
+    noted.recorded = ex->recorded;
+    noted.dispatches = dispatches;
+    noted.twin_dispatch = twin_dispatch;
+    noted.calls++;
+}
 static void warn_once(int code, const char *format, ...) { (void)code; (void)format; abort(); }
 static int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *sp) {
     (void)addr; (void)size; *sp = (VkMemSpan){(uint8_t *)arguments,4,0}; return 1;
@@ -79,11 +95,16 @@ static void run(const Nvn2C0Layout *layout, unsigned expected_copies) {
     p_dispatch_ind d = {0,0};
     c0_lay = layout;
     copies = dispatches = barriers = 0;
+    memset(&noted, 0, sizeof noted);
     op_dispatch_ind(&ex, &d);
     CHECK(dispatches == 1 && !memcmp(groups, arguments + 1, sizeof groups), "indirect dispatch keeps actual GPU arguments");
     CHECK(copies == expected_copies, "only the NVN 1 bank receives the legacy dimension copy");
     CHECK(ex.recorded == 1 + expected_copies && barriers == 1 + expected_copies, "copy bookkeeping follows the selected ABI");
     CHECK(B.c0_valid[2] == (bind_c0 && !expected_copies), "the NVN 2 packed bank stays reusable");
+    CHECK(noted.calls == 1 && noted.ex == &ex, "indirect dispatch profiles its executor exactly once");
+    CHECK(noted.kind == 3 && noted.work == 0, "indirect profiling keeps the GPU-only work count unknown");
+    CHECK(noted.recorded == 1 + expected_copies && noted.dispatches == 1 && !noted.twin_dispatch,
+          "profiling follows the recorded indirect dispatch and resource binding");
 }
 
 int main(void) {
