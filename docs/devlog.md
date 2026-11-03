@@ -12,6 +12,10 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
   the fault to another vertex shader of the same instanced light-quad family. Three NVIDIA drivers hit it at the same
   point: 621.01 and 617.42 with an invalid instruction pointer, 617.14 with a crash inside the driver's shader
   compiler ([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
+- **A mitigation for that fault** (84a8f7d). On NVIDIA, the light-quad draws whose vertex stage fetches ten
+  per-instance streams are skipped (`TOTK_FIX_VS_FAULT=0` draws them). The rest of the family draws, so the scene
+  keeps its lighting. In two 600 s runs, one played to the end (30 FPS in its last minutes) and one faulted later,
+  deep in the mining tunnel; without it every run faults right after the first movie.
 - **The tutorial's guide movies play** (f5f1a23). Their player sends packets until one comes back not ready, then
   waits on the decoder's submission-ready event, which `nn::codec` signalled only once. The player stopped at its
   second picture, the flat yellow card the movies open with, so the guide window showed a yellow box. Reserving an

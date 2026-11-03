@@ -55,7 +55,8 @@ Each phase ends in a milestone someone else can check. The order follows the cri
       123 that read a storage buffer at c0+0x530) does not matter. Its fragment code, its data and rasterisation are
       ruled out; leaving out only the draw command passes. Leaving out that shader moves the fault to another vertex
       shader of the same light-quad family. Seen on NVIDIA 617.14 (a crash inside the driver's shader compiler),
-      617.42 and 621.01. [#9]
+      617.42 and 621.01. Mitigated (84a8f7d, `TOTK_FIX_VS_FAULT`): the quads with ten instance streams are skipped on
+      NVIDIA, and a later fault in another shader still happens in some runs. [#9]
 - [~] `nvnCommandBufferPush{Graphics,Compute}Constants`: recorded (33628c7). Graphics root table 0 is bank 24, read by
       the full-screen blits, which now get the pushed `{1/w, 1/h, w, h}`. Where compute shaders read their pushes
       is not known: no compute stage reads bank 24. [#2]
