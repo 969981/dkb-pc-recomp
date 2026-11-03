@@ -1758,7 +1758,7 @@ static int nspare, cap_spare;
 static uint64_t next_seq, done_seq;   // batches handed out / completed (all batches up to done_seq)
 static Dead *dead;
 static int ndead, cap_dead;
-static uint64_t tl_noted;             // newest timeline value vk_sync.c reported submitted
+static uint64_t tl_protected;         // newest submission being recorded or submitted; guards deferred destruction
 
 static void cmd_init(void *p) {
     (void)p;
@@ -1939,7 +1939,7 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     plat_rmutex_lock(&cmd_lock);
     if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
     // The open batch may record into the object: it counts as the newest user.
-    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl_noted};
+    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl_protected};
     plat_rmutex_unlock(&cmd_lock);
 }
 
@@ -1959,10 +1959,11 @@ void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc) {
     if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc);
 }
 
-void vk_mem_note_submit(uint64_t timeline_value) {
+void vk_mem_protect_until(uint64_t timeline_value) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
-    if (timeline_value > tl_noted) tl_noted = timeline_value;
+    // New retirements conservatively share the frontier; already queued objects keep their earlier protection value.
+    if (timeline_value > tl_protected) tl_protected = timeline_value;
     plat_rmutex_unlock(&cmd_lock);
 }
 
@@ -1999,11 +2000,11 @@ void vk_mem_shutdown(void) {
     vk_texture_shutdown();
     plat_rmutex_lock(&cmd_lock);
     retire(c, 1);
-    uint64_t keep = tl_noted;
-    tl_noted = 0;
+    uint64_t keep = tl_protected;
+    tl_protected = 0;
     for (int i = 0; i < ndead; i++) dead[i].seq = 0, dead[i].tl = 0;   // the device is idle
     collect_locked(c);
-    tl_noted = keep;
+    tl_protected = keep;
     for (int i = 0; i < nspare; i++) {
         vkDestroyFence(c->device, spare[i].fence, NULL);
         free(spare[i].stg);
