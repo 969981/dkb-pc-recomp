@@ -1432,8 +1432,9 @@ static void thread_finish(RtThread *t) {
     unlock();
 }
 
-// ExitThread: back to the thread start with the CRT's longjmp. Keep the default setjmp: its recorded frame lets
-// Windows validate and unwind the target. A guest fiber switches back to the base stack before reaching this point.
+// ExitThread: back to the thread start with longjmp. On Windows the default MinGW setjmp records the stack frame,
+// which the CRT needs to validate the target when SetContextIpValidation is enabled. The non-SEH variant records a
+// null frame and longjmp fails with FAST_FAIL_INVALID_SET_OF_CONTEXT on such systems.
 // (__builtin_setjmp is not usable: on Win64 LLVM saves the frame address, which is not rbp when the frame register
 // is offset, and the landing code then reads its locals through the wrong base.)
 static __attribute__((noreturn)) void exit_now(RtThread *t) { longjmp(t->exit_jmp, 1); }

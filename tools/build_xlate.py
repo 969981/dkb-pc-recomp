@@ -1,16 +1,18 @@
 """Build the shader translator: build/xlate/totk_xlate.exe (Ryujinx 1.3.2 + patches, NativeAOT, SPIR-V for Vulkan).
 
-Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies tools/xlate/patches/*.patch there (tools/vendor stays
-byte-identical; 0001-0004 are MNG's, 0005-0009 are ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
+Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies the selected tools/xlate/patches there (tools/vendor stays
+byte-identical), then runs `dotnet publish`. The default applies patches 0001-0013, preserving the fast floating
+min/max/clamp operations. --defined-float-minmax also applies 0014's integer selection and numeric constant folding;
+this adds shader ALU work and has no established game visual or frame-time benefit. Needs the .NET 10 SDK, the MSVC build
 tools and vswhere.exe (docs/building.md). Run with .venv. On Linux it builds build/xlate/totk_xlate for linux-x64, which
 NativeAOT links with the system's clang (no MSVC); NativeAOT builds for the OS it runs on only.
 
 Next to the exe it writes totk_xlate.id: the translator identity, a sha256 over everything the build reads (this script,
-Program.cs, the csproj, the patches, the vendor tree). runtime/gfx_shader.c puts it into every shader cache key, so a
+Program.cs, the csproj, the selected patches, the vendor tree). runtime/gfx_shader.c puts it into every shader cache key, so a
 translator change re-keys the cache without a hand-made KEY_VERSION bump. --id-only writes it for the exe already built
-(the caller vouches that the exe matches the sources).
+(the caller vouches that the exe matches the sources and must use the same --defined-float-minmax setting).
 
-  python tools/build_xlate.py [--id-only] [--out DIR]
+  python tools/build_xlate.py [--defined-float-minmax] [--id-only] [--out DIR]
 
 --out builds into DIR instead of build/xlate (a task build dir: totk.exe takes the translator next to it).
 """
@@ -32,6 +34,7 @@ BUILD = ROOT / "build" / "xlate"
 WIN = os.name == "nt"
 EXE = "totk_xlate.exe" if WIN else "totk_xlate"
 VSWHERE_DIR = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer"
+DEFINED_FLOAT_MINMAX_PATCH = "0014-numeric-float-minmax-and-saturation.patch"
 
 
 def tree_hashes(base: Path) -> dict[str, str]:
@@ -91,17 +94,24 @@ def verify_vendor() -> None:
     print(f"vendor identical to MNG: {len(ours)} files")
 
 
-def prepare_sources() -> Path:
+def selected_patches(*, defined_float_minmax: bool = False) -> list[Path]:
+    patches = sorted((XLATE / "patches").glob("*.patch"))
+    if len(patches) != 14:
+        sys.exit(f"expected 14 patches, found {len(patches)}")
+    optional = XLATE / "patches" / DEFINED_FLOAT_MINMAX_PATCH
+    if optional not in patches:
+        sys.exit(f"missing optional patch: {DEFINED_FLOAT_MINMAX_PATCH}")
+    return patches if defined_float_minmax else [p for p in patches if p != optional]
+
+
+def prepare_sources(*, defined_float_minmax: bool = False) -> Path:
     src = BUILD / "ryujinx"
     if BUILD.exists():
         shutil.rmtree(BUILD / "ryujinx", ignore_errors=True)
     shutil.copytree(VENDOR, src)
     for junk in list(src.glob("src/*/obj")) + list(src.glob("src/*/bin")):
         shutil.rmtree(junk)
-    patches = sorted((XLATE / "patches").glob("*.patch"))
-    if len(patches) != 13:
-        sys.exit(f"expected 13 patches, found {len(patches)}")
-    for patch in patches:
+    for patch in selected_patches(defined_float_minmax=defined_float_minmax):
         # git apply works outside a repository when given a directory; --check first so a failure names the patch.
         for extra in (["--check"], []):
             r = subprocess.run(
@@ -114,11 +124,11 @@ def prepare_sources() -> Path:
     return src
 
 
-def identity() -> str:
+def identity(*, defined_float_minmax: bool = False) -> str:
     """sha256 over the translator's inputs, in a fixed order: path and content hash of each file."""
     h = hashlib.sha256()
     files = [Path(__file__).resolve(), XLATE / "Program.cs", XLATE / "totk_xlate.csproj",
-             *sorted((XLATE / "patches").glob("*.patch"))]
+             *selected_patches(defined_float_minmax=defined_float_minmax)]
     for f in files:
         h.update(f"{f.name}\0{hashlib.sha256(f.read_bytes()).hexdigest()}\n".encode())
     for rel, digest in tree_hashes(VENDOR).items():
@@ -126,8 +136,8 @@ def identity() -> str:
     return h.hexdigest()
 
 
-def write_identity(exe: Path) -> None:
-    ident = identity()
+def write_identity(exe: Path, *, defined_float_minmax: bool = False) -> None:
+    ident = identity(defined_float_minmax=defined_float_minmax)
     exe.with_suffix(".id").write_text(ident + "\n", encoding="ascii")
     print(f"translator identity {ident[:16]} -> {exe.with_suffix('.id')}")
 
@@ -136,6 +146,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--id-only", action="store_true", help="write totk_xlate.id for the exe already built")
     parser.add_argument("--out", type=Path, help="build directory instead of build/xlate")
+    parser.add_argument("--defined-float-minmax", action="store_true",
+                        help="opt in to numeric NaN/signed-zero min/max/SAT via integer selection (more shader ALU work)")
     parser.add_argument("--llvm", type=Path, help="Linux: an LLVM directory whose bin/clang and lld link the exe")
     parser.add_argument("--sysroot", type=Path, help="Linux: link against this sysroot's glibc instead of the host's "
                                                      "(tools/make_release_linux.py)")
@@ -144,7 +156,7 @@ def main() -> None:
         global BUILD
         BUILD = a.out.resolve()
     if a.id_only:
-        write_identity(BUILD / EXE)
+        write_identity(BUILD / EXE, defined_float_minmax=a.defined_float_minmax)
         return
     started = time.time()
     dotnet = shutil.which("dotnet")
@@ -157,7 +169,7 @@ def main() -> None:
         env["PATH"] = str(VSWHERE_DIR) + os.pathsep + env["PATH"]
 
     verify_vendor()
-    src = prepare_sources()
+    src = prepare_sources(defined_float_minmax=a.defined_float_minmax)
     work = BUILD / "xlate"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -178,7 +190,7 @@ def main() -> None:
         sys.exit("dotnet publish failed")
     exe = BUILD / EXE
     shutil.copy2(out / EXE, exe)
-    write_identity(exe)
+    write_identity(exe, defined_float_minmax=a.defined_float_minmax)
     print(f"built {exe} ({exe.stat().st_size / 1e6:.1f} MB) in {time.time() - started:.0f} s")
 
 

@@ -66,6 +66,27 @@ Result: every stage of the first 3D scene lowers and translates (4,820 of 4,820)
 shared and local memory index (patch 0013), because the game's neural upscaler reads shared memory out of bounds
 ([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
 
+## Replaying a failed translation locally
+
+Set `DKB_SHADER_FAILURE_DUMP` to an absolute path under an ignored `build/` directory before launching the game.
+Each failed translator request gets an exclusively claimed `capture-<process>-<sequence>` directory there, holding
+`<key>.request.json`, `<key>.failed.code` and `<key>.error.txt`.
+The request preserves the actual draw/host answers and inline constants; the code is the lowered Maxwell input.
+Normal cache cleanup stays enabled. Existing packets stay unchanged, including when multiple runtimes share the
+dump directory; an incomplete older packet does not block a new capture. Native Ampere input capture remains
+the separate `DKB_SHADER_DUMP` option.
+
+Replay one packet without the game or GPU:
+
+```text
+python tools/replay_shader_failure.py build/shader-failures/<capture>/<key>.request.json --translator build/xlate/totk_xlate.exe --out build/shader-replay
+```
+
+The tool sets `DMSH_STACK=1` for the translator child and retains its reply and stack output in `reply.txt` and
+`stderr.txt` under `--out`. It uses the captured sibling `.failed.code` file, so the original temporary cache path may be gone.
+Use the same translator executable/identity when reproducing a report. Packets and replay output contain game-derived
+code or constants: keep them local and out of commits and public attachments. The option is off by default.
+
 ## Constant banks
 
 - **c0, driver bank.** Graphics stages use NVN 1's layout (vertex storage buffers at 0x110, pixel at 0x510). Compute
