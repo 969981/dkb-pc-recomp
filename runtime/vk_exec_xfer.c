@@ -336,6 +336,7 @@ static int cond_enabled(const p_render_cond *c) {
 typedef struct {
     const VkTexImage *img;
     VkImageAspectFlags aspect;
+    TexVkFormat f;
     uint32_t level, layer0;
     int bpb, bw, bh;
     int32_t x, y, z;           // region origin
@@ -344,14 +345,16 @@ typedef struct {
 
 // Resolves tex, its view and a copy region to image coordinates. 0 (warned) when the copy cannot be replayed.
 static int sub_resolve(const tex_t *t, const view_t *v, int has_v, const NVNcopyRegion *r, int defaults_to_level,
-                       Sub *s) {
+                       int allow_decoded, Sub *s) {
     memset(s, 0, sizeof *s);
     if (!t) return 0;
     TexVkFormat f;
-    if (!tex_vk_format(t->d.format, &f) || f.vk != f.ideal || f.expand_rgb || f.astc_bw) {
+    if (!tex_vk_format(t->d.format, &f)) return 0;
+    if (!allow_decoded && (f.vk != f.ideal || f.expand_rgb || f.astc_bw)) {
         warn_once(W_FORMAT, "copy of format %#x texture (decoded or expanded on upload): skipped", t->d.format);
         return 0;
     }
+    s->f = f;
     s->bpb = nvn_fmt_bpb(t->d.format, &s->bw, &s->bh);
     s->img = vk_texture_get(t);
     if (!s->img || !s->bpb) {
@@ -426,7 +429,7 @@ static int buffer_side(const VkExec *ex, const Sub *s, uint64_t addr, uint64_t *
 
 static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     Sub s;
-    if (!sub_resolve(p->tex, &p->view, p->has_view, &p->r, 1, &s)) return;
+    if (!sub_resolve(p->tex, &p->view, p->has_view, &p->r, 1, to_image, &s)) return;
     uint64_t size;
     VkBufferImageCopy c;
     VkMemSpan m;
@@ -434,17 +437,68 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     vk_mem_count(m.cls, to_image ? VK_MUSE_COPY_SRC : VK_MUSE_GPU_WRITE, size);
     vk_exec_pass_end(ex);
     vk_exec_barrier(ex);
-    if (to_image) vkCmdCopyBufferToImage(ex->cb, m.buffer, s.img->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
-    else vkCmdCopyImageToBuffer(ex->cb, s.img->image, VK_IMAGE_LAYOUT_GENERAL, m.buffer, 1, &c);
+    int written = 0;
+    if (to_image && s.f.astc_bw && vk_astc_gpu()) {
+        uint32_t wb = (s.w + (uint32_t)s.bw - 1) / (uint32_t)s.bw, hb = (s.h + (uint32_t)s.bh - 1) / (uint32_t)s.bh;
+        uint64_t tight_row = (uint64_t)wb * (uint64_t)s.bpb;
+        // vk_astc_record takes tight block rows (no row pitch); fall back to the skip warning on non-tight rows or layer strides.
+        if ((ex->copy_stride > 0 && (uint64_t)ex->copy_stride != tight_row) ||
+            (c.bufferRowLength && c.bufferRowLength != wb * (uint32_t)s.bw) ||
+            (c.bufferImageHeight && c.bufferImageHeight != hb * (uint32_t)s.bh)) {
+            warn_once(W_FORMAT, "copy of format %#x texture (non-tight stride): skipped", p->tex->d.format);
+            return;
+        }
+        VkAstcRegion *ar = calloc(s.nz, sizeof *ar);
+        if (!ar) return;
+        uint64_t img_bytes = tight_row * (uint64_t)hb;
+        int is3d = s.img->type == VK_IMAGE_TYPE_3D;
+        for (uint32_t z = 0; z < s.nz; z++) {
+            ar[z] = (VkAstcRegion){
+                .src = m.offset + z * img_bytes,
+                .w = s.w,
+                .h = s.h,
+                .slices = 1,
+                .level = s.level,
+                .layer = is3d ? 0 : s.layer0 + (uint32_t)s.z + z,
+                .offset = (VkOffset3D){s.x, s.y, is3d ? s.z + (int32_t)z : 0}
+            };
+        }
+        written = vk_astc_record(ex->cb, m.buffer, size, ar, (int)s.nz, s.f.astc_bw, s.f.astc_bh, s.f.astc_srgb, s.f.astc_bc,
+                                 s.img->image, s.aspect, VK_NULL_HANDLE);
+        free(ar);
+        if (!written) {
+            warn_once(W_FORMAT, "ASTC compute copy of format %#x texture failed to record: skipped", p->tex->d.format);
+            return;
+        }
+        vk_exec_draw_new_cb();
+        ex->dirty = VK_EXEC_DIRTY_ALL;
+        vk_exec_barrier(ex);
+    } else if (to_image && (s.f.vk != s.f.ideal || s.f.expand_rgb || s.f.astc_bw)) {
+        warn_once(W_FORMAT, "copy of format %#x texture (decoded or expanded on upload): skipped", p->tex->d.format);
+        return;
+    } else if (to_image) {
+        vkCmdCopyBufferToImage(ex->cb, m.buffer, s.img->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        written = 1;
+    } else {
+        if (s.f.vk != s.f.ideal || s.f.expand_rgb || s.f.astc_bw) {
+            warn_once(W_FORMAT, "readback of format %#x texture (decoded or expanded on upload): skipped", p->tex->d.format);
+            return;
+        }
+        vkCmdCopyImageToBuffer(ex->cb, s.img->image, VK_IMAGE_LAYOUT_GENERAL, m.buffer, 1, &c);
+        written = 1;
+    }
     ex->recorded++;
-    if (to_image) vk_texture_gpu_written(p->tex);
-    else vk_mem_gpu_wrote(&m, size), note_gpu_write(ex, p->src, size);
+    if (to_image) {
+        if (written) vk_texture_gpu_written(p->tex);
+    } else {
+        vk_mem_gpu_wrote(&m, size), note_gpu_write(ex, p->src, size);
+    }
 }
 
 static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
     Sub s, d;
-    if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, &s)) return;
-    if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, &d)) return;
+    if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, 0, &s)) return;
+    if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, 0, &d)) return;
     d.nz = s.nz;
     int same_size = s.w == d.w && s.h == d.h;
     int same_format = s.img->format == d.img->format;
@@ -566,7 +620,7 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
     const tex_t *t = p->tex;
     if (!t) return;
     Sub s;
-    if (!sub_resolve(t, &p->view, p->has_view, &p->r, 1, &s)) return;
+    if (!sub_resolve(t, &p->view, p->has_view, &p->r, 1, 0, &s)) return;
     const VkTexImage *img = s.img;
     int is3d = img->type == VK_IMAGE_TYPE_3D;
     uint32_t lw = max1(img->width >> s.level), lh = max1(img->height >> s.level);

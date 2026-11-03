@@ -428,6 +428,7 @@ static int selftest(void) {
     mem_kernel_free(k1, 0x200);
     CHECK(mem_kernel_alloc(0x200, 16) == k1, "a freed kernel-region block is not reused");
     check_memory();
+    CHECK(!vk_backend_selftest(), "the replay write-back deduplication");
 
     float used, total, proc;
     plat_mem_info(&used, &total, &proc);

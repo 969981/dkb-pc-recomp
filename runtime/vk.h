@@ -245,6 +245,11 @@ VkCommandBuffer vk_upload_begin(void);
 void vk_upload_end(void);
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
 uint64_t vk_upload_flush(int wait);
+// Upload batch figures since the previous call (the perf line): GPU time of the timed ones, batches submitted, time
+// threads waited in vk_upload_flush(1), bytes of staging allocated.
+void vk_upload_perf(uint64_t *gpu_ns, uint64_t *timed, uint64_t *batches, uint64_t *wait_ns, uint64_t *bytes);
+// A timestamp query pool of `pairs` pairs on the graphics queue, or VK_NULL_HANDLE without 64-bit timestamps.
+VkQueryPool vk_ts_pool(uint32_t pairs, float *period);
 // Deferred destruction: freed once the upload batches recorded so far and the timeline value last noted have completed.
 void vk_defer_image(VkImage img, VmaAllocation alloc);   // alloc NULL: vkDestroyImage only
 void vk_defer_view(VkImageView view);
