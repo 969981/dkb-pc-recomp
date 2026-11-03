@@ -5,6 +5,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -25,6 +26,9 @@ std::mutex lock;
 // change), and an address key handed those the old lowering. The key is gfx_shader_nvn2_hash (the dump name).
 // ponytail: kept for the process (a few thousand small stages); free with the program if memory ever matters
 std::map<uint64_t, Lowered *> cache;
+// Lowered code buffer -> its key, for nvn2_origin: the draw path asks it on every draw (vk_exec_draw.c
+// light_quad_fault_skip), and a scan of the cache there cost most of the render thread in heavy scenes.
+std::unordered_map<const uint8_t *, uint64_t> origins;
 
 void put32(std::vector<uint8_t> &c, size_t at, uint32_t v) { std::memcpy(c.data() + at, &v, 4); }
 
@@ -143,18 +147,20 @@ extern "C" int nvn2_lower(const uint8_t *control, const uint8_t *code, const uin
     }
     std::lock_guard<std::mutex> g(lock);
     auto [it, fresh] = cache.try_emplace(key, nullptr);
-    if (fresh && (it->second = lower(control, code))) it->second->origin = key;
+    if (fresh && (it->second = lower(control, code))) {
+        it->second->origin = key;
+        origins.emplace(reinterpret_cast<const uint8_t *>(it->second->code.data()), key);
+    }
     if (!it->second) return 0;
     *out_control = it->second->control.data();
     *out_code = reinterpret_cast<const uint8_t *>(it->second->code.data());
     return 1;
 }
 
-// The dump name (gfx_shader_nvn2_hash) of the NVN 2 stage a lowered code buffer came from, or 0. A linear scan: only
-// diagnostics call it.
+// The dump name (gfx_shader_nvn2_hash) of the NVN 2 stage a lowered code buffer came from, or 0. Lowered buffers live
+// for the process, so their addresses never name another stage.
 extern "C" uint64_t nvn2_origin(const uint8_t *code) {
     std::lock_guard<std::mutex> g(lock);
-    for (const auto &[k, v] : cache)
-        if (v && reinterpret_cast<const uint8_t *>(v->code.data()) == code) return v->origin;
-    return 0;
+    auto it = origins.find(code);
+    return it == origins.end() ? 0 : it->second;
 }

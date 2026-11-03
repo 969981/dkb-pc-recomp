@@ -5,6 +5,15 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **The #9 skip no longer slows every draw** ([#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). The
+  skip of the later GPU fault (6da41ba) looks up the NVN 2 name of each draw's vertex stage, and that lookup scanned
+  the whole lowering cache under a lock. A profile of the render thread put 72 % of its samples there. In heavy
+  scenes the replay took about 74 ms a frame, and Bananza's own frame-rate controller answered by asking for 20 fps. The
+  name now comes from an index of lowered code buffers. In one 420 s run of the scripted test, the game presented
+  19,817 frames where it had presented 12,297 before, asked for 60 fps on 86 % of them, and the replay averaged 5.6 ms a
+  frame instead of 29.3 ms (worst window 13 ms, down from 114 ms). The light quad is still skipped, and the run had no
+  fault. The game still asks for 20 fps from about 43 s to 163 s of the test, while the render thread is busy only about 8 ms a frame. The
+  host does not cause that stretch, and it is still being looked into.
 - **Every GPU submission is timed on the perf line** (eb542bc, 6a49228). Upload batches, which also carry the ASTC
   decoding of texture uploads, and the present (blit, colour adjustment, FSR, overlay) went to the queue without
   timestamps. With `TOTK_TRACE=perf` the perf line now gives their GPU time per frame, the batches and bytes staged,
