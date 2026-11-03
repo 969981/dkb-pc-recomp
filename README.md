@@ -76,7 +76,7 @@ being worked on right now.
 - [#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2) **NVN 2 compute push constants**: graphics ones are
   done (bank 24); find where compute shaders read theirs.
 - [#4](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/4) **Colour grading 3D LUT** comes out empty.
-- [#5](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/5) **Checkerboard textures** on some rock surfaces.
+- [#5](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/5) **Checkerboard textures** on some rock surfaces. The Switch 2 GOB layout (f4f7b17) fixes the gold rock in the tutorial cave; the other surfaces still need a check.
 - [#6](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/6) **NVN 2 calls not recorded yet**: mesh shaders, VRS,
   DLSS and others.
 - [#8](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/8) **Installer** on TotK Recomp's model.

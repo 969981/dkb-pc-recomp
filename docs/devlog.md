@@ -5,6 +5,11 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 2 November 2026
 
+- **Block-linear textures use the Switch 2 GOB layout** (f4f7b17). Inside a 64 x 8 GOB, Switch 2 swaps bits 5 and 6
+  of the offset, as Eglantine's `NativeGobOffset` does for every nx2 image. With the Switch 1 layout, textures read
+  straight from the game files came out scrambled; the gold rock in the tutorial cave now has its crystal facets
+  ([#5](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/5)). Textures the copy engine writes round-trip
+  through the same layout, so they looked right either way.
 - **The freeze after the first guide movie is the same GPU fault.** A debugger on a frozen run found a game thread
   spinning in `vk_upload_flush` (`runtime/vk_memory.c`): the device was already lost, `vkWaitForFences` returned at
   once and the loop never checked it. The wait now reports the loss, and 4 of 4 runs end with the same device fault

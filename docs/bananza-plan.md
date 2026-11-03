@@ -58,7 +58,7 @@ Each phase ends in a milestone someone else can check. The order follows the cri
       the full-screen blits, which now get the pushed `{1/w, 1/h, w, h}`. Where compute shaders read their pushes
       is not known: no compute stage reads bank 24. [#2]
 - [ ] Colour grading: the 3D LUT comes out empty. [#4]
-- [ ] Some textures look blocky (checkerboard rocks): probably a format or deswizzle case. [#5]
+- [ ] Some textures look blocky (checkerboard rocks) [#5]: the deswizzle now uses the Switch 2 GOB layout, which fixes the gold rock in the tutorial cave; the other rock surfaces still need a check.
 - [ ] Getting past the tutorial cave. [#7]
 - [ ] Saves: the save is created; saving and loading are not tested yet.
 - [ ] Performance: so far the game presents every third vsync (20 fps). Nobody has profiled it yet.
