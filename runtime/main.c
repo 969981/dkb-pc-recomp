@@ -3,7 +3,7 @@
 //   totk.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
-//     --probe-kernel, --probe-ipc, --probe-services, --probe-fs    host probes
+//     --probe-kernel, --probe-ipc, --probe-ipc-lifetime, --probe-services, --probe-fs    host probes
 //     --probe-dpi       the process DPI awareness (per-monitor v2) and the primary monitor's size; no game files
 //     --probe-gfx-abi   NVN object layouts against nvn.h's reserved sizes; needs no game files
 //     --probe-nvn, --probe-nvn-tex, --probe-window, --probe-shader, --probe-vkmem, --probe-vkexec    graphics probes
@@ -166,12 +166,18 @@ void rt_udf(Cpu *c, uint64_t pc) {
              ldr_describe(c->x[30], lr, sizeof lr));
 }
 
-// CNTPCT_EL0: the Switch counter runs at 19.2 MHz. The scale is set before main, so no thread reads it half written.
+// CNTPCT_EL0: the Switch counter runs at 19.2 MHz, the Switch 2's at 31.25 MHz (Bananza's SDK converts with 31250000 /
+// 10^9 in nn::os::detail::TickManager::ConvertToTick). With 19.2 MHz ticks Bananza measured its frames 1.6 times too
+// long and paced itself at 20 FPS. The scale is set before main, so no thread reads it half written.
 static PlatScale tick_scale;
 
-__attribute__((constructor)) static void tick_scale_init(void) { tick_scale = plat_scale(19200000u, plat_counter_hz()); }
+uint32_t rt_tick_hz(void) { return rt_game_version ? 19200000u : 31250000u; }
+
+__attribute__((constructor)) static void tick_scale_init(void) { tick_scale = plat_scale(rt_tick_hz(), plat_counter_hz()); }
 
 uint64_t rt_ticks(void) { return plat_scaled(tick_scale, plat_counter()); }
+uint64_t rt_ticks_to_ns(uint64_t t) { return (uint64_t)((unsigned __int128)t * 1000000000u / rt_tick_hz()); }
+uint64_t rt_ns_to_ticks(uint64_t ns) { return (uint64_t)((unsigned __int128)ns * rt_tick_hz() / 1000000000u); }
 
 // ---- crash reporter
 typedef struct { uintptr_t host; uint64_t guest; } FnRev;
@@ -432,7 +438,7 @@ static int selftest(void) {
 
 static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
-                    "--probe-cfg | --probe-dpi | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
+                    "--probe-cfg | --probe-dpi | --probe-kernel | --probe-ipc | --probe-ipc-lifetime | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
@@ -525,6 +531,7 @@ int main(int argc, char **argv) {
 #endif
     if (!strcmp(mode, "--probe-kernel")) return probe_kernel();
     if (!strcmp(mode, "--probe-ipc")) return probe_ipc();
+    if (!strcmp(mode, "--probe-ipc-lifetime")) return probe_ipc_lifetime();
     if (!strcmp(mode, "--probe-services")) return probe_services();
     if (!strcmp(mode, "--probe-fs")) return probe_fs();
     if (!strcmp(mode, "--probe-gfx-abi")) return probe_gfx_abi();

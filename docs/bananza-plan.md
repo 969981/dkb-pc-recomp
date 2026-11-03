@@ -53,18 +53,23 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 - [ ] GPU fault (an invalid instruction pointer; the freeze was the same fault, 86fb7cc) right after the first guide
       movie frame. It is the first draw of one instanced light-quad vertex shader, and its fragment stage (one of the
       123 that read a storage buffer at c0+0x530) does not matter. Its fragment code, its data and rasterisation are
-      ruled out; leaving out only the draw command passes. [#9]
-- [~] `nvnCommandBufferPush{Graphics,Compute}Constants`: recorded (33628c7). Graphics root table 0 is bank 24, read by
-      the full-screen blits, which now get the pushed `{1/w, 1/h, w, h}`. Where compute shaders read their pushes
-      is not known: no compute stage reads bank 24. [#2]
-- [ ] Colour grading: the 3D LUT comes out empty. [#4]
+      ruled out; leaving out only the draw command passes. Leaving out that shader moves the fault to another vertex
+      shader of the same light-quad family. Seen on NVIDIA 617.14 (a crash inside the driver's shader compiler),
+      617.42 and 621.01. Mitigated (84a8f7d, `TOTK_FIX_VS_FAULT`): the quads with ten instance streams are skipped on
+      NVIDIA, and a later fault in another shader still happens in some runs. [#9]
+- [x] `nvnCommandBufferPush{Graphics,Compute}Constants`: recorded (33628c7). Graphics root table 0 is bank 24, read by
+      the full-screen blits, which now get the pushed `{1/w, 1/h, w, h}`. Compute root tables sit in the packed c0
+      after its 16-byte head, each padded to 16 bytes, with the word counts from the shader control (#20, by
+      monsterlag): the upscaler's two image rectangles are root table 0, pushed by the game. [#2]
+- [x] Colour grading: the 3D LUT is filled (8x8x8 R11G11B10F, checked in the mining tunnel); the empty LUT was an old build. [#4]
 - [ ] Some textures look blocky (checkerboard rocks) [#5]: the deswizzle now uses the Switch 2 GOB layout, which fixes the gold rock in the tutorial cave; the other rock surfaces still need a check.
 - [ ] Getting past the tutorial cave. [#7]
 - [ ] Saves: the save is created; saving and loading are not tested yet.
 - [ ] Performance: so far the game presents every third vsync (20 fps). Nobody has profiled it yet.
 - [ ] Testing on other GPUs. [#3]
-- [ ] Installer on TotK Recomp's model (`docs/installer.md`): extraction from the user's dump, generation and build
-      on their machine. [#8]
+- [x] Installer on TotK Recomp's model (`docs/installer.md`, #19): from the user's base 1.0.0 ExeFS and RomFS folders
+      it packs the RomFS, builds the shader translator, lifts with the patch table and builds `dkb100`, run from this
+      checkout with the documented toolchain. A release package is not made yet. [#8]
 
 Issues: [#2] [#3] [#4] [#5] [#7] [#8] [#9]; the whole list is the
 [roadmap](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10). The progress so far, by date:

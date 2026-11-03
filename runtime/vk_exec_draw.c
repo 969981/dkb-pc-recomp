@@ -30,10 +30,10 @@
 #include "platform/platform.h"
 
 #define MAX_BINDINGS 128
-// NVN 2 compute bank counts of the program being dispatched (gfx_shader_c0_layout), NULL for an NVN 1 layout: read by
+// NVN 2 compute parameter layout of the program being dispatched (gfx_shader_c0_layout), NULL for NVN 1: read by
 // vk_c0_fill, set by the dispatch ops around bind_resources like c0_dim.
-static const uint8_t *c0_lay;
-static uint32_t c0_imax[8][2];   // its image rectangles: the last x and y of compute image slot i (c0_lay_set)
+static const Nvn2C0Layout *c0_lay;
+static const uint32_t (*c0_push)[NVN2_ROOT_WORDS];
 #define MAX_DESC 1024
 #define CHUNK_BYTES (4u << 20)
 #define ZERO_BYTES 65536u
@@ -45,17 +45,10 @@ static uint32_t c0_imax[8][2];   // its image rectangles: the last x and y of co
 
 static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
     c0_lay = gfx_shader_c0_layout(cs);
-    memset(c0_imax, 0, sizeof c0_imax);
-    for (int i = 0; c0_lay && i < c0_lay[0] && i < 8; i++) {
-        uint64_t h = ex->img[NVN_STAGE_CS][i];
-        const VkTexImage *t = h ? vk_texture_by_id((int)(h & 0xfffff), NULL, NULL) : NULL;
-        // No image in the slot: no clamp. The upscaler's texel fetch clamps with rectangle 0 while only image 1 is
-        // bound, and a zero maximum read texel (0, 0) for every pixel.
-        c0_imax[i][0] = t ? t->width - 1 : 0x7fffffff, c0_imax[i][1] = t ? t->height - 1 : 0x7fffffff;
-    }
+    c0_push = ex->push[1];
 }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -129,7 +122,8 @@ static struct {
     VkBuffer c0_buf[3];
     VkDeviceSize c0_off[3];
     int c0_valid[3];
-    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; uint8_t lay[5]; uint32_t imax[8][2]; } c0_in[3];   // what vk_c0_fill read for c0[k]
+    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; Nvn2C0Layout lay; uint8_t has_lay;
+             uint32_t roots[NVN2_ROOT_TABLES][NVN2_ROOT_WORDS]; } c0_in[3];   // what vk_c0_fill read for c0[k]
     VkPipelineLayout ds_layout;          // graphics layout the sets below were last pushed or bound with
     VkDescriptorSet ds_bound[2];         // allocated set bound per set number (0: none or pushed since)
     VkDescriptorSet ds_last[2];          // last allocated and written set per set number, contents in DS
@@ -836,24 +830,12 @@ static void c0_table(uint8_t *at, const p_bind_buf b[16]) {
 // Layout: nxnative dm/gfx/nvn/nvn_mtl.m (MIT).
 void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16], const p_bind_buf ubo[16],
                 const uint32_t dispatch[3], uint32_t base_instance) {
-    memset(bank, 0, VK_C0_BYTES);
     if (stage == NVN_STAGE_CS && c0_lay) {
-        // NVN 2 compute: the bank packed for the dispatched program (gfx_shader.c NVN2_C0_LAYOUT). Image rectangles
-        // with no offset and the bound image's last x and y; the buffer tables; handles stay zero (bound by slot).
-        // ponytail: the 0x10-byte head is left zero (not seen read yet)
-        int at = 0x10;
-        for (int i = 0; i < c0_lay[0]; i++, at += 16) {
-            const uint32_t rect[4] = {0, 0, i < 8 ? c0_imax[i][0] : 0x7fffffff, i < 8 ? c0_imax[i][1] : 0x7fffffff};
-            memcpy(bank + at, rect, 16);
-        }
-        for (int k = 0; k < 2; k++)
-            for (int i = 0; i < c0_lay[1 + k] && i < 16 && at + 16 <= VK_C0_BYTES; i++, at += 16) {
-                const p_bind_buf *b = k ? &ssbo[i] : &ubo[i];
-                uint32_t n = (uint32_t)b->size;
-                memcpy(bank + at, &b->addr, 8), memcpy(bank + at + 8, &n, 4);
-            }
+        if (!nvn2_c0_pack(bank, VK_C0_BYTES, c0_lay, c0_push, ssbo, ubo))
+            rt_fatal("vk: invalid NVN 2 compute parameter-block layout");
         return;
     }
+    memset(bank, 0, VK_C0_BYTES);
     int base =stage == NVN_STAGE_VS ? 0x110 : stage == NVN_STAGE_FS ? 0x510 : stage == NVN_STAGE_CS ? 0x310 : -1;
     if (base < 0) return;
     c0_table(bank + base, ssbo);
@@ -878,14 +860,18 @@ static int c0_on(void) {   // TOTK_FIX_C0=0: c0 reads zeros instead of the drive
 // c0 from replay scratch; a bank equal to the stage's previous one reuses its range, so it costs no copy.
 static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : 2;
-    // vk_c0_fill reads the storage slots, and the uniform slots and dispatch size for compute or the base instance for
-    // graphics: equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
+    // vk_c0_fill reads buffer bindings, compute root words and dispatch size, or the graphics base instance:
+    // equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
     typeof(B.c0_in[0]) in;
     memset(&in, 0, sizeof in);
     memcpy(in.ssbo, ex->ssbo[st], sizeof in.ssbo);
     if (st == NVN_STAGE_CS) memcpy(in.ubo, ex->ubo[st], sizeof in.ubo), memcpy(in.dim, c0_dim, sizeof in.dim);
     else in.binst = c0_binst;
-    if (st == NVN_STAGE_CS && c0_lay) memcpy(in.lay, c0_lay, 4), in.lay[4] = 1, memcpy(in.imax, c0_imax, sizeof in.imax);
+    if (st == NVN_STAGE_CS && c0_lay) {
+        in.lay = *c0_lay, in.has_lay = 1;
+        for (unsigned i = 0; i < NVN2_ROOT_TABLES; i++)
+            memcpy(in.roots[i], ex->push[1][i], 4u * c0_lay->roots[i]);
+    }
     if (B.c0_valid[k] && !memcmp(&in, &B.c0_in[k], sizeof in))
         return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
     B.c0_in[k] = in;
@@ -943,7 +929,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         int k = st == NVN_STAGE_CS;
         if (k) memset(&blk, 0, sizeof blk);
         for (int i = 0; i < 64; i++)
-            if (ex->push_set[k] >> i & 1) blk.u[i] = ex->push[k][i];
+            if (ex->push_set[k][0] >> i & 1) blk.u[i] = ex->push[k][0][i];
         VkBuffer b;
         VkDeviceSize o;
         RS.volatile_ = 1;
@@ -2025,6 +2011,28 @@ typedef struct {
     uint64_t tex[2][32], img[2][32];
     VkPipeState pipe;
 } MemoKey;
+
+// Workaround for the GPU fault after the first guide movie (#9). On NVIDIA (drivers 617.14, 617.42 and 621.01) the
+// draws of Bananza's instanced light quads whose vertex stage fetches ten per-instance streams (an input at Location
+// 9) and whose fragment stage reads the storage buffer at c0+0x530 fault the device with an invalid instruction
+// pointer, or crash the driver's shader compiler. Leaving out one such shader moves the fault to another of the
+// family, and the same SPIR-V drawn on its own does not fault, so the cause is still open. Skipping these draws
+// loses those lights; the family's quads with eight or nine streams draw as before. It is a mitigation, not a fix:
+// in 600 s runs on an RTX 5060 Ti the fault came minutes later in one run of two (another shader), where without it
+// every run faulted right after the first guide movie. TOTK_FIX_VS_FAULT=0 draws them.
+static int light_quad_fault_skip(const GfxShader *vs, const GfxShader *fs) {
+    static int on = -1;
+    if (on < 0) on = !rt_game_version && cfg_bool("TOTK_FIX_VS_FAULT") && vk_ctx()->props.vendorID == 0x10de;   // 0: Bananza
+    if (!on || !vs || !fs) return 0;
+    const GfxShaderRes *r;
+    int n = gfx_shader_resources(fs, GFX_RES_SSBO, &r), lights = 0;
+    for (int i = 0; i < n; i++) lights |= r[i].cbuf_slot == 0 && r[i].handle * 4 == 0x530;
+    GfxShaderIo io[32];
+    if (!lights || !(gfx_shader_inputs(vs, io) >> 9 & 1)) return 0;
+    warn_once(W_FAULT_SKIP, "light-quad draws with ten instance streams are skipped on NVIDIA (#9; TOTK_FIX_VS_FAULT=0 draws them)");
+    return 1;
+}
+
 static struct { int on, valid, has_fs; MemoKey k; const GfxShader *vs, *fs; } SM = {-1};
 
 static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
@@ -2133,6 +2141,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (vs_wait) vs = shader_for(ex, NVN_STAGE_VS, &has_vs, NULL, 1);
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
     }
+    if (light_quad_fault_skip(vs, fs)) return 0;
     if (!vs || (has_fs && !fs)) return 0;
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
@@ -2360,8 +2369,9 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }
 
-// DispatchComputeIndirect: vkCmdDispatchIndirect from the pool buffer. The shader reads the group counts from c0 0x200,
-// so they are copied there on the GPU, into a c0 range no other dispatch uses, before the dispatch.
+// DispatchComputeIndirect: vkCmdDispatchIndirect from the pool buffer. NVN 1 shaders read the group counts at c0+0x200,
+// so they are copied there on the GPU before dispatch. That NVN 1 offset can hold declared roots or resource tables
+// in NVN 2; leave its packed bank unchanged rather than overwrite it with the legacy copy.
 static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
     VkMemSpan ip;
@@ -2384,7 +2394,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     twin_dispatch = 1;
     bind_resources(ex, info);
     twin_dispatch = 0;
-    if (B.c0_valid[2]) {   // the shader binds c0
+    if (!c0_lay && B.c0_valid[2]) {   // the NVN 1 shader binds c0
         VkBufferCopy cp = {ip.offset, B.c0_off[2] + 0x200, sizeof(VkDispatchIndirectCommand)};
         vkCmdCopyBuffer(ex->cb, ip.buffer, B.c0_buf[2], 1, &cp);
         ex->recorded++;
@@ -2481,14 +2491,14 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     }
     case OP_PUSH_CONST: {
         const p_push_const *p = payload;
-        if (p->table != 0) {   // ponytail: only root table 0 maps to bank 24; Bananza pushes no other table so far
+        if (p->table < 0 || p->table >= NVN2_ROOT_TABLES || (!p->compute && p->table != 0)) {
             static int warned;
             if (!warned++) rt_log("vk: push constants into root table %d dropped", p->table);
             break;
         }
         int k = p->compute != 0, w0 = p->offset / 4, n = p->bytes / 4;
-        memcpy(&ex->push[k][w0], p->w, 4 * (size_t)n);
-        ex->push_set[k] |= (n >= 64 ? ~0ull : ((1ull << n) - 1)) << w0;
+        memcpy(&ex->push[k][p->table][w0], p->w, 4 * (size_t)n);
+        ex->push_set[k][p->table] |= (n >= 64 ? ~0ull : ((1ull << n) - 1)) << w0;
         bind_gen++;
         break;
     }

@@ -238,7 +238,7 @@ void vk_sync_start(void) {
         if (reserved < now) reserved = now;
         stop = 0;
         plat_mutex_unlock(&st_lock);
-        vk_mem_note_submit(now);
+        vk_mem_protect_until(now);
         completion_thread = plat_thread_new(completion_main, c, "vk completion");
         if (!completion_thread) rt_fatal("vk: cannot start the completion thread");
         __atomic_store_n(&started, 1, __ATOMIC_RELEASE);
@@ -310,7 +310,6 @@ VkCommandBuffer vk_sync_split(void) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
     }
-    vk_mem_note_submit(cur_fence);   // objects destroyed from here on may be in use by the part just submitted
     CmdSlot *s = take_slot(c, cur_fence);   // the submitted part keeps its slot until the value is reached
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
@@ -339,6 +338,9 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
+    // A texture alias can retire an image or view used earlier in this recording. Collection must wait for this
+    // submission, including every split part, before the first command can reference those objects.
+    vk_mem_protect_until(fence);
     CmdSlot *s = take_slot(c, fence);
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
@@ -374,7 +376,6 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
         rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);
     }
     s->fence = recorded ? fence : 0;
-    vk_mem_note_submit(fence);
     plat_mutex_lock(&st_lock);
     __atomic_store_n(&issued, fence, __ATOMIC_RELEASE);
     plat_cond_broadcast(&cv_work);

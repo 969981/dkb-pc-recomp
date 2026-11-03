@@ -3,6 +3,37 @@
 Milestones of DKB Recomp, newest first. The plan they follow is [bananza-plan.md](bananza-plan.md); open work is in
 the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
+## 3 November 2026
+
+- **Compute push constants land where the shaders read them** (#20, by monsterlag). NVN 2 packs a compute program's
+  root tables into c0 after its 16-byte head, each padded to 16 bytes, before the buffer tables; the shader control
+  gives each table's word count. A test run showed the game pushing 32 bytes into root table 0 of the upscaler: its two
+  image rectangles (`{0, 0, 1919, 1079}` at 1080p, changing with the dynamic resolution), which the host used to guess
+  from the bound images. The tutorial looks the same; the translator has to be rebuilt
+  ([#2](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/2)).
+- **ExitThread works with Windows context IP validation** (#33, by zswxp59). The thread exit's `longjmp` now uses
+  MinGW's SEH-aware `setjmp`; the non-SEH form failed with `FAST_FAIL_INVALID_SET_OF_CONTEXT` on Windows 26300
+  ([#31](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/31)).
+- **An installer for Bananza** (#19, by monsterlag). From your own base 1.0.0 ExeFS and RomFS folders it packs the
+  RomFS, builds the shader translator, lifts the code with the patch table and builds `dkb.exe`, from this checkout
+  with the toolchain listed in [installer.md](installer.md).
+- **The GPU fault after the first guide movie is not one shader's.** Leaving out the vertex shader that faults moves
+  the fault to another vertex shader of the same instanced light-quad family. Three NVIDIA drivers hit it at the same
+  point: 621.01 and 617.42 with an invalid instruction pointer, 617.14 with a crash inside the driver's shader
+  compiler ([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
+- **A mitigation for that fault** (84a8f7d). On NVIDIA, the light-quad draws whose vertex stage fetches ten
+  per-instance streams are skipped (`TOTK_FIX_VS_FAULT=0` draws them). The rest of the family draws, so the scene
+  keeps its lighting. In two 600 s runs, one played to the end (30 FPS in its last minutes) and one faulted later,
+  deep in the mining tunnel; without it every run faults right after the first movie.
+- **The tutorial's guide movies play** (f5f1a23). Their player sends packets until one comes back not ready, then
+  waits on the decoder's submission-ready event, which `nn::codec` signalled only once. The player stopped at its
+  second picture, the flat yellow card the movies open with, so the guide window showed a yellow box. Reserving an
+  output buffer now signals the event, and the window shows the movie.
+- **Contributors' fixes merged**: the Switch 2 counter at 31.25 MHz (#25), timestamp reports at submit time (#26),
+  the README's missing patch table (#16), the replay drain (#23), compute overlap mode (#18), interface array
+  reflection (#21) and IPC session lifetime (#17). The tutorial still runs at 20 FPS most of the time here; one run
+  reached 30 FPS for its last minute. The game's own pacer accounts for most of each frame.
+
 ## 2 November 2026
 
 - **Ten minutes into the tutorial with a workaround for the GPU fault.** Dropping the lighting draws whose fragment

@@ -8,9 +8,6 @@
 // Cpu. The SDK's nn::os runs as lifted code; only the kernel under it is the host. Every wait hangs on one global lock
 // G with one condition variable per thread; wake order is the kernel's: lower priority value first, then first come.
 // Semantics follow the public Horizon kernel (KConditionVariable, KAddressArbiter, KSynchronization).
-#ifdef _WIN32
-#define __USE_MINGW_SETJMP_NON_SEH   // setjmp(b) = _setjmp(b, NULL): longjmp restores registers, no SEH unwinding
-#endif
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1435,7 +1432,9 @@ static void thread_finish(RtThread *t) {
     unlock();
 }
 
-// ExitThread: back to the thread start with a non-unwinding longjmp; no SEH unwinding through lifted frames.
+// ExitThread: back to the thread start with longjmp. On Windows the default MinGW setjmp records the stack frame,
+// which the CRT needs to validate the target when SetContextIpValidation is enabled. The non-SEH variant records a
+// null frame and longjmp fails with FAST_FAIL_INVALID_SET_OF_CONTEXT on such systems.
 // (__builtin_setjmp is not usable: on Win64 LLVM saves the frame address, which is not rbp when the frame register
 // is offset, and the landing code then reads its locals through the wrong base.)
 static __attribute__((noreturn)) void exit_now(RtThread *t) { longjmp(t->exit_jmp, 1); }
@@ -2013,6 +2012,14 @@ void *kern_handle_get(uint32_t h, int kind) {
     void *o = h_peek(h, kind);
     unlock();
     return o;
+}
+
+struct IpcSession *kern_session_acquire(uint32_t h) {
+    lock();
+    struct IpcSession *s = h_peek(h, O_SESSION);
+    if (s) ipc_session_retain(s);
+    unlock();
+    return s;
 }
 
 uint32_t kern_event_new(void) {

@@ -45,19 +45,15 @@
 #include "platform/platform.h"
 
 #define CONTROL_SIZE 0x880
-// NVN 2 compute driver bank c0, packed per program from counts in the NVN 2 control (images +0xb6, uniform buffers
-// +0xb1, storage buffers +0xb2, textures +0xb3): 0x10 bytes, then per image a 16-byte rectangle {x offset, y offset,
-// x max, y max} (the code adds the offsets to its store coordinates and clamps them to the maxima), the uniform and
-// then the storage buffers as {u64 address, u32 size} every 16 bytes, the texture handles and then the image handles,
-// 8 bytes each. Read from Bananza's compute code; the total size the control gives at +0xba matches it for every
-// layout of its first 3D scene. nvn2_lower.cpp stores the counts here as "DKC0" + 4 bytes, the translator job
-// carries them as "c0" and the translator echoes them in the reflection.
+// NVN 2 compute c0: a 16-byte driver head, eight root tables padded separately to 16 bytes (word counts +0xa9..0xb0),
+// uniform/storage tables (+0xb1/+0xb2), then texture/image handles (+0xb3/+0xb6). nvn2_lower.cpp writes DKC1,
+// the four resource counts, shared size and eight root counts. Both translator and replay use that same layout.
 #define NVN2_C0_LAYOUT 0x860
 
 // Shared memory bytes of a lowered NVN 2 compute stage (nvn2_lower.cpp, after the bank counts), 0 otherwise.
 static uint32_t nvn2_shared(const uint8_t *control) {
     uint32_t n = 0;
-    if (!memcmp(control + NVN2_C0_LAYOUT, "DKC0", 4)) memcpy(&n, control + NVN2_C0_LAYOUT + 8, 4);
+    if (!memcmp(control + NVN2_C0_LAYOUT, "DKC1", 4)) memcpy(&n, control + NVN2_C0_LAYOUT + 8, 4);
     return n;
 }
 #define CODE_SKIP 0x30                                     // graphics code starts after the first 0x30 bytes of the program
@@ -69,7 +65,7 @@ static uint32_t nvn2_shared(const uint8_t *control) {
 #define IN_VERSION 1                                       // in every input id and .in file: bump when the answers layout
                                                            // or the program hash changes (drops every stored input)
 #define USE_MAGIC 0x4d554b54u                              // "TKUM", .use files
-#define USE_VERSION 1
+#define USE_VERSION 2                                      // 2: include every array location in VS-input / FS-output masks
 #define IN_MAGIC 0x49534b54u                               // "TKSI", .in files
 #define MAX_SVC 32                                         // translator processes
 
@@ -101,7 +97,7 @@ struct GfxShader {
     uint32_t in_mask, out_mask;                            // user Locations of Input / Output variables
     GfxShaderIo in[32], out[32];
     uint32_t local[3];
-    uint8_t c0[4];                                         // NVN 2 compute bank counts (NVN2_C0_LAYOUT), when has_c0
+    Nvn2C0Layout c0;                                       // NVN 2 compute parameter-block layout, when has_c0
     int has_c0;
 };
 
@@ -522,7 +518,7 @@ static void shader_free(GfxShader *s) {
     free(s->spirv), free(s->reflection), free(s);
 }
 
-static void reflect(GfxShader *s);
+static int reflect(GfxShader *s, int require_c0);
 
 // Inserts s, or frees it and returns the entry another thread inserted first.
 static GfxShader *mem_insert(GfxShader *s) {
@@ -576,7 +572,7 @@ static int spirv_complete(const uint32_t *w, uint64_t n) {
 
 // Reads <key>.spv and <key>.res.json from the pack (packed 1) or the loose files; NULL if either is missing or
 // malformed. iid: the input id, NULL when the caller sets it.
-static GfxShader *disk_load_from(const uint8_t key[32], const uint8_t *iid, int packed) {
+static GfxShader *disk_load_from(const uint8_t key[32], const uint8_t *iid, int packed, int require_c0) {
     static volatile int32_t n_bad;
     char hex[65], p[PATH_CAP + 80];
     key_hex(key, hex);
@@ -605,15 +601,15 @@ static GfxShader *disk_load_from(const uint8_t key[32], const uint8_t *iid, int 
     s->words = spv_size / 4;
     s->reflection = (char *)res;
     s->reflection_size = res_size;
-    reflect(s);
+    if (!reflect(s, require_c0)) { shader_free(s); return NULL; }
     return s;
 }
 
 // The pack, then the loose files (a newer translation of a key the pack holds a bad copy of); NULL when neither has a
 // valid pair (the caller translates again and writes loose files).
-static GfxShader *disk_load(const uint8_t key[32], const uint8_t *iid) {
-    GfxShader *s = pack_n ? disk_load_from(key, iid, 1) : NULL;
-    return s ? s : disk_load_from(key, iid, 0);
+static GfxShader *disk_load(const uint8_t key[32], const uint8_t *iid, int require_c0) {
+    GfxShader *s = pack_n ? disk_load_from(key, iid, 1, require_c0) : NULL;
+    return s ? s : disk_load_from(key, iid, 0, require_c0);
 }
 
 // ---- request building
@@ -693,16 +689,6 @@ static int handle_slot(int kind, int cbuf_slot, int handle, int separate) {
     return bytes >= 0x20 && bytes < 0x120 ? (bytes - 0x20) / 8 : -1;
 }
 
-// Byte offset of part k of an NVN 2 compute bank (NVN2_C0_LAYOUT): 0 image rectangles, 1 uniform buffers, 2 storage
-// buffers, 3 texture handles, 4 image handles.
-static int c0_part(const uint8_t c0[4], int k) {
-    static const int size[4] = {16, 16, 16, 8};
-    const int count[4] = {c0[0], c0[1], c0[2], c0[3]};
-    int at = 0x10;
-    for (int i = 0; i < k; i++) at += size[i] * count[i];
-    return at;
-}
-
 static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
     GfxShaderRes *r = &s->res[kind][s->nres[kind]++];
     r->set = 0;
@@ -717,7 +703,8 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
             // NVN 2 compute: the address's place in the packed bank, as the NVN 1 compute offset of the same buffer
             // (uniform buffer u at 0x210 + 16u, storage buffer k at 0x310 + 16k), which is what vk_exec_draw.c's
             // ssbo_slot reads. vk_c0_fill puts the addresses at the packed offsets the shader reads.
-            int off = r->handle * 4, ub = c0_part(s->c0, 1), sb = c0_part(s->c0, 2), end = c0_part(s->c0, 3);
+            int off = r->handle * 4, ub = (int)nvn2_c0_part(&s->c0, 1), sb = (int)nvn2_c0_part(&s->c0, 2),
+                end = (int)nvn2_c0_part(&s->c0, 3);
             if (s->has_c0 && r->cbuf_slot == 0 && off >= ub && off < end && (off - ub) % 16 == 0)
                 r->handle = (uint16_t)((off < sb ? 0x210 + (off - ub) : 0x310 + (off - sb)) / 4);
         }
@@ -736,15 +723,15 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
     r->separate = sep && *sep == 't';
     r->slot = (int16_t)handle_slot(kind, r->cbuf_slot, handle, r->separate);
     if (s->has_c0 && (r->cbuf_slot <= 0 || r->cbuf_slot == 2)) {   // NVN 2 compute: packed-bank handles, 8 bytes each
-        int bytes = (handle & 0x3fff) * 4, at = c0_part(s->c0, kind == GFX_RES_IMG ? 4 : 3);
-        int n = kind == GFX_RES_IMG ? s->c0[0] : s->c0[3];
+        int bytes = (handle & 0x3fff) * 4, at = (int)nvn2_c0_part(&s->c0, kind == GFX_RES_IMG ? 4 : 3);
+        int n = kind == GFX_RES_IMG ? s->c0.images : s->c0.textures;
         r->slot = (int16_t)(bytes >= at && bytes < at + 8 * n && (bytes - at) % 8 == 0 ? (bytes - at) / 8 : -1);
     }
 }
 
 // SPIR-V opcodes and enumerants used below (SPIR-V 1.6 specification, section 3).
 enum { OP_ENTRY_POINT = 15, OP_EXECUTION_MODE = 16, OP_TYPE_INT = 21, OP_TYPE_FLOAT = 22, OP_TYPE_VECTOR = 23,
-       OP_TYPE_ARRAY = 28, OP_TYPE_POINTER = 32, OP_VARIABLE = 59, OP_DECORATE = 71,
+       OP_TYPE_ARRAY = 28, OP_TYPE_POINTER = 32, OP_CONSTANT = 43, OP_VARIABLE = 59, OP_DECORATE = 71,
        DEC_BUILTIN = 11, DEC_LOCATION = 30, DEC_COMPONENT = 31, SC_INPUT = 1, SC_OUTPUT = 3, EM_LOCAL_SIZE = 17 };
 
 // Interface Locations and the compute workgroup size from the module. Ids beyond 2^20 are ignored (Ryujinx modules stay
@@ -758,8 +745,9 @@ static void reflect_spirv(GfxShader *s) {
     // per id: location + 1 (0 = none), component flag, scalar/vector description of types, pointee of pointers
     int32_t *loc = calloc(bound, sizeof *loc);
     uint8_t *packed = calloc(bound, 1), *ttype = calloc(bound, 1), *tcomps = calloc(bound, 1);
+    uint8_t *width = calloc(bound, 1), *span = calloc(bound, 1), *length = calloc(bound, 1);
     uint32_t *pointee = calloc(bound, sizeof *pointee);
-    if (!loc || !packed || !ttype || !tcomps || !pointee) goto out;
+    if (!loc || !packed || !ttype || !tcomps || !width || !span || !length || !pointee) goto out;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
         if (!len || i + len > n) break;
@@ -768,16 +756,34 @@ static void reflect_spirv(GfxShader *s) {
         if (op == OP_EXECUTION_MODE && len >= 6 && a[1] == EM_LOCAL_SIZE) {
             s->local[0] = a[2], s->local[1] = a[3], s->local[2] = a[4];
         } else if (op == OP_DECORATE && len >= 4 && id < bound) {
-            if (a[1] == DEC_LOCATION) loc[id] = (int32_t)a[2] + 1;
+            if (a[1] == DEC_LOCATION) loc[id] = a[2] < 32 ? (int32_t)a[2] + 1 : 0;
             else if (a[1] == DEC_COMPONENT) packed[id] = 1;
         } else if (op == OP_TYPE_INT && len >= 4 && id < bound) {
             ttype[id] = a[2] ? GFX_TYPE_SINT : GFX_TYPE_UINT, tcomps[id] = 1;
+            width[id] = a[1] == 32 || a[1] == 64 ? (uint8_t)a[1] : 0, span[id] = 1;
         } else if (op == OP_TYPE_FLOAT && len >= 3 && id < bound) {
             ttype[id] = GFX_TYPE_FLOAT, tcomps[id] = 1;
+            width[id] = a[1] == 32 || a[1] == 64 ? (uint8_t)a[1] : 0, span[id] = 1;
         } else if (op == OP_TYPE_VECTOR && len >= 4 && id < bound && a[1] < bound) {
             ttype[id] = ttype[a[1]], tcomps[id] = (uint8_t)a[2];
+            width[id] = width[a[1]], span[id] = span[a[1]] && a[2] >= 2 && a[2] <= 4;
+        } else if (op == OP_CONSTANT && len >= 4 && a[0] < bound && a[1] < bound) {
+            uint32_t type = a[0], value = a[2];
+            if (ttype[type] != GFX_TYPE_FLOAT && tcomps[type] == 1 &&
+                ((width[type] == 32 && len == 4 && value &&
+                  (ttype[type] == GFX_TYPE_UINT || !(value >> 31))) ||
+                 (width[type] == 64 && len == 5 && (value || a[3]) &&
+                  (ttype[type] == GFX_TYPE_UINT || !(a[3] >> 31)))))
+                length[a[1]] = (width[type] == 64 && a[3]) || value > 32 ? 32 : (uint8_t)value;
         } else if (op == OP_TYPE_ARRAY && len >= 4 && id < bound && a[1] < bound) {
-            ttype[id] = ttype[a[1]], tcomps[id] = tcomps[a[1]];   // element type (arrayed interface blocks)
+            ttype[id] = ttype[a[1]], tcomps[id] = tcomps[a[1]], width[id] = width[a[1]];
+            // A scalar/vector array consumes one location per element, including nested arrays (Vulkan Shader
+            // Interfaces, Location and Component Assignment). Cap each factor before multiplying: only 32 slots
+            // fit our reflection. Unknown lengths and element widths GfxShaderIo cannot describe stay unsupported.
+            if (width[id] == 32 && a[2] < bound) {
+                uint32_t slots = (uint32_t)span[a[1]] * length[a[2]];
+                span[id] = slots > 32 ? 32 : (uint8_t)slots;
+            }
         } else if (op == OP_TYPE_POINTER && len >= 4 && id < bound) {
             pointee[id] = a[2];
         } else if (op == OP_VARIABLE && len >= 4) {
@@ -786,27 +792,52 @@ static void reflect_spirv(GfxShader *s) {
                 int l = loc[var] - 1;
                 uint32_t t = pointee[type] < bound ? pointee[type] : 0;
                 GfxShaderIo io = {ttype[t], tcomps[t] ? tcomps[t] : 4, packed[var]};
-                if (sc == SC_INPUT) s->in_mask |= 1u << l, s->in[l] = io;
-                else s->out_mask |= 1u << l, s->out[l] = io;
+                for (uint32_t j = 0; j < span[t] && l + j < 32; j++) {
+                    if (sc == SC_INPUT) s->in_mask |= 1u << (l + j), s->in[l + j] = io;
+                    else s->out_mask |= 1u << (l + j), s->out[l + j] = io;
+                }
             }
         }
         i += len;
     }
 out:
-    free(loc), free(packed), free(ttype), free(tcomps), free(pointee);
+    free(loc), free(packed), free(ttype), free(tcomps), free(width), free(span), free(length), free(pointee);
 }
 
-static void reflect(GfxShader *s) {
+static int reflect(GfxShader *s, int require_c0) {
     static const char *const kinds[GFX_RES_KINDS] = {"cbufs", "sbufs", "textures", "images"};
     const char *js = s->reflection;
     char stage[8];
     json_str(js, js + strlen(js), "stage", stage, sizeof stage);
     s->stage = !strcmp(stage, "cs") ? GFX_STAGE_CS : !strcmp(stage, "ps") ? GFX_STAGE_FS : GFX_STAGE_VS;
-    const char *c0 = json_key(js, js + strlen(js), "c0");   // NVN 2 compute bank counts, echoed by the translator
+    const char *end = js + strlen(js);
+    const char *c0 = json_key(js, end, "c0");
     if (c0 && *c0 == '[') {
-        char *q = (char *)c0 + 1;
-        for (int i = 0; i < 4; i++, q += *q == ',') s->c0[i] = (uint8_t)strtoul(q, &q, 10);
+        const char *roots = json_key(js, end, "c0_roots");
+        if (json_int(js, end, "c0_version", 0) != 2 || !roots || *roots != '[') {
+            rt_log("gfx_shader: NVN 2 reflection lacks root layout version 2; rebuild the shader translator");
+            return 0;   // an old translator must not silently use image counts as root-table sizes
+        }
+        for (int a = 0; a < 2; a++) {
+            char *q = (char *)(a ? roots : c0) + 1;
+            uint8_t *dst = a ? s->c0.roots : &s->c0.images;
+            int n = a ? NVN2_ROOT_TABLES : 4;
+            for (int i = 0; i < n; i++) {
+                while (isspace((unsigned char)*q)) q++;
+                if (!isdigit((unsigned char)*q)) return 0;
+                unsigned long v = strtoul(q, &q, 10);
+                if (v > 255) return 0;
+                dst[i] = (uint8_t)v;
+                while (isspace((unsigned char)*q)) q++;
+                if (*q++ != (i + 1 == n ? ']' : ',')) return 0;
+            }
+        }
+        if (!nvn2_c0_valid(&s->c0, NVN2_C0_BYTES)) return 0;
         s->has_c0 = 1;
+    }
+    if (require_c0 && !s->has_c0) {
+        rt_log("gfx_shader: translator omitted the NVN 2 root layout; rebuild the shader translator");
+        return 0;
     }
     for (int k = 0; k < GFX_RES_KINDS; k++) {
         int count = json_objects(js, kinds[k], NULL, s, k);
@@ -814,6 +845,7 @@ static void reflect(GfxShader *s) {
         json_objects(js, kinds[k], add_res, s, k);
     }
     reflect_spirv(s);
+    return 1;
 }
 
 // ---- use masks (see the cache key at the top)
@@ -1124,7 +1156,11 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
         else memcpy(l, control + 0x748, 12);
         o += sprintf(o, ",\"local\":[%u,%u,%u]", l[0], l[1], l[2]);
         const uint8_t *lay = control + NVN2_C0_LAYOUT;
-        if (!memcmp(lay, "DKC0", 4)) o += sprintf(o, ",\"c0\":[%u,%u,%u,%u]", lay[4], lay[5], lay[6], lay[7]);
+        if (!memcmp(lay, "DKC1", 4)) {
+            o += sprintf(o, ",\"c0\":[%u,%u,%u,%u],\"c0_version\":2,\"c0_roots\":[", lay[4], lay[5], lay[6], lay[7]);
+            for (int i = 0; i < NVN2_ROOT_TABLES; i++) o += sprintf(o, "%s%u", i ? "," : "", lay[12 + i]);
+            o += sprintf(o, "]");
+        }
     }
     /* Control byte +0x718 of a fragment shader: early fragment tests (the NVN driver's early-Z-force, MacNativeGames
        ae8f4f4). Without it a shader that stores to memory is depth-tested late, and the G-buffer draws' EQUAL test
@@ -1194,7 +1230,7 @@ typedef struct {
     uint8_t code_hash[32];
     uint8_t key[32];                                       // cache key, or the provisional one with final 0
     uint8_t iid[32];                                       // input id with final 1
-    int final;
+    int final, require_c0;                                 // DKC1 inputs must have versioned NVN 2 reflection
 } Req;
 
 // NVN 2 programs (Donkey Kong Bananza): control magic 0x98761234, version 0xC9 at +4, control size at +0x30, code
@@ -1254,6 +1290,9 @@ static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *co
     // Reading an NVN 2 control block at the NVN 1 offsets (+0x700, +0x704) runs off its end and yields a bogus code
     // length, which once crashed the Vulkan path.
     if (control && gfx_shader_is_nvn2(control)) return fail("NVN 2 program (Ampere code): no translator yet", NULL), 0;
+    if (control && stage == GFX_STAGE_CS && !memcmp(control + NVN2_C0_LAYOUT, "DKC0", 4))
+        return fail("old NVN 2 compute control: regenerate shader inputs with root layout version 2", NULL), 0;
+    r->require_c0 = stage == GFX_STAGE_CS && !memcmp(control + NVN2_C0_LAYOUT, "DKC1", 4);
     r->stage_name = stage == GFX_STAGE_VS ? "vs" : stage == GFX_STAGE_FS ? "ps" : stage == GFX_STAGE_CS ? "cs" : NULL;
     if (!r->stage_name) return fail("stage is not translated", NULL), 0;
     uint32_t c1_off;
@@ -1291,7 +1330,7 @@ static const GfxShader *get_one(const Req *r, int stage, const uint8_t *control,
     if (known_failed(r->key)) return NULL;
     paths();
     if (!cache_dir[0]) return fail("no cache directory", NULL);
-    if (r->final && (s = disk_load(r->key, r->iid))) return plat_inc64(&n_hits), mem_insert(s);
+    if (r->final && (s = disk_load(r->key, r->iid, r->require_c0))) return plat_inc64(&n_hits), mem_insert(s);
     const GfxShader *t = translate(r, stage, control, code, a);
     if (!t) note_failed(r->key);
     return t;
@@ -1372,6 +1411,45 @@ static int in_load(const uint8_t iid[32], Inputs *in) {
 
 // ---- translation
 
+// Opt-in local repro packets. The existing request serializer includes the exact draw and host answers and c1;
+// retain the same lowered bytes the child read, not a reconstructed default shader variant. These are game data.
+static void dump_failed_request(const char *hex, const char *request, const char *reply,
+                                const uint8_t *code, size_t size) {
+    const char *dir = getenv("DKB_SHADER_FAILURE_DUMP");
+    if (!dir || !*dir) return;
+    static volatile int64_t sequence;
+    char packet[PATH_CAP + 128], json[PATH_CAP + 208], binary[PATH_CAP + 208], error[PATH_CAP + 208];
+    int claimed = 0;
+    mkdir_p(dir);
+    // mkdir is an exclusive claim across runtimes and path aliases. Never replace another writer's packet;
+    // a reused process id or an incomplete older capture gets a new sequence instead.
+    for (int attempt = 0; attempt < 1024; attempt++) {
+        int n = snprintf(packet, sizeof packet, "%s/capture-%u-%llu", dir, (unsigned)plat_process_id(),
+                         (unsigned long long)plat_inc64(&sequence));
+        if (n < 0 || (size_t)n >= sizeof packet) break;
+        int status = plat_fs_mkdir(packet);
+        if (status == PLAT_FS_OK) { claimed = 1; break; }
+        if (status != PLAT_FS_EXISTS) break;
+    }
+    if (!claimed) {
+        rt_log("gfx_shader: cannot claim a failed-request packet directory in %s", dir);
+        return;
+    }
+    snprintf(json, sizeof json, "%s/%s.request.json", packet, hex);
+    // This must differ from translate_one's temporary <key>.code even if dir aliases the shader cache.
+    snprintf(binary, sizeof binary, "%s/%s.failed.code", packet, hex);
+    snprintf(error, sizeof error, "%s/%s.error.txt", packet, hex);
+    // Publish the JSON last: its presence means both the code and original error were written completely.
+    if (!plat_file_write_atomic(binary, code, size) ||
+        !plat_file_write_atomic(error, reply, strlen(reply)) ||
+        !plat_file_write_atomic(json, request, strlen(request))) {
+        rt_log("gfx_shader: cannot save failed translation %s in %s", hex, packet);
+        return;
+    }
+    rt_log("gfx_shader: saved failed translation %s in %s (game data: keep local; tools/replay_shader_failure.py replays it)",
+           hex, packet);
+}
+
 static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
                                       const GfxShaderAnswers *a) {
     const uint8_t *key = r->key;
@@ -1382,7 +1460,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     const uint8_t *look = r->final ? key : NULL, *look_iid = r->iid;
     if (!r->final && use_find(r->code_hash, &m)) build_key(r->code_hash, a, &m, mk, miid), look = mk, look_iid = miid;
     if (look && (s = mem_find(look))) return plat_inc64(&n_hits), s;
-    if (look && (s = disk_load(look, look_iid))) return plat_inc64(&n_hits), mem_insert(s);
+    if (look && (s = disk_load(look, look_iid, r->require_c0))) return plat_inc64(&n_hits), mem_insert(s);
 
     uint64_t skip = stage == GFX_STAGE_CS ? 0 : CODE_SKIP;
     char hex[65], code_path[PATH_CAP + 80], spv_path[PATH_CAP + 80], res_path[PATH_CAP + 80];
@@ -1397,6 +1475,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     if (!req) return plat_file_delete(code_path), fail("out of memory", hex);
     build_request(req, hex, r->stage_name, code_path, r->c1, r->c1_len, a, control);
     int ok = svc_request(req, reply, sizeof reply);
+    if (ok && strncmp(reply, "ok ", 3)) dump_failed_request(hex, req, reply, code + skip, (size_t)(r->length - skip));
     free(req);
     plat_file_delete(code_path);
     if (!ok) return fail("translator unavailable", hex);
@@ -1405,7 +1484,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         return fail(reply, hex);
     }
     plat_file_flush(spv_path), plat_file_flush(res_path);   // the translator wrote them; on disk before use or rename
-    if (!(s = disk_load(key, r->iid))) return fail("translator output missing or malformed", hex);
+    if (!(s = disk_load(key, r->iid, r->require_c0))) return fail("translator output missing or malformed", hex);
     if (!r->final) {                                       // name the files after the cache key, remember the mask
         m = use_of(s);
         build_key(r->code_hash, a, &m, mk, miid);
@@ -1535,7 +1614,7 @@ static const GfxShader *get_async_one(Req r, int stage, const uint8_t *control, 
     if (w) return *pending = !failed, NULL;
     paths();
     if (!cache_dir[0]) return fail("no cache directory", NULL);
-    if (r.final && (s = disk_load(r.key, r.iid))) return plat_inc64(&n_hits), mem_insert(s);
+    if (r.final && (s = disk_load(r.key, r.iid, r.require_c0))) return plat_inc64(&n_hits), mem_insert(s);
 
     XJob *j = calloc(1, sizeof *j);
     XWait *e = calloc(1, sizeof *e);
@@ -1614,7 +1693,7 @@ const GfxShader *gfx_shader_load_input(const uint8_t iid[32], int xlate) {
     key_of_input(iid, key);
     GfxShader *s = mem_find(key);
     if (s) return s;
-    if ((s = disk_load(key, iid))) return mem_insert(s);
+    if ((s = disk_load(key, iid, 0))) return mem_insert(s);
     Inputs in;
     if (!xlate || !in_load(iid, &in)) return NULL;
     const GfxShader *t = gfx_shader_get(in.stage, in.control, in.code, in.length, in.c1, &in.a);
@@ -1633,7 +1712,7 @@ const GfxShader *gfx_shader_load_private(const uint8_t iid[32], int *owned) {
     key_of_input(iid, key);
     GfxShader *s = mem_find(key);
     if (s) return s;
-    if ((s = disk_load(key, iid))) *owned = 1;
+    if ((s = disk_load(key, iid, 0))) *owned = 1;
     return s;
 }
 
@@ -1760,7 +1839,7 @@ int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res)
     return s->nres[kind];
 }
 
-const uint8_t *gfx_shader_c0_layout(const GfxShader *s) { return s && s->has_c0 ? s->c0 : NULL; }
+const Nvn2C0Layout *gfx_shader_c0_layout(const GfxShader *s) { return s && s->has_c0 ? &s->c0 : NULL; }
 
 // The slots of the use mask: answers outside it select the same translation (mask_answers), so a caller may leave
 // their texture and image types zero. Parses the reflection: callers keep the result.

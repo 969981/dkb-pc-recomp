@@ -590,8 +590,30 @@ static uint64_t lod_entered, lod_issued, lod_fence[LOD_RING];
 // core given up (section 2.2), or queued for the replay thread (TOTK_REPLAY_ASYNC, vk_backend.c); the newest fence
 // value is what QueueFenceSync records. With the queue the fence covers replay and GPU, so the LOD guard below waits
 // for both.
+// The guest tick each submission (by its fence value) was made at: the time its timestamp reports carry for a Switch 2
+// game (vk_exec_xfer.c counter_cb).
+#define SUBMIT_TICKS 1024
+static uint64_t submit_fence[SUBMIT_TICKS], submit_tick[SUBMIT_TICKS];
+static PlatMutex submit_ticks_lock = PLAT_MUTEX_INIT;
+uint64_t nvn_submit_ticks(uint64_t fence) {
+    unsigned i = (unsigned)(fence % SUBMIT_TICKS);
+    plat_mutex_lock(&submit_ticks_lock);
+    uint64_t t = submit_tick[i];
+    uint64_t found = submit_fence[i] == fence ? t : 0;
+    plat_mutex_unlock(&submit_ticks_lock);
+    return found;
+}
+static void submit_ticks_publish(uint64_t f, uint64_t submitted) {
+    // A reused slot's tag and tick must stay one pair, including for a reader already looking up the old slot.
+    plat_mutex_lock(&submit_ticks_lock);
+    submit_fence[f % SUBMIT_TICKS] = f;
+    submit_tick[f % SUBMIT_TICKS] = submitted;
+    plat_mutex_unlock(&submit_ticks_lock);
+}
+
 NVN_API(nvnQueueSubmitCommands) {
     queue_t *q = arg_p(c, 0);
+    uint64_t submitted = rt_ticks();
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
     if (n < 0 || (n && !h)) rt_fatal("nvn: QueueSubmitCommands with %d handles at %p", n, (const void *)h);
@@ -613,6 +635,8 @@ NVN_API(nvnQueueSubmitCommands) {
         nvn_submit_prepare(h, n);
         f = gfx_backend()->submit(h, n);
     }
+    // Do not hold the ring lock across submit: completion may run first and use counter_cb's existing fallback.
+    submit_ticks_publish(f, submitted);
     uint64_t prev = __atomic_load_n(&last_fence, __ATOMIC_RELAXED);
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
