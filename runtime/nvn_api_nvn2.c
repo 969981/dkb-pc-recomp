@@ -102,10 +102,7 @@ NVN2_NOT_RECORDED(nvnCommandBufferPushDebugGroupCompute)
 NVN2_NOT_RECORDED(nvnCommandBufferPushDebugGroupGraphics)
 NVN2_NOT_RECORDED(nvnCommandBufferPopDebugGroupCompute)
 NVN2_NOT_RECORDED(nvnCommandBufferPopDebugGroupGraphics)
-// nvnCommandBufferPush{Graphics,Compute}Constants are recorded in nvn_api_cmd.c (OP_PUSH_CONST); their Deferred
-// forms read the data at submit and are not recorded yet.
-NVN2_NOT_RECORDED(nvnCommandBufferPushComputeConstantsDeferred)
-NVN2_NOT_RECORDED(nvnCommandBufferPushGraphicsConstantsDeferred)
+// nvnCommandBufferPush{Graphics,Compute}Constants and their Deferred forms are recorded in nvn_api_cmd.c (OP_PUSH_CONST).
 NVN2_NOT_RECORDED(nvnCommandBufferSetComputeEnable)
 NVN2_NOT_RECORDED(nvnCommandBufferSetComputeEnableConditional)
 NVN2_NOT_RECORDED(nvnCommandBufferSetComputeOverlapMode)
