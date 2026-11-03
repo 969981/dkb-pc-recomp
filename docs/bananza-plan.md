@@ -69,7 +69,8 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 - [ ] Some textures look blocky (checkerboard rocks) [#5]: the deswizzle now uses the Switch 2 GOB layout, which fixes the gold rock in the tutorial cave; the other rock surfaces still need a check.
 - [ ] Getting past the tutorial cave. [#7] A hand-played run reached the Ingot Isle Cave-In section; respawning
       there stalled the GPU.
-- [ ] Saves: the save is created; saving and loading are not tested yet.
+- [x] Saves: the game writes `progress.sav`, `caption.sav` and `config.sav` as it plays, and a later run on the same
+      profile offers Continue and resumes at the last checkpoint (the mining tunnel of the tutorial).
 - [x] Performance in the tutorial: the game picks its own present interval (1 to 3 vsyncs) from how long its frames
   take. A profile of the render thread found the #9 skip's stage-name lookup taking 72 % of it (fixed in d5fd595), and
   the host's hold of each present until its display time made the job workers' mid-frame GPU reads wait for vsync

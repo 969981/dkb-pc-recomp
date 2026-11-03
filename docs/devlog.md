@@ -5,6 +5,9 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Saving and loading work.** During a 600 s run of the scripted test the game wrote `progress.sav`, `caption.sav`
+  and `config.sav` through three commits. A second run on a copy of that profile showed Continue and New Game on the
+  title screen, and Continue resumed in the mining tunnel of the tutorial, where the first run had saved.
 - **The 20 fps stretch is gone** (69d51d0, [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). The
   present thread held each present until the pacer's display time. While it slept, the next present waited behind it,
   and so did every drain of pending presents. That includes the reads Bananza's job workers make of GPU-written
