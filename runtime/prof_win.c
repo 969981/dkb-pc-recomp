@@ -209,6 +209,17 @@ static void slow_dump(void) {
     InterlockedExchange64(&dump_hi, 0);
 }
 
+// TOTK_PROFILE_FRAMES: 1 while the present or world-clock range holds (always without one). It bounds the sampling and
+// the TOTK_PROFILE_SLOW dumps alike, so the 64 dumps are not spent on the slow frames of the boot.
+static int in_window(void) {
+    if (frame_hi && (cur_frame < frame_lo || cur_frame >= frame_hi)) return 0;
+    if (world_hi) {   // -1 before the world clock starts
+        int64_t w = frame_step_world_us();
+        if (w < world_lo || w >= world_hi) return 0;
+    }
+    return 1;
+}
+
 static DWORD WINAPI sampler_main(void *arg) {
     (void)arg;
     DWORD self = GetCurrentThreadId();
@@ -225,11 +236,7 @@ static DWORD WINAPI sampler_main(void *arg) {
         }
         if (tick % 64 == 0) refresh_threads(self);
         if (dump_hi) slow_dump();
-        if (frame_hi && (cur_frame < frame_lo || cur_frame >= frame_hi)) continue;
-        if (world_hi) {   // -1 before the world clock starts
-            int64_t w = frame_step_world_us();
-            if (w < world_lo || w >= world_hi) continue;
-        }
+        if (!in_window()) continue;
         uint64_t now = slow_ns ? kern_now_ns() : 0;
         for (int i = 0; i < n_threads; i++) {
             ThreadSlot *t = &threads[i];
@@ -363,7 +370,7 @@ int prof_sampler_start(void) {
 // dump of a present at least slow_ns after the previous one (d 0 on the first present).
 void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
     cur_frame = frame;
-    if (slow_ns && d >= slow_ns && !dump_hi) {
+    if (slow_ns && d >= slow_ns && !dump_hi && in_window()) {
         dump_lo = (LONG64)(now - d - 20000000ull);
         dump_frame = (LONG64)frame;
         InterlockedExchange64(&dump_hi, (LONG64)now);
