@@ -48,7 +48,7 @@ static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
     c0_push = ex->push[1];
 }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -2020,10 +2020,23 @@ typedef struct {
 // loses those lights; the family's quads with eight or nine streams draw as before. It is a mitigation, not a fix:
 // in 600 s runs on an RTX 5060 Ti the fault came minutes later in one run of two (another shader), where without it
 // every run faulted right after the first guide movie. TOTK_FIX_VS_FAULT=0 draws them.
-static int light_quad_fault_skip(const GfxShader *vs, const GfxShader *fs) {
+//
+// The later fault, around seven minutes in, comes from one more quad of the same shape whose fragment stage does not
+// read c0+0x530: NVN 2 vertex stage cae0ef8e9fe9147f, nine per-instance RGBA32F streams, one instance. In 9 runs of
+// 600 s every run where it drew faulted, with its draw among those in flight at the device loss, and the runs where it
+// never drew did not; skipping it gave 0 faults in 4 runs. Its vertex input matches quads that never fault (the same
+// streams, formats and divisors; only the instance count differs), and so do its SPIR-V features, so it is matched by
+// the name of its NVN 2 stage.
+static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     static int on = -1;
     if (on < 0) on = !rt_game_version && cfg_bool("TOTK_FIX_VS_FAULT") && vk_ctx()->props.vendorID == 0x10de;   // 0: Bananza
     if (!on || !vs || !fs) return 0;
+    const uint8_t *ctl, *code = NULL;
+    uint32_t len;
+    if (find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &len) && nvn2_origin(code) == 0xcae0ef8e9fe9147full) {
+        warn_once(W_FAULT_SKIP2, "the light quad of NVN 2 vertex stage cae0ef8e9fe9147f is skipped on NVIDIA (#9)");
+        return 1;
+    }
     const GfxShaderRes *r;
     int n = gfx_shader_resources(fs, GFX_RES_SSBO, &r), lights = 0;
     for (int i = 0; i < n; i++) lights |= r[i].cbuf_slot == 0 && r[i].handle * 4 == 0x530;
@@ -2141,7 +2154,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (vs_wait) vs = shader_for(ex, NVN_STAGE_VS, &has_vs, NULL, 1);
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
     }
-    if (light_quad_fault_skip(vs, fs)) return 0;
+    if (light_quad_fault_skip(ex, vs, fs)) return 0;
     if (!vs || (has_fs && !fs)) return 0;
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
