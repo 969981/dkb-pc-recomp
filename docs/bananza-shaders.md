@@ -90,8 +90,10 @@ code or constants: keep them local and out of commits and public attachments. Th
 ## Constant banks
 
 - **c0, driver bank.** Graphics stages use NVN 1's layout (vertex storage buffers at 0x110, pixel at 0x510). Compute
-  is packed per program from the control counts: a 0x10 head, one rectangle per image, the uniform buffer and storage
-  buffer tables, then texture and image handles.
+  is packed per program from the control counts (`runtime/nvn2_c0.h`): a 0x10 head, the eight root tables the game
+  pushes with `nvnCommandBufferPushComputeConstants`, each padded to 16 bytes (word counts at control +0xa9..+0xb0),
+  the uniform buffer and storage buffer tables, then texture and image handles. The upscaler's root table 0 holds its
+  two image rectangles (#20).
 - **c1**: the inline constants after the code.
 - **c2**: combined texture handles at 0x20 + 8 × slot, as in NVN 1.
 - **c24**: read only by full-screen blit shaders (3 vertex, 2 pixel), at offsets 0x0 to 0xc. Maxwell has 18 banks, so
