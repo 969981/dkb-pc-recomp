@@ -40,6 +40,8 @@ Useful settings, as environment variables (`set NAME=value` in the same Command 
 | `TOTK_GPU_NAME=<text>` | Use the first GPU whose name contains this text, on machines with more than one. |
 | `TOTK_GPU=null` | Run without a picture (no Vulkan). Useful to tell CPU and OS bugs from graphics bugs. |
 | `TOTK_XLATE_PROCS=<n>` | Shader translator processes at run time (default 2). Lower it if RAM runs out. |
+| `TOTK_TRACE=perf` | Log the frame time, what holds frames back and the GPU time every 60 frames. For stalls and low frame rates. |
+| `TOTK_PERF_SLOW_GPU_MS=<ms>` | With `TOTK_TRACE=perf`, a replay part that runs this long on the GPU (default 100) gets a line with its draw and dispatch counts and the NVN 2 names of its stages. |
 
 The settings keep TotK Recomp's `TOTK_` names, so its fixes apply without a rename. Each one can also be written with
 `DKB_` in its place (`DKB_GPU=null`); when both are set, the `DKB_` one wins.

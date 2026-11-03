@@ -11,9 +11,11 @@
 // Side effects written after GPU completion, as MacNativeGames does: games/totk/third_party/d2r_gfx/gfx/nvn/hle_nvn.c:7-9
 // (https://github.com/ly05010419/MacNativeGames @ b75be8cfa704df3701e86130c8ced268e79d6b11, MIT, Copyright (c) 2026
 // jhaizhou; origin d2r-mobile).
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -89,7 +91,52 @@ static void ts_setup(VkCtx *c) {
     ts_state = 1;
 }
 
-typedef struct { uint32_t pair; } TsRead;
+// What the replay part being timed draws and dispatches (vk_sync_note), kept with its pair: a part that runs on the GPU
+// for at least TOTK_PERF_SLOW_GPU_MS (default 100) gets a line naming its work, at most 200 lines. A respawn in the
+// Ingot Isle Cave-In section (#10) spent about 16.8 s of GPU time per frame inside the replay's parts.
+#define NOTE_PAIRS 6
+typedef struct {
+    uint32_t draws, draws_ind, dispatches, dispatches_ind, pairs;
+    uint64_t max_work, max_a, max_b;               // the largest direct draw (vertices x instances) or dispatch (groups)
+    uint64_t a[NOTE_PAIRS], b[NOTE_PAIRS];         // the first distinct stage names: vertex/fragment, or compute/0
+} PartNote;
+static PartNote note;   // the part being recorded (sub_lock, like ts_cur)
+
+int vk_sync_noting(void) { return ts_cur >= 0; }
+
+void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work) {
+    if (ts_cur < 0) return;
+    if (kind == 0) note.draws++;
+    else if (kind == 1) note.draws_ind++;
+    else if (kind == 2) note.dispatches++;
+    else note.dispatches_ind++;
+    if (work > note.max_work) note.max_work = work, note.max_a = a, note.max_b = b;
+    for (uint32_t i = 0; i < note.pairs; i++)
+        if (note.a[i] == a && note.b[i] == b) return;
+    if (note.pairs < NOTE_PAIRS) note.a[note.pairs] = a, note.b[note.pairs] = b, note.pairs++;
+}
+
+typedef struct { uint32_t pair, noted; uint64_t fence; PartNote note; } TsRead;
+
+static void slow_part(const TsRead *t, double ms) {
+    static double slow_ms = -1;
+    static int lines;
+    if (slow_ms < 0) {
+        const char *e = cfg_get("TOTK_PERF_SLOW_GPU_MS");
+        slow_ms = e && atof(e) > 0 ? atof(e) : 100;
+    }
+    if (!t->noted || ms < slow_ms || lines >= 200) return;
+    lines++;
+    const PartNote *n = &t->note;
+    char st[NOTE_PAIRS * 36 + 8] = "", *p = st;
+    for (uint32_t i = 0; i < n->pairs; i++)
+        p += snprintf(p, (size_t)(st + sizeof st - p), " %016llx/%016llx", (unsigned long long)n->a[i], (unsigned long long)n->b[i]);
+    rt_log("perf: a GPU part of submission %llu ran %.1f ms: %u draws (%u indirect), %u dispatches (%u indirect); largest "
+           "direct one %llu (%016llx/%016llx); stages%s%s", (unsigned long long)t->fence, ms, n->draws + n->draws_ind,
+           n->draws_ind, n->dispatches + n->dispatches_ind, n->dispatches_ind, (unsigned long long)n->max_work,
+           (unsigned long long)n->max_a, (unsigned long long)n->max_b, n->pairs ? st : " none",
+           n->pairs == NOTE_PAIRS ? " ..." : "");
+}
 
 static void ts_read_cb(void *arg) {   // completion thread, in submission order
     TsRead *t = arg;
@@ -98,6 +145,7 @@ static void ts_read_cb(void *arg) {   // completion thread, in submission order
     if (vkGetQueryPoolResults(c->device, ts_pool, 2 * t->pair, 2, sizeof v, v, sizeof v[0], VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
         uint64_t s = v[0] & ts_mask, e = v[1] & ts_mask;
         if (e >= s) {
+            slow_part(t, (double)(e - s) * ts_period / 1e6);
             uint64_t from = s > ts_last_end ? s : ts_last_end;
             if (e > from) {
                 int64_t ns = (int64_t)((double)(e - from) * ts_period);
@@ -129,20 +177,24 @@ static int ts_open(VkCommandBuffer cb) {
 }
 
 // At its end, before vkEndCommandBuffer; fence: the value whose completion covers it.
-static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence) {
+static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence, const PartNote *n) {
     if (pair < 0) return;
     vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ts_pool, 2 * (uint32_t)pair + 1);
-    TsRead *t = malloc(sizeof *t);
+    TsRead *t = calloc(1, sizeof *t);
     if (!t) rt_fatal("vk: out of memory");
-    t->pair = (uint32_t)pair;
+    t->pair = (uint32_t)pair, t->fence = fence;
+    if (n) t->note = *n, t->noted = 1;
     vk_completion_add(fence, ts_read_cb, t);
 }
 
 // The pair of the part being recorded.
-static void ts_begin(VkCommandBuffer cb) { ts_cur = ts_open(cb); }
+static void ts_begin(VkCommandBuffer cb) {
+    ts_cur = ts_open(cb);
+    memset(&note, 0, sizeof note);
+}
 
 static void ts_end(VkCommandBuffer cb, uint64_t fence) {
-    ts_close(cb, ts_cur, fence);
+    ts_close(cb, ts_cur, fence, &note);
     ts_cur = -1;
 }
 
@@ -288,7 +340,7 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
     vkBeginCommandBuffer(cb, &bi);
     int pair = ts_open(cb);
     vk_mem_mirror_prologue(cb);
-    ts_close(cb, pair, fence);
+    ts_close(cb, pair, fence, NULL);
     vkEndCommandBuffer(cb);
     return cb;
 }
