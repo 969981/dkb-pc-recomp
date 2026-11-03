@@ -70,7 +70,10 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 - [ ] Getting past the tutorial cave. [#7] A hand-played run reached the Ingot Isle Cave-In section; respawning
       there stalled the GPU.
 - [ ] Saves: the save is created; saving and loading are not tested yet.
-- [ ] Performance: so far the game presents every third vsync (20 fps). Nobody has profiled it yet.
+- [ ] Performance: the game picks its own present interval (1 to 3 vsyncs) from how long its frames take. A profile of
+  the render thread found the #9 skip's stage-name lookup taking 72 % of it; with that fixed (d5fd595) the scripted
+  test asks for 60 fps on 86 % of its frames. One stretch, about 43 s to 163 s in, still runs at 20 fps while the
+  host is busy only about 8 ms a frame.
 - [ ] Testing on other GPUs. [#3]
 - [x] Installer on TotK Recomp's model (`docs/installer.md`, #19): from the user's base 1.0.0 ExeFS and RomFS folders
       it packs the RomFS, builds the shader translator, lifts with the patch table and builds `dkb100`, run from this
