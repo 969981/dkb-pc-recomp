@@ -11,8 +11,11 @@
 #include "tex.h"
 #include <string.h>
 
+// Byte offset inside a 64 x 8 GOB in the Switch 2 layout: x[3:0] -> bits 0-3, y[0] -> 4, y[1] -> 5, x[4] -> 6, y[2] -> 7,
+// x[5] -> 8. It is the Switch 1 GOB with bits 5 and 6 swapped (Eglantine, video_core/textures/decoders.cpp,
+// NativeGobOffset, which ChannelState::Init turns on for every nx2 image through EnableNativeTiling).
 static uint32_t gob_off(uint32_t x, uint32_t y) {
-    return (x % 64 / 32) * 256 + (y % 8 / 2) * 64 + (x % 32 / 16) * 32 + (y % 2) * 16 + x % 16;
+    return (x % 64 / 32) * 256 + (y % 8 / 4) * 128 + (x % 32 / 16) * 64 + (y % 4 / 2) * 32 + (y % 2) * 16 + x % 16;
 }
 
 uint64_t nvn_bl_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t row_bytes, uint32_t rows, unsigned th, unsigned td) {
@@ -47,10 +50,10 @@ int nvn_deswizzle_geom(const nvn_texdesc *d, unsigned level, unsigned layer,
 }
 
 // nvn_bl_offset per row instead of per 16 bytes: within a row, GOB column k starts k blocks further, and the four
-// 16-byte segments of a GOB row (x % 64 = 0, 16, 32, 48) sit at 0, 32, 256 and 288 of it.
+// 16-byte segments of a GOB row (x % 64 = 0, 16, 32, 48) sit at 0, 64, 256 and 320 of it.
 void tex_bl_copy(uint8_t *bl, uint8_t *lin, size_t pitch, uint32_t row_bytes, uint32_t rows, uint32_t slices,
                  unsigned th, unsigned td, int to_linear) {
-    static const uint32_t seg[4] = {0, 32, 256, 288};
+    static const uint32_t seg[4] = {0, 64, 256, 320};
     uint64_t block = 512ull << th << td;
     for (uint32_t z = 0; z < slices; z++)
         for (uint32_t y = 0; y < rows; y++) {

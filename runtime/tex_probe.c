@@ -19,9 +19,10 @@ static uint8_t rnd8(void) {
     return (uint8_t)(g_rng >> 32);
 }
 
-// Byte offset inside a 64 x 8 GOB from the bit layout: x[3:0] -> 0-3, y[0] -> 4, x[4] -> 5, y[2:1] -> 6-7, x[5] -> 8.
+// Byte offset inside a 64 x 8 GOB from the Switch 2 bit layout: x[3:0] -> 0-3, y[0] -> 4, y[1] -> 5, x[4] -> 6,
+// y[2] -> 7, x[5] -> 8.
 static unsigned gob_bits(unsigned x, unsigned y) {
-    return (x & 15) | (y & 1) << 4 | (x >> 4 & 1) << 5 | (y >> 1 & 3) << 6 | (x >> 5 & 1) << 8;
+    return (x & 15) | (y & 1) << 4 | (y >> 1 & 1) << 5 | (x >> 4 & 1) << 6 | (y >> 2 & 1) << 7 | (x >> 5 & 1) << 8;
 }
 
 // lin: slices * rows * row_bytes (tight). bl: block-linear storage, pre-filled with a marker.
