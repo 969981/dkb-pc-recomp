@@ -103,6 +103,12 @@ static VkCommandPool g_pool;
 static VkCommandBuffer g_cb[FRAMES];
 static VkFence g_fence[FRAMES];
 static VkSemaphore g_acquire[FRAMES];
+// The perf line's present figure (perf_present_gpu): the blit, colour adjustment, FSR and overlay go to the queue
+// outside vk_sync.c's timed submissions. Each slot's pair is read when its fence is waited for again.
+static VkQueryPool g_ts_pool;
+static int g_ts_state;   // 0 not set up, 1 ready, -1 no timestamps
+static float g_ts_period;
+static uint8_t g_ts_on[FRAMES];
 static unsigned g_frame;
 static int g_capture;
 static VkBuffer g_cap_buf;
@@ -543,6 +549,11 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         rt_log("gfx: present fence wait timed out");
         goto out;
     }
+    uint64_t tv[2];
+    if (g_ts_on[slot] && vkGetQueryPoolResults(c->device, g_ts_pool, 2 * slot, 2, sizeof tv, tv, sizeof tv[0],
+                                               VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && tv[1] >= tv[0])
+        perf_present_gpu((uint64_t)((double)(tv[1] - tv[0]) * g_ts_period));
+    g_ts_on[slot] = 0;
     uint32_t idx = 0;
     VkResult r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -580,6 +591,12 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     vkBeginCommandBuffer(cb, &bi);
+    if (perf_gpu_timing() && !g_ts_state) g_ts_state = (g_ts_pool = vk_ts_pool(FRAMES, &g_ts_period)) ? 1 : -1;
+    int timed = perf_gpu_timing() && g_ts_state > 0;
+    if (timed) {
+        vkCmdResetQueryPool(cb, g_ts_pool, 2 * slot, 2);
+        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_ts_pool, 2 * slot);
+    }
     uint64_t crumb = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     vk_crumb(cb, VK_CRUMB_PRESENT, crumb);
     VkImage dst = g_sc_img[idx];
@@ -660,6 +677,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     }
     sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
     vk_crumb(cb, VK_CRUMB_PRESENT_END, crumb);
+    if (timed) vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_ts_pool, 2 * slot + 1);
     vkEndCommandBuffer(cb);
 
     VkSemaphoreSubmitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_acquire[slot],
@@ -674,6 +692,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
     vk_queue_unlock();
     if (r == VK_SUCCESS) {
+        g_ts_on[slot] = (uint8_t)timed;
         g_flip_on = 1;
         g_flip_idx = idx;
         if (!defer) flip_locked();

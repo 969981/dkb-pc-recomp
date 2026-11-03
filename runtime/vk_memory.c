@@ -1754,23 +1754,30 @@ static int up_state, up_pairs;   // up_state: 0 not set up, 1 ready, -1 no times
 static float up_period;
 static volatile int64_t up_gpu_ns, up_timed, up_batches, up_wait_ns, up_bytes;
 
-static int up_ts_ready(VkCtx *c) {
-    if (up_state) return up_state > 0;
-    up_state = -1;
+// A timestamp pool of n pairs for the perf line's side timings (upload batches, gfx_present.c's blit), or NULL when
+// the graphics queue has no 64-bit timestamps. *period: ns per tick.
+VkQueryPool vk_ts_pool(uint32_t pairs, float *period) {
+    VkCtx *c = vk_ctx();
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, NULL);
     VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
-    if (!qp) return 0;
+    if (!qp) return VK_NULL_HANDLE;
     vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, qp);
     uint32_t bits = c->gfx_family < nq ? qp[c->gfx_family].timestampValidBits : 0;
     free(qp);
     VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                .queryCount = 2 * UP_PAIRS};
-    if (bits < 64 || c->props.limits.timestampPeriod <= 0 || vkCreateQueryPool(c->device, &qi, NULL, &up_pool) != VK_SUCCESS)
-        return 0;   // ponytail: a counter narrower than 64 bits goes untimed; mask it as vk_sync.c does if one shows up
-    up_period = c->props.limits.timestampPeriod;
-    up_state = 1;
-    return 1;
+                                .queryCount = 2 * pairs};
+    VkQueryPool p = VK_NULL_HANDLE;
+    // ponytail: a counter narrower than 64 bits goes untimed; mask it as vk_sync.c does if one shows up
+    if (bits < 64 || c->props.limits.timestampPeriod <= 0 || vkCreateQueryPool(c->device, &qi, NULL, &p) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    *period = c->props.limits.timestampPeriod;
+    return p;
+}
+
+static int up_ts_ready(void) {
+    if (!up_state) up_state = (up_pool = vk_ts_pool(UP_PAIRS, &up_period)) ? 1 : -1;
+    return up_state > 0;
 }
 
 void vk_upload_perf(uint64_t *gpu_ns, uint64_t *timed, uint64_t *batches, uint64_t *wait_ns, uint64_t *bytes) {
@@ -1884,7 +1891,7 @@ VkCommandBuffer vk_upload_begin(void) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     vkBeginCommandBuffer(open_b.cb, &bi);
-    if (open_b.ts >= 0 && perf_gpu_timing() && up_ts_ready(c)) {
+    if (open_b.ts >= 0 && perf_gpu_timing() && up_ts_ready()) {
         vkCmdResetQueryPool(open_b.cb, up_pool, 2 * (uint32_t)open_b.ts, 2);
         vkCmdWriteTimestamp(open_b.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, up_pool, 2 * (uint32_t)open_b.ts);
         open_b.timed = 1;
