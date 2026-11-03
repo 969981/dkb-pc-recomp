@@ -95,17 +95,34 @@ static void ts_setup(VkCtx *c) {
 // for at least TOTK_PERF_SLOW_GPU_MS (default 100) gets a line naming its work, at most 200 lines. A respawn in the
 // Ingot Isle Cave-In section (#10) spent about 16.8 s of GPU time per frame inside the replay's parts.
 #define NOTE_PAIRS 6
+#define NOTE_ARGS 65536   // indirect argument addresses kept per part
+typedef struct { uint64_t addr, a, b; } NoteArg;
 typedef struct {
     uint32_t draws, draws_ind, dispatches, dispatches_ind, pairs;
     uint64_t max_work, max_a, max_b;               // the largest direct draw (vertices x instances) or dispatch (groups)
     uint64_t a[NOTE_PAIRS], b[NOTE_PAIRS];         // the first distinct stage names: vertex/fragment, or compute/0
+    uint64_t last_a, last_b;                       // the stages of the last noted draw or dispatch
+    NoteArg *args;                                 // indirect draws whose arguments the host can read (malloc'd)
+    uint32_t nargs, cap;
 } PartNote;
 static PartNote note;   // the part being recorded (sub_lock, like ts_cur)
 
 int vk_sync_noting(void) { return ts_cur >= 0; }
 
+void vk_sync_note_args(uint64_t addr) {
+    if (ts_cur < 0 || note.nargs >= NOTE_ARGS) return;
+    if (note.nargs == note.cap) {
+        uint32_t cap = note.cap ? 2 * note.cap : 256;
+        NoteArg *p = realloc(note.args, cap * sizeof *p);
+        if (!p) return;
+        note.args = p, note.cap = cap;
+    }
+    note.args[note.nargs++] = (NoteArg){addr, note.last_a, note.last_b};
+}
+
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work) {
     if (ts_cur < 0) return;
+    note.last_a = a, note.last_b = b;
     if (kind == 0) note.draws++;
     else if (kind == 1) note.draws_ind++;
     else if (kind == 2) note.dispatches++;
@@ -136,6 +153,22 @@ static void slow_part(const TsRead *t, double ms) {
            n->draws_ind, n->dispatches + n->dispatches_ind, n->dispatches_ind, (unsigned long long)n->max_work,
            (unsigned long long)n->max_a, (unsigned long long)n->max_b, n->pairs ? st : " none",
            n->pairs == NOTE_PAIRS ? " ..." : "");
+    // The indirect draws' arguments as they are now, after the GPU used them: the game may already have written the
+    // next frame's, and a pool freed meanwhile is skipped (plat_mem_readable).
+    uint64_t total = 0, max = 0;
+    uint32_t read = 0, best = 0, w[5] = {0}, bw[5] = {0};
+    for (uint32_t i = 0; i < n->nargs; i++) {
+        if (!plat_mem_readable(n->args[i].addr, sizeof w)) continue;
+        memcpy(w, (const void *)(uintptr_t)n->args[i].addr, sizeof w);
+        uint64_t work = (uint64_t)w[0] * w[1];   // indices x instances
+        read++, total += work;
+        if (work >= max) max = work, best = i, memcpy(bw, w, sizeof w);
+    }
+    if (n->draws_ind)
+        rt_log("perf:   its indirect draws: %u of %u arguments read back, %llu indices x instances in all; the largest "
+               "%llu (%u indices from %u, vertex offset %d, %u instances from %u; %016llx/%016llx)", read, n->draws_ind,
+               (unsigned long long)total, (unsigned long long)max, bw[0], bw[2], (int32_t)bw[3], bw[1], bw[4],
+               (unsigned long long)(read ? n->args[best].a : 0), (unsigned long long)(read ? n->args[best].b : 0));
 }
 
 static void ts_read_cb(void *arg) {   // completion thread, in submission order
@@ -157,6 +190,7 @@ static void ts_read_cb(void *arg) {   // completion thread, in submission order
         } else plat_inc64(&ts_missed);   // the counter wrapped
     } else plat_inc64(&ts_missed);
     __atomic_store_n(&ts_busy[t->pair], 0, __ATOMIC_RELEASE);
+    free(t->note.args);
     free(t);
 }
 
@@ -176,14 +210,18 @@ static int ts_open(VkCommandBuffer cb) {
     return (int)p;
 }
 
-// At its end, before vkEndCommandBuffer; fence: the value whose completion covers it.
-static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence, const PartNote *n) {
-    if (pair < 0) return;
+// At its end, before vkEndCommandBuffer; fence: the value whose completion covers it. The note's argument list moves
+// to the reader.
+static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence, PartNote *n) {
+    if (pair < 0) {
+        if (n) free(n->args), n->args = NULL;
+        return;
+    }
     vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ts_pool, 2 * (uint32_t)pair + 1);
     TsRead *t = calloc(1, sizeof *t);
     if (!t) rt_fatal("vk: out of memory");
     t->pair = (uint32_t)pair, t->fence = fence;
-    if (n) t->note = *n, t->noted = 1;
+    if (n) t->note = *n, t->noted = 1, n->args = NULL;
     vk_completion_add(fence, ts_read_cb, t);
 }
 
@@ -200,6 +238,7 @@ static void ts_end(VkCommandBuffer cb, uint64_t fence) {
 
 // An empty submission records no command buffer: its pair is never written.
 static void ts_drop(void) {
+    free(note.args), note.args = NULL;
     if (ts_cur < 0) return;
     __atomic_store_n(&ts_busy[ts_cur], 0, __ATOMIC_RELEASE);
     ts_cur = -1;

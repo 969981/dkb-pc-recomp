@@ -2365,6 +2365,8 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     ex->recorded += 2;
     note_work(ex, 1, 0);
+    // An imported pool's GPU address is its host address (bind_range reads it the same way); device memory is not.
+    if (!ip.alloc && vk_sync_noting()) vk_sync_note_args(d->ind);
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDrawIndexedIndirectCommand));
     VK_MEM_BOUND(ip);
     VK_MEM_BOUND(ib);

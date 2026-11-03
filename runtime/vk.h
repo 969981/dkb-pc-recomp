@@ -381,9 +381,11 @@ VkCommandBuffer vk_sync_split(void);
 // TOTK_TRACE=perf: the replay notes each draw or dispatch of the part being timed (kind 0 draw, 1 indirect draw, 2
 // dispatch, 3 indirect dispatch; a, b: the NVN 2 names of its vertex and fragment stages, or its compute stage and 0;
 // work: vertices x instances or groups, 0 when indirect), so a slow part can name its work. vk_sync_noting: 1 while
-// the part is timed.
+// the part is timed. vk_sync_note_args: the indirect draw just noted takes its VkDrawIndexedIndirectCommand from this
+// host address (an imported pool); a slow part reads them back once the GPU is done with it.
 int vk_sync_noting(void);
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work);
+void vk_sync_note_args(uint64_t addr);
 // Runs fn(arg) on the completion thread once fence is done on the GPU (event writes, counter reports, sync state).
 // Callbacks run in the order they were added, after those of earlier values; a value already done runs at once there.
 void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg);
