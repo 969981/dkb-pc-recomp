@@ -103,12 +103,13 @@ static void write_counter(uint64_t addr, uint64_t counter) {
 // milliseconds; here the replay comes first (up to a frame later with TOTK_REPLAY_ASYNC), and the completion is seen
 // later still, so "now" at completion is mostly the replay's delay. Bananza paces itself on (end-of-frame timestamp -
 // CPU frame start): with that delay in it, it measured every frame as longer than 1/60 s and dropped to a longer present
-// interval. For a Switch 2 game the report carries the time the game submitted the work (nvn_submit_ticks).
-typedef struct { uint64_t addr, fence; } CounterWrite;
+// interval. For a Switch 2 game the report keeps that existing entry-tick approximation, copied into its callback
+// payload before work can complete. It does not measure GPU execution: TOP and END in one submit still share a tick.
+// Concurrent callers may capture entry ticks in a different order from queueing; no global monotonicity is implied.
+typedef struct { uint64_t addr, submitted_ticks; } CounterWrite;
 static void counter_cb(void *arg) {
     CounterWrite *w = arg;
-    uint64_t at = rt_game_version ? 0 : nvn_submit_ticks(w->fence);
-    if (at) write_counter_at(w->addr, 0, at);
+    if (!rt_game_version) write_counter_at(w->addr, 0, w->submitted_ticks);
     else write_counter(w->addr, 0);
     free(w);
 }
@@ -297,7 +298,7 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
     else {
         CounterWrite *a = malloc(sizeof *a);
         if (!a) rt_fatal("vk: out of memory");
-        *a = (CounterWrite){p->addr, ex->fence};
+        *a = (CounterWrite){p->addr, ex->submitted_ticks};
         vk_completion_add(ex->fence, counter_cb, a);
     }
     pending[pending_head++ % PENDING] = (typeof(pending[0])){p->addr, ex->fence, samples};

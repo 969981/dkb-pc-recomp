@@ -162,8 +162,8 @@ static void gpu_stats(PerfGpu *g) {
 }
 
 // Weak stand-in for vk_exec.c's replay: only empty recordings ({OP_BEGIN, OP_END}) can be submitted.
-WEAK int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
-    (void)cb, (void)fence;
+WEAK int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t submitted_ticks) {
+    (void)cb, (void)fence, (void)submitted_ticks;
     for (int i = 0; i < n; i++) {
         const op_hdr *h = handles[i] ? nvn_op_first(handles[i]) : NULL;
         if (!h || h->op != OP_BEGIN || h->size < sizeof *h || nvn_op_next(h)->op != OP_END)
@@ -331,7 +331,7 @@ uint64_t vk_sync_reserve(void) {
     return v;
 }
 
-uint64_t vk_sync_submit(const uint64_t *handles, int n) {
+uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t submitted_ticks) {
     vk_sync_start();
     VkCtx *c = vk_ctx();
     plat_mutex_lock(&sub_lock);
@@ -349,7 +349,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_crumb(s->cb, VK_CRUMB_SUBMIT, fence);
     ts_begin(s->cb);
     rec_begin(s->cb);
-    int recorded = vk_exec_record(s->cb, handles, n, fence);
+    int recorded = vk_exec_record(s->cb, handles, n, fence, submitted_ticks);
     s = &slots[cur_slot];   // the last part (vk_sync_split)
     if (recorded) ts_end(s->cb, fence);
     else ts_drop();

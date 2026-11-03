@@ -194,13 +194,14 @@ static VkResult synthetic_submit(VkQueue q, uint32_t count, const VkSubmitInfo2 
     } else { check(scenario == SPLIT && info->commandBufferInfoCount == 1, "partial submit has no final signal"); partials++; }
     driver_pending = 1; return VK_SUCCESS;
 }
-int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence);
+int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t submitted_ticks);
 @SYNC_FUNCTIONS@
 
 static void await_phase(int wanted) {
     while (phase < wanted) if (!SleepConditionVariableSRW(&latch_cv, &latch, 5000, 0)) ExitProcess(22);
 }
-int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
+int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t submitted_ticks) {
+    check(submitted_ticks == 123, "actual submit forwards immutable entry tick to recorder");
     (void)handles; check(cb && fence == 2 && n == (scenario == EMPTY ? 0 : 1), "production recorder entry");
     if (scenario != EMPTY) {
         view_t view; int has_view; Tex *a = slot_resolve(&slot_a, &view, &has_view);
@@ -217,7 +218,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
 }
 static DWORD WINAPI submit_thread(void *arg) {
     (void)arg; uint64_t handle = 1;
-    check(vk_sync_submit(&handle, scenario == EMPTY ? 0 : 1) == 2, "actual submit returns current fence"); return 0;
+    check(vk_sync_submit(&handle, scenario == EMPTY ? 0 : 1, 123) == 2, "actual submit returns current fence"); return 0;
 }
 static void seed_texture(void) {
     tex_t a = {0}; a.mem = (void *)(uintptr_t)0x100000; a.d.format = 1; a.d.width = a.d.height = 64; a.d.depth = a.d.levels = 1;

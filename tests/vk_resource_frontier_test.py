@@ -79,6 +79,12 @@ def main():
         '@FRONTIER@': frontier,
     }
     fixture = (ROOT / 'tests/vk_resource_frontier.c').read_text(encoding='utf-8')
+    if 'uint64_t submitted_ticks' not in function(sync, 'vk_sync_submit'):
+        # Preserve retirement-baseline comparisons made before the explicit submitted-tick API existed.
+        fixture = fixture.replace(', uint64_t submitted_ticks)', ')')
+        fixture = fixture.replace('    check(submitted_ticks == 123, "actual submit forwards immutable entry tick to recorder");\n', '')
+        fixture = fixture.replace('vk_sync_submit(&handle, scenario == EMPTY ? 0 : 1, 123)',
+                                  'vk_sync_submit(&handle, scenario == EMPTY ? 0 : 1)')
     for marker, replacement in replacements.items():
         fixture = fixture.replace(marker, replacement)
     generated = work / 'fixture.c'
