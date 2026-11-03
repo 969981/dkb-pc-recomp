@@ -47,27 +47,30 @@ def list_files(staged: bool) -> list[Path]:
     return [Path(p) for p in out.decode("utf-8").split("\0") if p]
 
 
-def problems_for(path: Path, allow_large: bool = False) -> list[str]:
+def problems_for(path: Path, allow_large: bool = False, *, staged: bool = False) -> list[str]:
     """allow_large: files over MAX_BYTES (toolchain binaries in a release folder) are checked for the generated marker
-    only, not refused."""
+    only, not refused. staged reads the index blob, even when the working file is missing or different."""
     found = []
     if path.suffix.lower() in BLOCKED_SUFFIXES:
         found.append(f"blocked file type {path.suffix}")
     if path.name.lower() in BLOCKED_NAMES:
         found.append("name of a Switch executable module")
-    if not path.is_file():
-        return found
-    size = path.stat().st_size
-    if size > MAX_BYTES and allow_large:
-        if GENERATED_MARKER.encode() in path.read_bytes():
-            found.append("generated from game code")
-        return found
-    if size > MAX_BYTES:
+    if staged:
+        revision = f":{path.as_posix()}"
+        size = int(subprocess.run(["git", "cat-file", "-s", revision], check=True, capture_output=True).stdout)
+    else:
+        if not path.is_file():
+            return found
+        size = path.stat().st_size
+    if size > MAX_BYTES and not allow_large:
         found.append(f"{size // 1024} KiB, over the {MAX_BYTES // 1024} KiB limit")
         return found
-    data = path.read_bytes()
+    data = (subprocess.run(["git", "cat-file", "blob", revision], check=True, capture_output=True).stdout
+            if staged else path.read_bytes())
     if GENERATED_MARKER.encode() in data:
         found.append("generated from game code")
+    if size > MAX_BYTES:
+        return found
     if KEY_LINE.search(data.decode("utf-8", errors="ignore")):
         found.append("contains a key in prod.keys format")
     return found
@@ -80,7 +83,7 @@ def main() -> int:
 
     failed = False
     for path in list_files(args.staged):
-        for problem in problems_for(path):
+        for problem in problems_for(path, staged=args.staged):
             print(f"{path}: {problem}")
             failed = True
     if failed:
