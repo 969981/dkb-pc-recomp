@@ -8,9 +8,6 @@
 // Cpu. The SDK's nn::os runs as lifted code; only the kernel under it is the host. Every wait hangs on one global lock
 // G with one condition variable per thread; wake order is the kernel's: lower priority value first, then first come.
 // Semantics follow the public Horizon kernel (KConditionVariable, KAddressArbiter, KSynchronization).
-#ifdef _WIN32
-#define __USE_MINGW_SETJMP_NON_SEH   // setjmp(b) = _setjmp(b, NULL): longjmp restores registers, no SEH unwinding
-#endif
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1435,7 +1432,8 @@ static void thread_finish(RtThread *t) {
     unlock();
 }
 
-// ExitThread: back to the thread start with a non-unwinding longjmp; no SEH unwinding through lifted frames.
+// ExitThread: back to the thread start with the CRT's longjmp. Keep the default setjmp: its recorded frame lets
+// Windows validate and unwind the target. A guest fiber switches back to the base stack before reaching this point.
 // (__builtin_setjmp is not usable: on Win64 LLVM saves the frame address, which is not rbp when the frame register
 // is offset, and the landing code then reads its locals through the wrong base.)
 static __attribute__((noreturn)) void exit_now(RtThread *t) { longjmp(t->exit_jmp, 1); }
