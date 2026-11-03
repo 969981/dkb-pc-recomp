@@ -1,0 +1,99 @@
+name: Sync DKB upstream and publish
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+  push:
+    paths:
+      - '.github/workflows/upstream-sync-release.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dkb-upstream-sync-release
+  cancel-in-progress: false
+
+jobs:
+  sync-and-release:
+    name: Sync bananza and publish source snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UPSTREAM_REPO: Lucas-blip-png/dkb-pc-recomp
+      UPSTREAM_BRANCH: bananza
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout fork's bananza branch and full history
+        uses: actions/checkout@v4
+        with:
+          ref: bananza
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge upstream without overwriting local workflow or docs
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+          upstream_sha="$(git rev-parse "upstream/$UPSTREAM_BRANCH")"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            echo "Fork already contains upstream $upstream_sha."
+          else
+            # Never force-push. Git fails safely on conflicting local changes.
+            git merge --no-commit --no-ff "upstream/$UPSTREAM_BRANCH"
+            python3 tools/check_content.py --staged
+            git commit -m "Synchronize DKB upstream at $upstream_sha"
+            git push origin HEAD:bananza
+          fi
+
+          echo "fork_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run source content safety checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_content.py
+          python3 tests/check_content_test.py
+
+      - name: Publish one source snapshot per upstream revision
+        shell: bash
+        env:
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+          FORK_SHA: ${{ steps.sync.outputs.fork_sha }}
+        run: |
+          set -euo pipefail
+          short_sha="${UPSTREAM_SHA:0:12}"
+          tag="sync-$short_sha"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "No new source release needed: $tag already exists."
+            exit 0
+          fi
+
+          cat > source-release-notes.md <<'EOF'
+          This is an automated **source-only prerelease** following the upstream DKB Recomp bananza branch.
+
+          The source archives are created automatically by GitHub. This is NOT a downloadable game build, Windows installer or playable executable.
+
+          The upstream project currently does not offer release binaries and explicitly requires each user to compile using their own legally obtained game files. No game content, derived executable or console keys are distributed.
+          EOF
+
+          printf '\nUpstream commit: https://github.com/%s/commit/%s\nFork commit: https://github.com/%s/commit/%s\n' \
+            "$UPSTREAM_REPO" "$UPSTREAM_SHA" "$GITHUB_REPOSITORY" "$FORK_SHA" >> source-release-notes.md
+
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$FORK_SHA" \
+            --title "DKB source sync $short_sha" \
+            --notes-file source-release-notes.md \
+            --prerelease
