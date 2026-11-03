@@ -203,8 +203,9 @@ static uint64_t event_for(Cpu *c, uint64_t key) {
     return ev;
 }
 
-// Result GetVp9DecoderSubmissionReadyEvent(nn::os::SystemEventType **out, Vp9DecoderType *): signalled for good, as
-// a submission only waits for a free output buffer, which the player frees itself
+// Result GetVp9DecoderSubmissionReadyEvent(nn::os::SystemEventType **out, Vp9DecoderType *): signalled while the
+// decoder can take a packet, which is when an output buffer is reserved for its picture. The player clears it after a
+// submission comes back not ready, so AcquireVp9DecoderOutputBuffer signals it again (ov_vp9_acquire).
 static void ov_vp9_ready_event(Cpu *c) {
     uint64_t *out = arg_p(c, 0), dec = arg_x(c, 1);
     uint64_t ev = event_for(c, dec);
@@ -266,8 +267,9 @@ static void ov_vp9_submit(Cpu *c) {
 // for the next picture; the fence carries the token RequestSyncPointEvent waits on
 static void ov_vp9_acquire(Cpu *c) {
     uint32_t *index = arg_p(c, 0), *fence = arg_p(c, 1);
+    uint64_t key = arg_x(c, 2);
     plat_mutex_lock(&lock);
-    Dec *d = dec_of(arg_x(c, 2));
+    Dec *d = dec_of(key);
     int got = -1;
     for (int i = 0; d && i < SLOTS && got < 0; i++)
         if (d->slot[i].pool && d->slot[i].state == S_FREE) got = i;
@@ -280,6 +282,9 @@ static void ov_vp9_acquire(Cpu *c) {
     }
     plat_mutex_unlock(&lock);
     if (got < 0) rt_log("codec: AcquireVp9DecoderOutputBuffer with every registered buffer reserved");
+    // A reserved buffer lets the next packet in: wake a player that waits for the submission-ready event after a not
+    // ready submission. Without this, the tutorial's guide movies stopped at their second picture.
+    if (got >= 0) kern_signal_system_event(event_for(c, key));
     ret_x(c, got < 0 ? R_NOT_READY : 0);
 }
 
