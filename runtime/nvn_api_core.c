@@ -594,10 +594,21 @@ static uint64_t lod_entered, lod_issued, lod_fence[LOD_RING];
 // game (vk_exec_xfer.c counter_cb).
 #define SUBMIT_TICKS 1024
 static uint64_t submit_fence[SUBMIT_TICKS], submit_tick[SUBMIT_TICKS];
+static PlatMutex submit_ticks_lock = PLAT_MUTEX_INIT;
 uint64_t nvn_submit_ticks(uint64_t fence) {
     unsigned i = (unsigned)(fence % SUBMIT_TICKS);
-    uint64_t t = __atomic_load_n(&submit_tick[i], __ATOMIC_ACQUIRE);
-    return __atomic_load_n(&submit_fence[i], __ATOMIC_RELAXED) == fence ? t : 0;
+    plat_mutex_lock(&submit_ticks_lock);
+    uint64_t t = submit_tick[i];
+    uint64_t found = submit_fence[i] == fence ? t : 0;
+    plat_mutex_unlock(&submit_ticks_lock);
+    return found;
+}
+static void submit_ticks_publish(uint64_t f, uint64_t submitted) {
+    // A reused slot's tag and tick must stay one pair, including for a reader already looking up the old slot.
+    plat_mutex_lock(&submit_ticks_lock);
+    submit_fence[f % SUBMIT_TICKS] = f;
+    submit_tick[f % SUBMIT_TICKS] = submitted;
+    plat_mutex_unlock(&submit_ticks_lock);
 }
 
 NVN_API(nvnQueueSubmitCommands) {
@@ -624,8 +635,8 @@ NVN_API(nvnQueueSubmitCommands) {
         nvn_submit_prepare(h, n);
         f = gfx_backend()->submit(h, n);
     }
-    __atomic_store_n(&submit_fence[f % SUBMIT_TICKS], f, __ATOMIC_RELAXED);
-    __atomic_store_n(&submit_tick[f % SUBMIT_TICKS], submitted, __ATOMIC_RELEASE);
+    // Do not hold the ring lock across submit: completion may run first and use counter_cb's existing fallback.
+    submit_ticks_publish(f, submitted);
     uint64_t prev = __atomic_load_n(&last_fence, __ATOMIC_RELAXED);
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
