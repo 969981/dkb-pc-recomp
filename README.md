@@ -23,7 +23,8 @@ As far as we know, no other static recompilation of a Switch 2 game is public.
 ## Status
 
 **Not playable yet.** The game boots, goes through the title screen into the tutorial cave, renders the 3D scene and
-answers the controller: you can walk and punch through the mining tunnel, with the guide movies playing. It still
+answers the controller: you can walk and punch through the mining tunnel, with the guide movies playing, and one
+hand-played run reached the Ingot Isle Cave-In section. It still
 crashes (on NVIDIA usually some minutes in, [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)), and
 many effects are missing.
 There is no release. An installer builds the game from your own dump: [docs/installer.md](docs/installer.md).

@@ -5,6 +5,17 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Partial stencil clears are replayed** (#36, by monsterlag). The mining tunnel clears stencil with write mask
+  `0x1`, which the host used to skip. Vulkan's clears ignore the write mask, so a full-screen triangle now replaces
+  only the masked bits, in its own pass per layer, leaving depth and the other stencil bits alone. A 600 s run here
+  had no fault and 0 validation errors. Nobody has shown yet whether this changes the black cave surfaces.
+- **The later GPU fault is not about pipeline timing.** With pipelines built synchronously (`TOTK_PIPE_SYNC=1`,
+  `TOTK_PIPE_WAIT=draw`, as `--shot` does), 2 of 4 runs of 600 s still faulted around 7 minutes in, the same rate as
+  with background builds. The vertex shader on the GPU changes from fault to fault
+  ([#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)).
+- **Furthest point so far** (philneitz, by hand on an RTX 5090 Laptop): through the storm cutscene and the cave-in to
+  the Ingot Isle Cave-In section, where dying and respawning stalled the GPU at about 0.1 FPS
+  ([#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)).
 - **Compute push constants land where the shaders read them** (#20, by monsterlag). NVN 2 packs a compute program's
   root tables into c0 after its 16-byte head, each padded to 16 bytes, before the buffer tables; the shader control
   gives each table's word count. A test run showed the game pushing 32 bytes into root table 0 of the upscaler: its two

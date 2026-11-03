@@ -56,14 +56,18 @@ Each phase ends in a milestone someone else can check. The order follows the cri
       ruled out; leaving out only the draw command passes. Leaving out that shader moves the fault to another vertex
       shader of the same light-quad family. Seen on NVIDIA 617.14 (a crash inside the driver's shader compiler),
       617.42 and 621.01. Mitigated (84a8f7d, `TOTK_FIX_VS_FAULT`): the quads with ten instance streams are skipped on
-      NVIDIA, and a later fault in another shader still happens in some runs. [#9]
+      NVIDIA, and a later fault in another shader still happens in some runs, also with synchronous pipeline builds
+      (2 of 4 runs of 600 s). [#9]
+- [x] Partial stencil clears (write mask other than 0xff): a full-screen triangle replaces only the masked bits (#36,
+      by monsterlag).
 - [x] `nvnCommandBufferPush{Graphics,Compute}Constants`: recorded (33628c7). Graphics root table 0 is bank 24, read by
       the full-screen blits, which now get the pushed `{1/w, 1/h, w, h}`. Compute root tables sit in the packed c0
       after its 16-byte head, each padded to 16 bytes, with the word counts from the shader control (#20, by
       monsterlag): the upscaler's two image rectangles are root table 0, pushed by the game. [#2]
 - [x] Colour grading: the 3D LUT is filled (8x8x8 R11G11B10F, checked in the mining tunnel); the empty LUT was an old build. [#4]
 - [ ] Some textures look blocky (checkerboard rocks) [#5]: the deswizzle now uses the Switch 2 GOB layout, which fixes the gold rock in the tutorial cave; the other rock surfaces still need a check.
-- [ ] Getting past the tutorial cave. [#7]
+- [ ] Getting past the tutorial cave. [#7] A hand-played run reached the Ingot Isle Cave-In section; respawning
+      there stalled the GPU.
 - [ ] Saves: the save is created; saving and loading are not tested yet.
 - [ ] Performance: so far the game presents every third vsync (20 fps). Nobody has profiled it yet.
 - [ ] Testing on other GPUs. [#3]
