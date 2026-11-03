@@ -50,6 +50,7 @@ void perf_count(int kind);
 void perf_present(uint64_t frame);
 void perf_summary_flush(void);                  // prints the frame-time summary of the running period (exit); the 60 s lines come from perf_present
 void gfx_exit_log(void);                        // back end's lines for the exit summary (weak no-op in prof_win.c)
+int vk_backend_selftest(void);                  // replay write-back deduplication cases; failures (vk_backend.c)
 void perf_gpu_wait(uint64_t t0);                // a wait for a GPU fence ended (any thread; the render thread's also counts as PERF_FENCE)
 // GPU side of the 60-frame perf line, filled by the graphics back end when it set perf_gpu_stats. gpu_ns: GPU busy time
 // since the previous call (timestamp queries, overlaps counted once), have_gpu 0 when the device has no timestamps.
@@ -57,6 +58,7 @@ typedef struct {
     int have_gpu, have_vram, vram_exact;
     uint64_t gpu_ns, gpu_parts, gpu_missed;     // busy time, submission parts timed, parts left untimed
     uint64_t vram_used, vram_budget;
+    uint64_t up_gpu_ns, up_timed, up_batches, up_wait_ns, up_bytes;   // upload batches (vk_memory.c, vk_upload_perf)
 } PerfGpu;
 extern void (*perf_gpu_stats)(PerfGpu *out);
 // The performance overlay (perfmon.c): mode 0 off, 1 fps, 2 full. While it is on, perf_present hands every frame to
@@ -64,6 +66,7 @@ extern void (*perf_gpu_stats)(PerfGpu *out);
 void perf_set_overlay(int mode);
 int perf_gpu_timing(void);                      // GPU timestamps wanted: TOTK_TRACE=perf or the full overlay
 void perf_gpu_busy(uint64_t ns);                // GPU busy time of a timed submission part (vk_sync.c, any thread)
+void perf_present_gpu(uint64_t ns);             // GPU time of one present submission (gfx_present.c), for the perf line
 uint64_t perf_gpu_busy_total(void);             // its running total (the overlay's GPU time per frame)
 #define RT_RESULT(module, desc) ((uint32_t)(module) | ((uint32_t)(desc) << 9))
 void rt_sha256(const void *p, size_t n, uint8_t out[32]);   // BCrypt; fatal if the provider fails
@@ -309,6 +312,7 @@ int probe_window(void);                                    // gfx_window_probe.c
 int probe_shader(void);                                    // gfx_shader.c
 int probe_census_dir(char *dir, size_t n);                 // gfx_shader_probe.c: build/<version>/shaders for the probes
 int probe_vkmem(void), probe_vkexec(void), probe_astc(void);                 // tex_probe.c, vk_exec_probe.c, astc_probe.c
+int probe_vkclear(void);                                                  // vk_clear_probe.c
 int probe_movie(void);                                     // movie_probe.c: host VP9 movie::Decoder on one RomFS movie
 int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)
 int vk_pipeline_warm_shaders(void);                        // vk_pipeline.c: --warm-shaders (tools/build_game.py)

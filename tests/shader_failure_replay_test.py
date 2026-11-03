@@ -69,7 +69,8 @@ class ShaderFailureCapture(unittest.TestCase):
         generated = cls.work / 'fixture.c'
         generated.write_text(source)
         cls.exe = cls.work / ('fixture.exe' if os.name == 'nt' else 'fixture')
-        subprocess.run([CC, '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror', str(generated), '-o', str(cls.exe)],
+        subprocess.run([CC, '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'runtime'),
+                        str(generated), '-o', str(cls.exe)],
                        check=True, timeout=30)
 
     def capture(self, enabled, mode=0, stage=4):
@@ -111,17 +112,22 @@ class ShaderFailureCapture(unittest.TestCase):
                 if stage == 4:
                     self.assertTrue(job['early_fragment_tests'])
                     self.assertEqual(job['subgroup'], 64)
+                    for key in ('c0', 'c0_version', 'c0_roots'):
+                        self.assertNotIn(key, job)
                 else:
                     self.assertEqual(job['local'], [4, 2, 1])
                     self.assertEqual(job['c0'], [1, 2, 3, 4])
+                    self.assertEqual(job['c0_version'], 2)
+                    self.assertEqual(job['c0_roots'], [1, 0, 7, 4, 64, 2, 0, 9])
                 self.assertIn('writes=3', text)
 
     def test_success_and_transport_failure_do_not_capture(self):
         for mode in (1, 2):
-            with self.subTest(mode=mode):
-                _, packet, text = self.capture(True, mode=mode)
-                self.assertEqual(list(packet.iterdir()), [])
-                self.assertIn('writes=0', text)
+            for stage in (4, 5):
+                with self.subTest(mode=mode, stage=stage):
+                    _, packet, text = self.capture(True, mode=mode, stage=stage)
+                    self.assertEqual(list(packet.iterdir()), [])
+                    self.assertIn('writes=0', text)
 
     def check_capture_in_cache(self, alias):
         cache, _, _ = self.capture(False)

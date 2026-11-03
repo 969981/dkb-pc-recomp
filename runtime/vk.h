@@ -245,6 +245,11 @@ VkCommandBuffer vk_upload_begin(void);
 void vk_upload_end(void);
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
 uint64_t vk_upload_flush(int wait);
+// Upload batch figures since the previous call (the perf line): GPU time of the timed ones, batches submitted, time
+// threads waited in vk_upload_flush(1), bytes of staging allocated.
+void vk_upload_perf(uint64_t *gpu_ns, uint64_t *timed, uint64_t *batches, uint64_t *wait_ns, uint64_t *bytes);
+// A timestamp query pool of `pairs` pairs on the graphics queue, or VK_NULL_HANDLE without 64-bit timestamps.
+VkQueryPool vk_ts_pool(uint32_t pairs, float *period);
 // Deferred destruction: freed once the upload batches recorded so far and the timeline value last noted have completed.
 void vk_defer_image(VkImage img, VmaAllocation alloc);   // alloc NULL: vkDestroyImage only
 void vk_defer_view(VkImageView view);
@@ -357,7 +362,7 @@ void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h)
 // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
 // once the GPU reached it and the completion thread ran its side effects. Guest or host threads.
 void vk_sync_start(void);                  // vk_init (fatal without a device) and the completion thread; idempotent
-uint64_t vk_sync_submit(const uint64_t *handles, int n);   // records with vk_exec_record, submits; returns the value
+uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t submitted_ticks); // immutable front-end entry tick
 uint64_t vk_sync_reserve(void);            // asynchronous replay: the value the next queued submission signals
 int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns);   // 1 when done; 0 on timeout or a value never submitted
 uint64_t vk_sync_fence_done(void);         // highest done value
@@ -368,7 +373,7 @@ void vk_sync_shutdown(void);               // finish, stop the completion thread
 // begun and ends. fence is the value this submission will signal. Returns the number of commands recorded into the
 // command buffer it holds at the end (0: that one stays empty and is not submitted). A weak vk_sync.c version accepts
 // empty streams only.
-int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence);
+int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t submitted_ticks);
 // Inside vk_exec_record, outside a render pass: ends the command buffer recorded so far, submits it (after the upload
 // batch) without a signal, and returns a new begun one for the rest of the submission. The submission's timeline value
 // is signalled by its last part, whose signal covers every earlier part in submission order.
@@ -497,5 +502,11 @@ void vk_pipeline_autosave(void);           // vk_pipeline_save at most every 20 
 void vk_pipeline_shutdown(void);           // waits for background builds, saves, destroys pipelines, layouts and the
                                            // cache; before vk_shutdown
 int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
+
+// Original fixed-function clear helper. Caller supplies a one-layer view and orders it with surrounding work.
+void vk_clear_stencil_masked(VkCommandBuffer cb, VkFormat format, uint32_t samples, VkImageAspectFlags aspect,
+                             VkImageView view, uint32_t width, uint32_t height, VkRect2D scissor,
+                             uint32_t mask, uint32_t value);
+void vk_clear_shutdown(VkDevice device);   // after device idle, before destroying the device
 
 #include "vk_rec.h"   // last: its macros route the vkCmd* calls of every file that includes vk.h

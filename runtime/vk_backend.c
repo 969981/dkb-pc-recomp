@@ -59,7 +59,7 @@ static void present_main(void *arg) {
         plat_mutex_unlock(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
-        uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
+        uint64_t f = vk_sync_submit(NULL, 0, 0); // no guest reports; this value only covers the blit
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
                      (unsigned long long)f, (unsigned long long)j.value);
@@ -109,7 +109,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
             rt_log("vk: present of texture %p (format %#x) skipped: no colour image", (const void *)t, t ? t->d.format : 0);
         if (value) {   // the queued value is still signalled, in order
             vk_present_drain();
-            uint64_t f = vk_sync_submit(NULL, 0);
+            uint64_t f = vk_sync_submit(NULL, 0, 0);
             if (f != value) rt_fatal("vk: skipped present signalled %llu, queued as %llu", (unsigned long long)f, (unsigned long long)value);
         }
         return;
@@ -135,12 +135,13 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
 }
 
 // ---- Asynchronous replay
-enum { RI_SUBMIT, RI_PRESENT, RI_RELEASE };
+enum { RI_SUBMIT, RI_PRESENT, RI_RELEASE, RI_WRITE_BACK };
 typedef struct {
     int kind, n, has_crop, crop[4];
-    uint64_t value, submit_no, at, queued;
+    uint64_t value, submit_no, at, queued, submitted_ticks;
     uint64_t *h;
     const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
+                        // RI_WRITE_BACK: at is the guest address, queued the size
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
 enum { DR_POOL_FINI, DR_MAP_VIRTUAL, DR_TEX_RELEASE, DR_PROG_RELEASE, DR_FINISH, DR_READ_TEXELS, DR_WRITE_TEXELS,
@@ -183,11 +184,11 @@ uint64_t gfx_replayed_submits(void) {
     return v;
 }
 
-static uint64_t submit_sync(const uint64_t *handles, int n) {
+static uint64_t submit_sync(const uint64_t *handles, int n, uint64_t submitted_ticks) {
     vk_sync_start();
     vk_present_drain();
     vk_texture_new_submit();
-    return vk_sync_submit(handles, n);
+    return vk_sync_submit(handles, n, submitted_ticks);
 }
 
 static void replay_main(void *arg) {
@@ -203,11 +204,14 @@ static void replay_main(void *arg) {
         plat_cond_broadcast(&rcv);
         plat_mutex_unlock(&rl);
         if (it.kind == RI_SUBMIT) {
-            uint64_t f = submit_sync(it.h, it.n);
+            uint64_t f = submit_sync(it.h, it.n, it.submitted_ticks);
             if (f != it.value)
                 rt_fatal("vk: replayed submission signalled %llu, queued as %llu", (unsigned long long)f,
                          (unsigned long long)it.value);
             free(it.h);
+        } else if (it.kind == RI_WRITE_BACK) {
+            vk_present_drain();
+            vk_texture_write_back(it.at, it.queued);
         } else if (it.kind == RI_RELEASE) {
             vk_present_drain();
             vk_texture_release(it.tex);
@@ -218,7 +222,7 @@ static void replay_main(void *arg) {
         }
         plat_mutex_lock(&rl);
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
-        else r_presents_done++;
+        else if (it.kind == RI_PRESENT) r_presents_done++;
         r_items_done++;
         r_busy = 0;
         plat_cond_broadcast(&rcv);
@@ -265,7 +269,7 @@ static uint64_t replay_enqueue(ReplayItem *it) {
         wait_counted(DR_FULL, p0);
         core_back_unlocked(&away);
     }
-    it->value = it->kind == RI_RELEASE ? 0 : vk_sync_reserve();   // a release signals nothing
+    it->value = it->kind == RI_RELEASE || it->kind == RI_WRITE_BACK ? 0 : vk_sync_reserve();   // these signal nothing
     rq[(rq_head + rq_n) % RQ_CAP] = *it;
     rq_n++;
     r_items_queued++;
@@ -387,10 +391,10 @@ static void vk_be_texture_release(const tex_t *t) {
 static void vk_be_program_release(const prog_t *p) { replay_drain(DR_PROG_RELEASE); vk_program_release(p); }
 // Asynchronous: the handles (nvn_submit_prepare_async ran under the front end's submit lock) are copied and queued;
 // the value returned is the one the replay will signal.
-static uint64_t vk_be_submit(const uint64_t *handles, int n) {
-    if (!gfx_replay_async()) return submit_sync(handles, n);
+static uint64_t vk_be_submit(const uint64_t *handles, int n, uint64_t submitted_ticks) {
+    if (!gfx_replay_async()) return submit_sync(handles, n, submitted_ticks);
     vk_sync_start();
-    ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count()};
+    ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count(), .submitted_ticks = submitted_ticks};
     if (n > 0) {
         it.h = malloc(sizeof *it.h * (size_t)n);
         if (!it.h) rt_fatal("vk: out of memory (replay queue)");
@@ -477,6 +481,70 @@ static void vk_be_guest_written(uint64_t addr, uint64_t size) { vk_sync_start();
 // submission recorded to write the textures there, not for the whole queue: the write-back copy then runs after their
 // renders, and clears gpu_dirty only for content that is on the queue. Submissions not replayed yet render after the
 // copy, as on hardware when the GPU has not reached them; they mark the texture dirty again for a later read.
+// A Switch 2 game's small read of a target the GPU is still rendering does not wait on the console: the CPU sees what is
+// in memory, and the GPU's write lands when it gets there. Bananza invalidates 128 bytes of a pool every frame, and
+// waiting here held it for the replay and GPU work of the whole frame, about 15 ms of every frame. The write-back goes to the replay thread instead, queued after the submissions the
+// read would have waited for. This is opt-in with TOTK_NX2_READ_NOWAIT=1: a deferred copy can overwrite a later CPU
+// write after invalidate returned. The default keeps the synchronous read-back even with TOTK_REPLAY_ASYNC=1.
+#define NOWAIT_MAX 4096
+#define NOWAIT_SEEN 8
+
+// The write-backs queued last. One covering [addr, addr+size) for a writer fence at least as new makes a new one
+// redundant: vk_texture_write_back takes every dirty target overlapping its range, so a queued smaller range is not
+// enough. Returns 1 when covered, else records the range and returns 0.
+typedef struct { uint64_t addr, size, fence; } NowaitSeen;
+static int nowait_covered(NowaitSeen *seen, unsigned *next, uint64_t addr, uint64_t size, uint64_t f) {
+    for (int i = 0; i < NOWAIT_SEEN; i++)
+        if (seen[i].size && seen[i].fence >= f && seen[i].addr <= addr && addr + size <= seen[i].addr + seen[i].size)
+            return 1;
+    seen[*next % NOWAIT_SEEN] = (NowaitSeen){addr, size, f};
+    ++*next;
+    return 0;
+}
+
+int vk_backend_selftest(void) {
+    NowaitSeen seen[NOWAIT_SEEN] = {0};
+    unsigned next = 0;
+    static const struct { uint64_t addr, size, fence; int covered; } steps[] = {
+        {0x1000, 0x80, 5, 0},     // first read
+        {0x1000, 0x80, 5, 1},     // the same range again
+        {0x1000, 0x1000, 5, 0},   // a larger range at the same address and fence is not covered by the smaller one
+        {0x1800, 0x80, 5, 1},     // inside the larger one
+        {0x1000, 0x1000, 4, 1},   // an older writer fence
+        {0x1000, 0x1000, 6, 0},   // a newer writer fence
+        {0x1f80, 0x100, 6, 0},    // past the end of every queued range
+    };
+    int failures = 0;
+    for (unsigned i = 0; i < sizeof steps / sizeof *steps; i++)
+        if (nowait_covered(seen, &next, steps[i].addr, steps[i].size, steps[i].fence) != steps[i].covered) {
+            printf("vk_backend selftest: write-back dedup step %u gave %d, want %d\n", i, !steps[i].covered,
+                   steps[i].covered);
+            failures++;
+        }
+    return failures;
+}
+
+static int read_nowait(uint64_t addr, uint64_t size, uint64_t f) {
+    static int on = -1;
+    int enabled = __atomic_load_n(&on, __ATOMIC_ACQUIRE);
+    if (enabled < 0) {
+        enabled = !rt_game_version && cfg_bool("TOTK_NX2_READ_NOWAIT");
+        __atomic_store_n(&on, enabled, __ATOMIC_RELEASE);
+    }
+    if (!enabled || size > NOWAIT_MAX) return 0;
+    static PlatMutex m = PLAT_MUTEX_INIT;
+    static NowaitSeen seen[NOWAIT_SEEN];
+    static unsigned next;
+    plat_mutex_lock(&m);
+    int queued = nowait_covered(seen, &next, addr, size, f);
+    plat_mutex_unlock(&m);
+    if (!queued) {
+        ReplayItem it = {.kind = RI_WRITE_BACK, .at = addr, .queued = size};
+        replay_enqueue(&it);
+    }
+    return 1;
+}
+
 static void vk_be_guest_read(uint64_t addr, uint64_t size) {
     if (!vk_texture_cpu_stale(addr, size)) return;
     vk_sync_start();
@@ -485,6 +553,7 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
         plat_mutex_lock(&rl);
         dr_calls[DR_GUEST_READ]++, dr_tcalls[DR_GUEST_READ]++;
         plat_mutex_unlock(&rl);
+        if (f && vk_sync_fence_done() < f && read_nowait(addr, size, f)) return;
         if (f && vk_sync_fence_done() < f) {
             uint64_t t0 = kern_now_ns();
             NVN_BLOCKING();

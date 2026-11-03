@@ -25,8 +25,13 @@ def main():
     exe = out/('nvn_wait_sync.exe' if os.name == 'nt' else 'nvn_wait_sync')
     # gfx_null.c is included by the fixture; compile from the selected source root for an exact baseline comparison.
     fixture = out/'nvn_wait_sync.c'
-    fixture.write_text((ROOT/'tests/nvn_wait_sync.c').read_text().replace(
-        '#include "../runtime/gfx_null.c"', '#include "' + (source/'runtime/gfx_null.c').as_posix() + '"'))
+    text = (ROOT/'tests/nvn_wait_sync.c').read_text().replace(
+        '#include "../runtime/gfx_null.c"', '#include "' + (source/'runtime/gfx_null.c').as_posix() + '"')
+    if 'uint64_t submitted_ticks' not in (source/'runtime/gfx.h').read_text():
+        # Older source-root comparisons use the two-argument backend API; ordering assertions stay the same.
+        text = text.replace(', uint64_t submitted_ticks)', ')').replace('    (void)submitted_ticks;\n', '')
+        text = text.replace('gfx_null_backend.submit(queued, 2, 0)', 'gfx_null_backend.submit(queued, 2)')
+    fixture.write_text(text)
     subprocess.run([args.cc, '-std=gnu11', '-O1', '-Wall', '-Wextra', '-fno-strict-aliasing',
                     '-ffunction-sections', '-fdata-sections', '-I', str(source/'runtime'), str(fixture),
                     str(source/'runtime/nvn_api_cmd.c'), str(source/'runtime/nvn_api_core.c'),

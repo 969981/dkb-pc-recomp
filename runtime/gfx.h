@@ -116,7 +116,8 @@ typedef struct {
     void (*sampler_register)(int id, const samp_par *s);
     void (*texture_release)(const tex_t *t);
     void (*program_release)(const prog_t *p);
-    uint64_t (*submit)(const uint64_t *handles, int n);    // replays; returns this submission's fence value
+    // submitted_ticks is the front end's immutable entry tick, including 0; it is not GPU execution time.
+    uint64_t (*submit)(const uint64_t *handles, int n, uint64_t submitted_ticks); // returns this submission's fence
     int  (*fence_wait)(uint64_t value, uint64_t timeout_ns);   // 1 reached; caller has given its core up
     uint64_t (*fence_done)(void);                          // highest value whose side effects are written
     // Queues the present and returns at once; the host present goes out at at_ns (kern_now_ns clock), at once when that

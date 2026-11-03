@@ -55,6 +55,10 @@ uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
 int kern_core_away(void) { return 1; }
 void kern_core_back(int *away) { *away = 0; }
 uint64_t kern_now_ns(void) { return 0; }
+uint64_t rt_ticks(void) { return 0; } // synthetic entry clock; this fixture checks ordering, not timestamps
+uint64_t rt_ns_to_ticks(uint64_t ns) {
+    (void)ns; rt_fatal("unexpected counter report in WaitSync fixture"); return 0;
+}
 // Unrelated object/observer entry points are linked but must never run in this fixture.
 const RtConfig *rt_config(void) { rt_fatal("unexpected configuration lookup"); return NULL; }
 const GfxBackend gfx_vulkan_backend = {0};
@@ -136,7 +140,8 @@ static int backend_wait(uint64_t value, uint64_t timeout) {
     plat_mutex_unlock(&latch);
     return 1;
 }
-static uint64_t backend_submit(const uint64_t *handles, int n) {
+static uint64_t backend_submit(const uint64_t *handles, int n, uint64_t submitted_ticks) {
+    (void)submitted_ticks;
     plat_mutex_lock(&latch);
     uint64_t f = ++issued;
     if (producer_call) {
@@ -272,7 +277,7 @@ static void scenario(int async) {
         previous_queued[0] = queued[0]; previous_queued[1] = queued[1];
         previous_value = captured[0];
         protect(s, 0);
-        gfx_null_backend.submit(queued, 2); // actual backend traversal must never reread the pointer
+        gfx_null_backend.submit(queued, 2, 0); // actual backend traversal must never reread the pointer
         protect(s, 1);
     }
     // An initialized but unfenced sync emits no SDK wait; window acquire's fence0 is already complete.

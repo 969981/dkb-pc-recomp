@@ -1273,6 +1273,7 @@ void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code) {
     static PlatMutex dump_lock = PLAT_MUTEX_INIT;
     char path[1024];
     plat_mutex_lock(&dump_lock);
+    mkdir_p(dir);   // a missing folder would otherwise make every fopen below fail without a word
     for (int part = 0; part < 2; part++) {
         snprintf(path, sizeof path, "%s/%016llx.%s", dir, (unsigned long long)h, part ? "bin" : "ctl");
         FILE *f = fopen(path, "rb");
