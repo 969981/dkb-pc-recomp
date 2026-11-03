@@ -666,9 +666,12 @@ NVN_API(nvnCommandBufferBindStorageBuffers) { bind_buffers(c, OP_BIND_SSBO); }
 // plus LOAD_ROOT_TABLE (0x508), compute through MME macro 0x53. Graphics shaders read table 0 as constant bank 24:
 // the full-screen blits get their texel size and size this way (1/w, 1/h, w, h at 0x0..0xc in Bananza's runs). Where
 // compute shaders read their pushes is not known yet; no Bananza compute stage reads bank 24.
-static void push_constants(const Cpu *c, int compute) {
+// The Deferred entry points (sdk+0x5d3670 graphics, sdk+0x5d3df0 compute) have the same five arguments, but store the
+// direct data pointer and the low byte of offset without reading data. The submit interpreter reloads that pointer.
+// Keep the host's 256-byte table bound for both pipelines; the deferred compute helper itself does not clamp bytes.
+static void push_constants(const Cpu *c, int compute, int deferred) {
     cmd_t *o = cmd_of(c);
-    int table = (int)(arg_x(c, 1) & 7), offset = (int)arg_x(c, 2);
+    int table = (int)(arg_x(c, 1) & 7), offset = deferred ? (uint8_t)arg_x(c, 2) : (int)arg_x(c, 2);
     uint32_t bytes = (uint32_t)arg_x(c, 3);
     if (bytes > 0x100) bytes = 0x100;
     if (bytes < 4) return;
@@ -680,11 +683,14 @@ static void push_constants(const Cpu *c, int compute) {
     uint32_t n = bytes / 4;
     p_push_const *r = RECN(o, OP_PUSH_CONST, p_push_const, w, n);   // holds only n words of w: set fields one by one
     r->compute = compute, r->table = table, r->offset = offset, r->bytes = (int32_t)(n * 4);
-    memcpy(r->w, arg_p(c, 4), n * 4);
+    r->src = deferred ? arg_x(c, 4) : 0;
+    if (!deferred) memcpy(r->w, arg_p(c, 4), n * 4);
     hw_fix(o, 4 * ((size_t)n + 2));   // method header, selector or macro parameter, n words
 }
-NVN_API(nvnCommandBufferPushGraphicsConstants) { push_constants(c, 0); }
-NVN_API(nvnCommandBufferPushComputeConstants) { push_constants(c, 1); }
+NVN_API(nvnCommandBufferPushGraphicsConstants) { push_constants(c, 0, 0); }
+NVN_API(nvnCommandBufferPushComputeConstants) { push_constants(c, 1, 0); }
+NVN_API(nvnCommandBufferPushGraphicsConstantsDeferred) { push_constants(c, 0, 1); }
+NVN_API(nvnCommandBufferPushComputeConstantsDeferred) { push_constants(c, 1, 1); }
 // Texture, image and separate handle binds. A deferred bind (NVN 55 *Deferred entry points, the fallback of the inline
 // fast paths) keeps the pointer to the game's handle array: the original driver (sdk+0x46cc00 BindTexturesDeferred)
 // reads the handles when the command buffer is submitted, and the game fills its material handle tables after
@@ -897,11 +903,11 @@ NVN_API(nvnCommandBufferSetPatchSize) { (void)c; }
 
 // ---------- submit
 // What the console reads at the submit call is read here, on the game thread: every handle must be a live recording,
-// and deferred binds take the handles the game's arrays hold now (the game fills its tables for the next frame as soon
-// as the submit returns). The result is written into the recording copy.
+// and deferred binds and pushes take the data the game's arrays hold now (the game fills its tables for the next frame
+// as soon as the submit returns). The result is written into the recording copy.
 static uint64_t def_reads, def_changed, n_clones;
 
-static int resolve_deferred(const uint8_t *p, int depth) {   // returns the number of deferred binds
+static int resolve_deferred(const uint8_t *p, int depth) {   // returns the number of deferred binds and pushes
     int nd = 0;
     for (;;) {
         op_hdr h;
@@ -919,6 +925,16 @@ static int resolve_deferred(const uint8_t *p, int depth) {   // returns the numb
             memcpy(&t, p + 8, 8);
             if (depth >= 16) rt_fatal("nvn: deferred bind resolution: call depth over 16");
             nd += resolve_deferred((const uint8_t *)(uintptr_t)t, depth + 1);
+        } else if (h.op == OP_PUSH_CONST) {
+            if (h.size < 8 + offsetof(p_push_const, w)) rt_fatal("nvn: short push-constant record at %p", (const void *)p);
+            p_push_const *b = (p_push_const *)(uintptr_t)(p + 8);
+            if (b->src) {
+                if (b->bytes <= 0 || b->bytes > (int)sizeof b->w || (b->bytes & 3) ||
+                    h.size < 8 + offsetof(p_push_const, w) + (size_t)b->bytes)
+                    rt_fatal("nvn: invalid deferred push-constant record at %p", (const void *)p);
+                nd++;
+                memcpy(b->w, (const void *)(uintptr_t)b->src, (size_t)b->bytes);
+            }
         } else if (h.op == OP_BIND_TEX || h.op == OP_BIND_IMG || h.op == OP_BIND_SAMP) {
             p_bind_handles *b = (p_bind_handles *)(uintptr_t)(p + 8);
             if (b->src && b->n > 0 && b->n <= 32) {

@@ -75,8 +75,8 @@ uint64_t nvn_tex_view_offset(const tex_t *t, const view_t *v);
 // A command handle (what QueueSubmitCommands receives) points at a host copy of one recording: a flat sequence of
 // 8-byte-aligned records {op_hdr, payload}, OP_BEGIN first and OP_END last. Called recordings are inlined, so a copy
 // holds no OP_CALL or OP_JUMP. Texture pointers in payloads (p_set_rt, p_copy_b2t, p_copy_t2t, p_clear_tex) are
-// immutable host copies that live for the run, one per tex_t.serial. Deferred binds (p_bind_handles.src != 0) hold the
-// handles read at submit (nvn_submit_prepare). Payloads of the ops nvn_obj.h does not define:
+// immutable host copies that live for the run, one per tex_t.serial. Deferred binds and pushes (payload src != 0)
+// hold the source data read at submit (nvn_submit_prepare). Payloads of the ops nvn_obj.h does not define:
 typedef struct { volatile uint32_t *val; uint32_t mode, value; } p_signal_event;   // OP_SIGNAL_EVENT; mode: NVNeventSignalMode
 typedef struct { uint64_t type, addr; } p_report_counter;  // OP_REPORT_COUNTER: NVNcounterType, NVNcounterData address
 typedef struct { uint64_t type; } p_reset_counter;         // OP_RESET_COUNTER
@@ -92,7 +92,8 @@ typedef struct { uint64_t ind, caller; } p_dispatch_ind;   // OP_DISPATCH_IND: i
 typedef struct { uint64_t addr, size; uint32_t value, pad; } p_clear_buf;
 // OP_PUSH_CONST: NVN 2 Push{Graphics,Compute}Constants; bytes at byte offset into root table `table` of the graphics
 // (compute 0) or compute (compute 1) pipeline. Shaders read the root table as constant bank 24 (nvn_api_nvn2.c).
-typedef struct { int32_t compute, table, offset, bytes; uint32_t w[64]; } p_push_const;
+// src: direct data pointer for *Deferred, read into w at submit; 0 for immediate pushes copied at record time.
+typedef struct { int32_t compute, table, offset, bytes; uint64_t src; uint32_t w[64]; } p_push_const;
 _Static_assert(sizeof(p_signal_event) == 16 && sizeof(p_report_counter) == 16 && sizeof(p_copy_b2b) == 24 &&
                sizeof(p_update_ub) == 16, "op payload layouts of hle_nvn.c");
 static inline const op_hdr *nvn_op_first(uint64_t handle) { return (const op_hdr *)(uintptr_t)handle; }   // OP_BEGIN
