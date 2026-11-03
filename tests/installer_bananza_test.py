@@ -391,6 +391,32 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertFalse(self.dest.exists())
         self.assertFalse(self.temp.exists())
 
+    def test_source_translator_build_keeps_build_servers_out_of_owned_workspace(self):
+        # A real child observes the scoped settings; the caller's build environment stays untouched.
+        builder = self.root/'tools/build_xlate.py'
+        builder.write_text('''
+import json, os, pathlib, sys
+a=sys.argv; out=pathlib.Path(a[a.index('--out')+1]); out.mkdir(parents=True)
+(out/('totk_xlate.exe' if sys.platform=='win32' else 'totk_xlate')).write_bytes(b'synthetic translator')
+(out/'totk_xlate.id').write_text('synthetic-translator-id\\n')
+(out/'child-environment.json').write_text(json.dumps(dict(os.environ)))
+''')
+        self.temp.mkdir()
+        ctx = SimpleNamespace(temp=self.temp, dest=self.dest, layout=self.layout, options=self.options,
+                              reporter=Reporter(), info={'translator':None, 'identity':'synthetic-translator-id',
+                                                         'dotnet':Path(sys.executable)})
+        caller = dict(os.environ)
+        with contextlib.redirect_stdout(io.StringIO()):
+            record = b.Translator().run(ctx)
+        child = json.loads((self.temp/'xlate/child-environment.json').read_text())
+        self.assertEqual(child.get('MSBUILDDISABLENODEREUSE'), '1')
+        self.assertEqual(child.get('DOTNET_CLI_USE_MSBUILD_SERVER'), '0')
+        # Windows treats environment names case-insensitively, including imported MSBuild properties.
+        properties = {key.lower():value for key,value in child.items()}
+        self.assertEqual(properties.get('usesharedcompilation'), 'false')
+        self.assertEqual(record['sha256'], b.sha256(self.dest/('totk_xlate'+b.EXE)))
+        self.assertEqual(dict(os.environ), caller)
+
     def test_linked_source_is_rejected_before_writes(self):
         actual = b.linked
         with patch.object(b, 'linked', side_effect=lambda p: p == self.exefs/'main' or actual(p)):

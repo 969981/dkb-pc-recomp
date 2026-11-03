@@ -485,7 +485,11 @@ class Translator(Step):
             env = {'PATH': str(ctx.info['dotnet'].parent) + os.pathsep + os.environ.get('PATH', ''),
                    'DOTNET_ROOT': str(ctx.info['dotnet'].parent), 'DOTNET_CLI_HOME': str(ctx.temp / 'dotnet-home'),
                    'NUGET_PACKAGES': str(ctx.temp / 'nuget'),
-                   'DOTNET_PROCESSOR_COUNT': str(ctx.options.jobs)}
+                   'DOTNET_PROCESSOR_COUNT': str(ctx.options.jobs),
+                   # Reusable MSBuild nodes retain NuGet task DLLs after publish and block Windows cleanup.
+                   # These settings affect only this build, not the owner's other .NET work.
+                   'MSBUILDDISABLENODEREUSE': '1', 'DOTNET_CLI_USE_MSBUILD_SERVER': '0',
+                   'UseSharedCompilation': 'false'}
             command = [ctx.layout.python, ctx.layout.tools / 'build_xlate.py', '--out', out]
             if os.name != 'nt':
                 command += ['--llvm', ctx.layout.llvm]
