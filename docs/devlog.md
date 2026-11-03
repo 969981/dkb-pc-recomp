@@ -5,6 +5,19 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Guide movies loop after a Continue** (15152da). At the end of a movie the player flushes and starts again with
+  the two buffers it still holds, and submits its third packet before it releases one. The decoder refused that
+  packet, nothing released a buffer after that, and the guide window kept the movie's first picture, a flat yellow
+  card, for the rest of the run. Packets now wait in a queue of eight, as in Eglantine's video session, until a
+  buffer is reserved. In a resumed run the movie looped 16 times, where it had stopped after 183 pictures.
+  `TOTK_TRACE=codec` logs the decoder calls.
+- **A slow GPU part reads back its indirect draws' arguments** (f876d9b,
+  [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). In philneitz's respawn stall, 2,755 of the
+  3,197 draws in an 18.5 s part were indirect, and the slow-part line did not show their counts. It now logs the
+  total and the largest indirect draw, read once the GPU is done with the part.
+- **Test fixtures fixed** (#41 by monsterlag, 41bb451). The profiling calls added for the slow-part line had broken
+  two CPU fixtures: the indirect dispatch test (no `note_work`) and the resource frontier test (the upload timing's
+  Vulkan calls). Both pass again.
 - **Saving and loading work.** During a 600 s run of the scripted test the game wrote `progress.sav`, `caption.sav`
   and `config.sav` through three commits. A second run on a copy of that profile showed Continue and New Game on the
   title screen, and Continue resumed in the mining tunnel of the tutorial, where the first run had saved.
