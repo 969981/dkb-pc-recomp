@@ -5,6 +5,12 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Small Switch 2 reads can skip the GPU wait, as an opt-in** (#24, by NotShinySource, with monsterlag's opt-in).
+  Bananza invalidates 128 bytes of a pool every frame, and with the asynchronous replay that read waited about 15 ms
+  for the frame's GPU work. With `nx2_read_nowait = 1` and `replay_async = 1`, a read of up to 4 KiB no longer waits
+  and its write-back is queued after the submissions it would have waited for. It stays off by default because that
+  write-back can overwrite CPU writes made after the invalidate returns. The same PR fixes the replay thread counting
+  release items as finished presents, which could end the one-frame present bound early.
 - **Partial stencil clears are replayed** (#36, by monsterlag). The mining tunnel clears stencil with write mask
   `0x1`, which the host used to skip. Vulkan's clears ignore the write mask, so a full-screen triangle now replaces
   only the masked bits, in its own pass per layer, leaving depth and the other stencil bits alone. A 600 s run here
