@@ -43,6 +43,7 @@ _Static_assert(sizeof(nvn_mapping_t) == 0x28, "NVNmappingRequest stride");
 
 const pool_t *nvn_pool_find(uint64_t addr, uint64_t len);  // GPU-visible pool holding [addr, addr+len], NULL if none
 uint64_t nvn_new_serial(void);                             // next tex_t / prog_t serial, from 1
+uint64_t nvn_submit_ticks(uint64_t fence);                  // guest tick of the submit with that fence, 0 if unknown
 uint64_t nvn_fence_last(void);                             // fence value of the newest submit (0 before the first)
 int nvn_depth_minus_w(void);                               // 1 after DeviceSetDepthMode(NEAR_IS_MINUS_W), else 0
 void nvn_guest_written(uint64_t addr, uint64_t size);      // the host or the game wrote pool storage: back end re-reads
@@ -83,6 +84,9 @@ typedef struct { uint64_t type; } p_reset_counter;         // OP_RESET_COUNTER
 typedef struct { uint64_t src, dst, size; } p_copy_b2b;    // OP_COPY_B2B: GPU addresses
 typedef struct { uint64_t dst, size; uint8_t data[]; } p_update_ub;   // OP_UPDATE_UB: size bytes written at dst
 typedef struct { int32_t bits, pad; } p_barrier;           // OP_BARRIER: NVNbarrierBits
+// OP_WAIT_SYNC retains the source until submit preparation, as the SDK's control record does. The caller keeps
+// the sync alive through each submit; the backend never dereferences it after preparation returns.
+typedef struct { const sync_t *sync; } p_wait_sync;
 typedef struct { uint64_t target; } p_jump;                // OP_JUMP / OP_CALL: next record / called recording
 // OP_DRAW_IDX_IND: DrawElementsIndirect; ind = GPU address of {count, instances, first index, base vertex, base
 // instance} (VkDrawIndexedIndirectCommand's layout), read by the GPU when the draw runs
