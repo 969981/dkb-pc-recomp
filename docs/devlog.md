@@ -20,8 +20,9 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
   In 9 runs of 600 s, every run where one more light quad (NVN 2 vertex stage cae0ef8e9fe9147f) drew faulted, with its
   draw in flight at the device loss, and the runs where it never drew did not. Its fragment stage does not read
   c0+0x530, so the first skip missed it. It is now skipped on NVIDIA as well, and 6 runs of 600 s since had no fault,
-  including one where it came up. Its nine per-instance streams match a quad that never faults except for the
-  instance count, and so do its SPIR-V features, so it is matched by name and the cause is still open.
+  including one where it came up. Three quads that draw in every run without a fault have the same vertex input (an
+  input at Location 9, every attribute per instance) and the same integer code, so it is matched by name and the cause
+  is still open. Skipping every quad of that shape left out ten vertex stages that never faulted.
 - **Small Switch 2 reads can skip the GPU wait, as an opt-in** (#24, by NotShinySource, with monsterlag's opt-in).
   Bananza invalidates 128 bytes of a pool every frame, and with the asynchronous replay that read waited about 15 ms
   for the frame's GPU work. With `nx2_read_nowait = 1` and `replay_async = 1`, a read of up to 4 KiB no longer waits

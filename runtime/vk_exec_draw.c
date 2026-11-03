@@ -2017,16 +2017,17 @@ typedef struct {
 // 9) and whose fragment stage reads the storage buffer at c0+0x530 fault the device with an invalid instruction
 // pointer, or crash the driver's shader compiler. Leaving out one such shader moves the fault to another of the
 // family, and the same SPIR-V drawn on its own does not fault, so the cause is still open. Skipping these draws
-// loses those lights; the family's quads with eight or nine streams draw as before. It is a mitigation, not a fix:
+// loses those lights; the family's quads without an input at Location 9 draw as before. It is a mitigation, not a fix:
 // in 600 s runs on an RTX 5060 Ti the fault came minutes later in one run of two (another shader), where without it
 // every run faulted right after the first guide movie. TOTK_FIX_VS_FAULT=0 draws them.
 //
 // The later fault, around seven minutes in, comes from one more quad of the same shape whose fragment stage does not
 // read c0+0x530: NVN 2 vertex stage cae0ef8e9fe9147f, nine per-instance RGBA32F streams, one instance. In 9 runs of
 // 600 s every run where it drew faulted, with its draw among those in flight at the device loss, and the runs where it
-// never drew did not; skipping it gave 0 faults in 4 runs. Its vertex input matches quads that never fault (the same
-// streams, formats and divisors; only the instance count differs), and so do its SPIR-V features, so it is matched by
-// the name of its NVN 2 stage.
+// never drew did not; skipping it gave 0 faults in 4 runs. Quads that never fault have its shape: vertex stages
+// 782b2585777d2b4e, 392e2956038a9e64 and 7d85669ac430f01a read Location 9, feed every attribute per instance and carry
+// the same integer code (four reads of c9 at a computed index), and skipping every such quad left out ten vertex stages
+// that drew in all 17 logged runs. So it is matched by the name of its NVN 2 stage.
 static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     static int on = -1;
     if (on < 0) on = !rt_game_version && cfg_bool("TOTK_FIX_VS_FAULT") && vk_ctx()->props.vendorID == 0x10de;   // 0: Bananza
