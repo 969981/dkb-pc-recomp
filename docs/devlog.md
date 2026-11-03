@@ -5,6 +5,15 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **The 20 fps stretch is gone** (69d51d0, [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). The
+  present thread held each present until the pacer's display time. While it slept, the next present waited behind it,
+  and so did every drain of pending presents. That includes the reads Bananza's job workers make of GPU-written
+  storage in the middle of a frame: profiles put 13 to 19 % of their time there. The vsync wait counted as game work,
+  and the game's frame-rate controller asked for 3 vsyncs. Bananza now sends the present once its blit is submitted
+  and keeps only the pacing in `nvnWindowAcquireTexture`; `TOTK_PRESENT_HOLD=1` brings the hold back, and TotK keeps
+  it. In a 600 s run of the scripted test, every minute after the first ran at 59.4 to 60.0 fps (1 % low 40.8 to 57.1),
+  where minutes 2 and 3 ran at 20.0 and 26.6 fps before, and the game changed its present interval 28 times in all.
+  The run had no fault.
 - **A replay part that runs long on the GPU names its work** (d4c27e2,
   [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). philneitz's log of the respawn stall showed the
   GPU itself busy for about 16.8 s per frame inside the replay, with uploads and the present near zero and no device
@@ -21,8 +30,8 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
   name now comes from an index of lowered code buffers. In one 420 s run of the scripted test, the game presented
   19,817 frames where it had presented 12,297 before, asked for 60 fps on 86 % of them, and the replay averaged 5.6 ms a
   frame instead of 29.3 ms (worst window 13 ms, down from 114 ms). The light quad is still skipped, and the run had no
-  fault. The game still asks for 20 fps from about 43 s to 163 s of the test, while the render thread is busy only about 8 ms a frame. The
-  host does not cause that stretch, and it is still being looked into.
+  fault. From about 43 s to 163 s of the test the game still asked for 20 fps while the render thread was busy only
+  about 8 ms a frame; the host's present hold caused that (fixed in 69d51d0, above).
 - **Every GPU submission is timed on the perf line** (eb542bc, 6a49228). Upload batches, which also carry the ASTC
   decoding of texture uploads, and the present (blit, colour adjustment, FSR, overlay) went to the queue without
   timestamps. With `TOTK_TRACE=perf` the perf line now gives their GPU time per frame, the batches and bytes staged,
