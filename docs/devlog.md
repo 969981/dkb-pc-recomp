@@ -5,6 +5,8 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Audio checked during gameplay.** With `TOTK_TRACE=audio`, a 90 s tutorial run shows sound from about 20 s in, an
+  RMS of 0.02 to 0.04 with peaks up to 0.41, and no underrun or overrun on the SDL3 device.
 - **Copies between decoded ASTC textures** (#43 by monsterlag, e90bc7c). A texture-to-texture copy of an ASTC
   texture used to be skipped because the image holds decoded RGBA8 and not the guest's blocks. It now copies the
   decoded texels between two images of the same format when the region is aligned to the blocks, which ASTC

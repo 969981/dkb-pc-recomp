@@ -48,7 +48,11 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 
 ## F5 — Playable (in progress)
 
-- [x] Controller input in the menu and in gameplay (walking, punching).
+- [x] Controller input in the menu and in gameplay (walking, punching). Keyboard and mouse come from TotK Recomp's
+      input layer ([controls.md](controls.md)).
+- [x] Audio: the game's audio renderer (REV15) mixes on the host and plays through SDL3. In a 90 s tutorial run,
+      `TOTK_TRACE=audio` measured an RMS of 0.02 to 0.04 and peaks up to 0.41 once gameplay starts, with no underrun
+      or overrun.
 - [x] Tutorial guide movies: `nn::codec` VP9 decoding on the host with libvpx (`runtime/ov_codec.c`).
 - [ ] GPU fault (an invalid instruction pointer; the freeze was the same fault, 86fb7cc) right after the first guide
       movie frame. It is the first draw of one instanced light-quad vertex shader, and its fragment stage (one of the
