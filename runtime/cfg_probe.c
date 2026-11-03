@@ -1,4 +1,5 @@
-// --probe-cfg: totk.ini parsing, the environment override and a missing file (cfg.c). Needs no game files.
+// --probe-cfg: totk.ini parsing, the environment override, the DKB_ names and a missing file (cfg.c). Needs no game
+// files.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +53,12 @@ int probe_cfg(void) {
     CHECK(EQ(cfg_get("TOTK_FPS60"), "1"), "environment overrides the file");
     plat_setenv("TOTK_FPS60", NULL);
     CHECK(EQ(cfg_get("TOTK_FPS60"), "0"), "file value returns when the variable is removed");
+    plat_setenv("DKB_FPS60", "1");
+    CHECK(EQ(cfg_get("TOTK_FPS60"), "1") && cfg_from_env("TOTK_FPS60"), "DKB_ name stands for the TOTK_ one");
+    plat_setenv("TOTK_FPS60", "0");
+    CHECK(EQ(cfg_get("TOTK_FPS60"), "1"), "DKB_ name wins over the TOTK_ one");
+    plat_setenv("DKB_FPS60", NULL);
+    plat_setenv("TOTK_FPS60", NULL);
     plat_file_delete(path);
     CHECK(cfg_load(path) == 0, "missing file is not an error");
     CHECK(cfg_get("TOTK_FPS60") == NULL, "missing file leaves no keys");

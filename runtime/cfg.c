@@ -257,8 +257,22 @@ static int profile_of(void) {
 
 const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop"; }
 
+// DKB_X in the environment stands for TOTK_X and wins over it: the TOTK_ names come from TotK Recomp and stay, so its
+// fixes keep applying without a rename.
+static const char *dkb_alias(const char *name) {
+    char alias[96];
+    if (strncmp(name, PREFIX, PREFIX_LEN) || strlen(name) >= sizeof alias - 1) return NULL;
+    snprintf(alias, sizeof alias, "DKB_%s", name + PREFIX_LEN);
+    return getenv(alias);
+}
+
+static const char *env_of(const char *name) {
+    const char *e = dkb_alias(name);
+    return e ? e : getenv(name);
+}
+
 static const char *raw_get(const char *name) {
-    const char *e = getenv(name);
+    const char *e = env_of(name);
     if (e || strncmp(name, PREFIX, PREFIX_LEN)) return e;
     int n = __atomic_load_n(&n_entries, __ATOMIC_ACQUIRE);
     for (int i = 0; i < n; i++)
@@ -279,7 +293,7 @@ int cfg_is_set(const char *name) { return raw_get(name) != NULL; }
 
 unsigned cfg_version(void) { return __atomic_load_n(&version, __ATOMIC_ACQUIRE); }
 
-int cfg_from_env(const char *name) { return getenv(name) != NULL; }
+int cfg_from_env(const char *name) { return env_of(name) != NULL; }
 
 void cfg_set(const char *name, const char *value) {
     if (strncmp(name, PREFIX, PREFIX_LEN) || !value) return;
@@ -311,7 +325,7 @@ int cfg_reset(const char *const *keys, int n) {
         snprintf(key, sizeof key, "%s", keys[k]);
         const char *name = norm_key(key);
         snprintf(var, sizeof var, PREFIX "%s", name);
-        if (getenv(var)) continue;   // the environment wins; the file line stays
+        if (env_of(var)) continue;   // the environment wins; the file line stays
         int i = 0;
         while (i < n_entries && strcmp(entries[i].key, name)) i++;
         if (i == n_entries) {   // no value in memory ("key =" in the file): the line still has to go
@@ -343,7 +357,7 @@ void cfg_each_active(void (*cb)(const char *key, const char *value, int from_env
     for (size_t i = 0; i < sizeof known / sizeof *known; i++) {
         char var[80];
         snprintf(var, sizeof var, PREFIX "%s", known[i]);
-        const char *e = getenv(var);
+        const char *e = env_of(var);
         if (e) cb(known[i], e, 1, ctx);
     }
 }
@@ -636,7 +650,7 @@ static void load_ini(void) {
     for (int i = 0; i < n_entries; i++) {
         char var[128];
         snprintf(var, sizeof var, PREFIX "%s", entries[i].key);
-        if (getenv(var)) rt_log("cfg: %s is set in the environment and overrides totk.ini", var);
+        if (env_of(var)) rt_log("cfg: %s (or its DKB_ name) is set in the environment and overrides totk.ini", var);
     }
 }
 

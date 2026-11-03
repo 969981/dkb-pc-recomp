@@ -36,6 +36,9 @@ Useful settings, as environment variables (`set NAME=value` in the same Command 
 | `TOTK_GPU=null` | Run without a picture (no Vulkan). Useful to tell CPU and OS bugs from graphics bugs. |
 | `TOTK_XLATE_PROCS=<n>` | Shader translator processes at run time (default 2). Lower it if RAM runs out. |
 
+The settings keep TotK Recomp's `TOTK_` names, so its fixes apply without a rename. Each one can also be written with
+`DKB_` in its place (`DKB_GPU=null`); when both are set, the `DKB_` one wins.
+
 Command-line options: `--seconds S` stops the run after S seconds of game time, and `--shot frame.png` with it saves
 that frame. A shot is for your own debugging; do not post it if it shows game content.
 
