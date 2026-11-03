@@ -24,6 +24,7 @@ void rec_drain(void);                 // waits until the recorder made every cal
 void rec_stats_log(void);             // TOTK_TRACE=perf: packets, bytes, drains and waits since the last call
 
 // Extension commands called through device function pointers.
+void rec_crumb(VkCommandBuffer cb, int kind, uint64_t n);   // vk_crumb in order with this command buffer's packets
 void rec_push_tpl(PFN_vkCmdPushDescriptorSetWithTemplateKHR fn, VkCommandBuffer cb, VkDescriptorUpdateTemplate tpl,
                   VkPipelineLayout layout, uint32_t set, const void *data, uint32_t bytes);   // data: bytes read by tpl
 void rec_push(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout,
