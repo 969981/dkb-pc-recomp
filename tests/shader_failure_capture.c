@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "nvn2_c0.h"
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -27,7 +28,7 @@ static char cache_dir[PATH_CAP];
 static int cache_lock,host_f64=0;
 static uint32_t host_sbuf=16,host_sg[3]={32,64,32},host_gather=8;
 static volatile int64_t n_hits,n_xlated;
-static int service_mode,submitted,atomic_calls,writer;
+static int service_mode,submitted,atomic_calls,writer,require_c0_expected,disk_load_calls;
 static char sent[32768];
 static void check(int good,const char* message) {if(!good){fprintf(stderr,"FAIL: %s\n",message);exit(20);}}
 static void rt_log(const char* format,...) {(void)format;}
@@ -67,7 +68,12 @@ static int64_t plat_inc64(volatile int64_t* p) {return ++*p;}
 static void plat_mutex_lock(int* p) {(void)p;}
 static void plat_mutex_unlock(int* p) {(void)p;}
 static GfxShader* mem_find(const uint8_t* key) {(void)key;return NULL;}
-static GfxShader* disk_load(const uint8_t* key,const uint8_t* iid) {(void)key;(void)iid;return submitted && service_mode==1?&result:NULL;}
+static GfxShader* disk_load(const uint8_t* key,const uint8_t* iid,int require_c0) {
+    (void)key;(void)iid;
+    check(require_c0==require_c0_expected,"cache lookup preserves the request's c0 requirement");
+    disk_load_calls++;
+    return submitted && service_mode==1?&result:NULL;
+}
 static GfxShader* mem_insert(GfxShader* s) {return s;}
 static int use_find(const uint8_t* hash,UseMask* mask) {(void)hash;(void)mask;return 0;}
 static UseMask use_of(GfxShader* s) {(void)s;check(0,"final key has no rename");return (UseMask){0};}
@@ -92,14 +98,19 @@ int main(int argc,char** argv) {
     writer=argc==5?atoi(argv[4]):0;
     uint8_t code[CODE_SKIP+4]={0},control[CONTROL_SIZE]={0},c1[]={0xab,0xcd,0xef};
     const uint8_t bad[]={(uint8_t)(writer?writer:1),2,3,4};size_t skip=stage==GFX_STAGE_CS?0:CODE_SKIP;memcpy(code+skip,bad,sizeof bad);
-    Req req={.stage_name=stage==GFX_STAGE_CS?"cs":"ps",.length=(uint32_t)(skip+sizeof bad),.c1_len=sizeof c1,.c1=c1,.final=1};
+    require_c0_expected=stage==GFX_STAGE_CS;
+    Req req={.stage_name=stage==GFX_STAGE_CS?"cs":"ps",.length=(uint32_t)(skip+sizeof bad),.c1_len=sizeof c1,.c1=c1,
+             .final=1,.require_c0=require_c0_expected};
     memset(req.key,0xab,sizeof req.key);GfxShaderAnswers answers={0};answers.tex_type[3]=4;answers.attr_type[2]=2;
     if(writer)host_gather=(uint32_t)writer;
     answers.img_type[1]=4;answers.img_format[1]=1;answers.frag_out_type[0]=1;answers.shared_bytes=128;
     answers.local[0]=4;answers.local[1]=2;answers.local[2]=1;control[0x718]=1;
-    memcpy(control+NVN2_C0_LAYOUT,"DKC0\1\2\3\4",8);
+    memcpy(control+NVN2_C0_LAYOUT,"DKC1\1\2\3\4",8);
+    const uint8_t roots[NVN2_ROOT_TABLES]={1,0,7,4,64,2,0,9};
+    memcpy(control+NVN2_C0_LAYOUT+12,roots,sizeof roots);
     const GfxShader* s=translate_one(&req,stage,control,code,&answers);
     check((s!=NULL)==(service_mode==1),"capture does not alter translation result");
+    check(disk_load_calls==(service_mode==1?2:1),"cache miss and successful output both check the c0 requirement");
     char path[PATH_CAP+80];snprintf(path,sizeof path,"%s/sent.json",cache_dir);check(write_file(path,sent,strlen(sent)),"sent request record");
     char hex[65];key_hex(req.key,hex);snprintf(path,sizeof path,"%s/%s.code",cache_dir,hex);
     check(!file_exists(path),"temporary cache code is always removed");
