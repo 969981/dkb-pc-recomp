@@ -1,7 +1,7 @@
-"""Condition-latched timestamp ring regression using the actual publication, lookup and report callback.
+"""Actual-source submitted-tick lifetime regression; no Vulkan loader or GPU.
 
-Usage: python tests/nvn_submit_ticks_test.py --cc /path/to/clang [--revision BASELINE]
-The timeout detects a deadlock; assertions use lock/condition handshakes, never elapsed time.
+--source-root or --revision selects older source for RED comparisons. Vulkan submission and command decoding are adapters;
+the frontend, replay submission branch, recorder context, report registration and completion callback are production.
 """
 import argparse
 import hashlib
@@ -15,66 +15,81 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def selected_source(path, revision):
-    if revision:
-        return subprocess.check_output(['git', 'show', f'{revision}:{path}'], cwd=ROOT, text=True)
-    return (ROOT/path).read_text()
-
-
-def extract_source(core, xfer):
-    ring = core[core.index('#define SUBMIT_TICKS '):core.index('\nNVN_API(nvnQueueSubmitCommands)')]
-    if 'static void submit_ticks_publish(' not in ring:
-        # Before the fix the exact two publication statements lived inside QueueSubmitCommands.
-        start = core.index('    __atomic_store_n(&submit_fence[')
-        end = core.index('\n', core.index('__atomic_store_n(&submit_tick[', start))
-        ring += '\nstatic void submit_ticks_publish(uint64_t f, uint64_t submitted) {\n' + core[start:end] + '\n}\n'
-    ring, reads = re.subn(r'(    uint64_t t = [^;]+;)', r'\1\n    test_after_tick_read();', ring)
-    ring, writes = re.subn(
-        r'(    (?:__atomic_store_n\(&submit_fence\[[^\n]+|submit_fence\[[^\n]+);)',
-        r'\1\n    test_after_tag_store();', ring)
-    if reads != 1 or writes != 1:
-        raise ValueError('timestamp source changed: expected one lookup read and one publication tag store')
-    reports = xfer[xfer.index('static void write_counter_at('):xfer.index('\n// Reports queued by the replay')]
-    return ring + '\n' + reports
+def function(text, declaration):
+    start = text.index(declaration)
+    brace = text.index('{', start)
+    depth, end = 1, brace + 1
+    while depth:
+        depth += (text[end] == '{') - (text[end] == '}')
+        end += 1
+    return text[start:end]
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--cc', default=os.environ.get('CC') or shutil.which('clang'))
-    parser.add_argument('--revision', help='read production source from this Git revision instead of the working tree')
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--cc', default=os.environ.get('CC') or shutil.which('clang'))
+    selection = ap.add_mutually_exclusive_group()
+    selection.add_argument('--source-root', type=Path, default=ROOT)
+    selection.add_argument('--revision', help='read production source and headers from this Git revision')
+    ap.add_argument('--vulkan-include', type=Path, required=True)
+    args = ap.parse_args()
     if not args.cc:
-        parser.error('pass --cc with the project Clang executable')
-    revision = subprocess.check_output(
-        ['git', 'rev-parse', '--verify', '--end-of-options', args.revision + '^{commit}'],
-        cwd=ROOT, text=True).strip() if args.revision else None
-    label = revision[:12] if revision else 'working'
-    out = ROOT/'build'/'tests'/'nvn-submit-ticks'/label
+        ap.error('pass --cc')
+    source = args.source_root.resolve()
+    if args.revision:
+        revision = subprocess.check_output(['git', 'rev-parse', '--verify', '--end-of-options',
+                                           args.revision + '^{commit}'], cwd=ROOT, text=True).strip()
+        source = ROOT / 'build/tests/nvn-submit-ticks' / revision[:12] / 'source'
+        names = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', revision, '--', 'runtime'],
+                                        cwd=ROOT, text=True).splitlines()
+        needed = {'nvn_api_core.c', 'vk_backend.c', 'vk_exec.c', 'vk_exec_xfer.c'}
+        for name in names:
+            rel = Path(name)
+            if rel.suffix != '.h' and rel.name not in needed:
+                continue
+            target = source / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(subprocess.check_output(['git', 'show', f'{revision}:{name}'], cwd=ROOT))
+    texts = {name: (source / 'runtime' / name).read_text() for name in
+             ('nvn_api_core.c', 'vk_backend.c', 'vk_exec.c', 'vk_exec_xfer.c')}
+    core, backend, execute, xfer = (texts[x] for x in texts)
+    api = 'uint64_t submitted_ticks' in function(backend, 'static uint64_t vk_be_submit(')
+    globals_ = core[core.index('#define LOD_RING'):core.index('NVN_API(nvnQueueSubmitCommands)')]
+    types = backend[backend.index('enum { RI_SUBMIT'):backend.index('#define RQ_CAP')]
+    callback = xfer[xfer.index('static void write_counter_at('):xfer.index('// Reports queued by the replay')]
+    branch = function(backend, 'if (it.kind == RI_SUBMIT)')
+    replacements = {'@API@': str(int(api)), '@GLOBALS@': globals_, '@REPLAY_TYPES@': types,
+                    '@COUNTERS@': callback + function(xfer, 'static void report_counter('),
+                    '@RECORD@': function(execute, 'int vk_exec_record('),
+                    '@BACKEND@': function(backend, 'static uint64_t submit_sync(') + '\n' +
+                                 function(backend, 'static uint64_t vk_be_submit('),
+                    '@FRONTEND@': function(core, 'NVN_API(nvnQueueSubmitCommands)'), '@SUBMIT_BRANCH@': branch}
+    fixture = (ROOT / 'tests/nvn_submit_ticks.c').read_text()
+    for key, value in replacements.items():
+        fixture = fixture.replace(key, value)
+    out = ROOT / 'build/tests/nvn-submit-ticks' / ('working' if source == ROOT else 'baseline')
     out.mkdir(parents=True, exist_ok=True)
-    core = selected_source('runtime/nvn_api_core.c', revision)
-    xfer = selected_source('runtime/vk_exec_xfer.c', revision)
-    extracted = extract_source(core, xfer)
-    (out/'timestamp_source.inc').write_text(extracted)
+    generated = out / 'fixture.c'
+    generated.write_text(fixture)
     results = []
-    for optimization in ('-O0', '-O2'):
-        exe = out/('nvn_submit_ticks' + optimization[1:] + ('.exe' if os.name == 'nt' else ''))
-        command = [args.cc, '-std=gnu11', optimization, '-Wall', '-Wextra', '-Werror',
-                   '-I', str(ROOT/'runtime'), '-I', str(out), str(ROOT/'tests/nvn_submit_ticks.c'),
-                   *([] if os.name == 'nt' else ['-pthread']), '-o', str(exe)]
-        subprocess.run(command, check=True)
-        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=20)
-        log = result.stdout + result.stderr
-        (out/(optimization[1:] + '.log')).write_text(log)
-        print(optimization + ': ' + log, end='')
-        results.append({'optimization': optimization, 'exit': result.returncode, 'output': log})
-    (out/'results.json').write_text(json.dumps({
-        'revision': revision or 'working tree',
-        'core_sha256': hashlib.sha256(core.encode()).hexdigest(),
-        'xfer_sha256': hashlib.sha256(xfer.encode()).hexdigest(),
-        'instrumented_extraction_sha256': hashlib.sha256(extracted.encode()).hexdigest(),
-        'runs': results,
-    }, indent=2) + '\n')
-    return int(any(result['exit'] for result in results))
+    for version in (0, 143):
+        for opt in ('-O0', '-O2'):
+            exe = out / f'ticks-{version}-{opt[1:]}.exe'
+            cmd = [args.cc, '-std=gnu11', opt, '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',
+                   '-DTEST_GAME_VERSION=' + str(version), '-I', str(source / 'runtime'),
+                   '-I', str(args.vulkan_include), '-I', str(args.vulkan_include / 'vma'),
+                   str(generated), *([] if os.name == 'nt' else ['-pthread']), '-o', str(exe)]
+            subprocess.run(cmd, check=True, timeout=30)
+            p = subprocess.run([str(exe)], capture_output=True, text=True, timeout=20)
+            row = {'version': version, 'optimization': opt, 'exit': p.returncode, 'output': p.stdout + p.stderr,
+                   'command': cmd}
+            print(json.dumps(row), flush=True)
+            results.append(row)
+    (out / 'results.json').write_text(json.dumps({'source': str(source), 'by_value_api': api,
+        'sources': {p: hashlib.sha256(t.encode()).hexdigest() for p, t in texts.items()},
+        'extracted': {k: hashlib.sha256(v.encode()).hexdigest() for k, v in replacements.items()},
+        'fixture_sha256': hashlib.sha256(fixture.encode()).hexdigest(), 'results': results}, indent=2) + '\n')
+    return int(any(x['exit'] for x in results))
 
 
 if __name__ == '__main__':

@@ -909,11 +909,12 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
     }
 }
 
-int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
+int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t submitted_ticks) {
     VkExec *ex = &X;
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
     ex->cb = cb;
     ex->fence = fence;
+    ex->submitted_ticks = submitted_ticks;
     ex->recorded = 0;
     ex->in_pass = 0;
     ex->dirty = VK_EXEC_DIRTY_ALL;

@@ -100,7 +100,8 @@ static void null_replay(uint64_t handle) {
     }
 }
 
-static uint64_t null_submit(const uint64_t *handles, int n) {
+static uint64_t null_submit(const uint64_t *handles, int n, uint64_t submitted_ticks) {
+    (void)submitted_ticks;   // the null back end keeps its immediate CPU-side counter behavior
     for (int i = 0; i < n; i++) null_replay(handles[i]);
     return __atomic_add_fetch(&fence, 1, __ATOMIC_ACQ_REL);
 }
