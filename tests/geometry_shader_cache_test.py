@@ -40,6 +40,19 @@ LEGACY = {
         'fbdd5e4d02c39f59572de9113890534a98eaec3392889255725be9a8354e4a19'),
 }
 
+# Upstream #42 intentionally moved output keys to namespace 5 for guarded storage.
+# Code hashes, input IDs and answer bytes above stay fixed. These namespace-5
+# keys are independently derived from the documented TKSK/TKSP wire protocol;
+# both upstream-only baselines are checked, rather than accepting arbitrary new versions.
+LEGACY_KEYS_V5 = {
+    0: ('ab75ed28a9981e15679a0f640b47e917418e286177fa2ce09603f4a4f19d6db6',
+        '48ec83659d4de92333074197855defc49dcf0535fbbbbb35c6424924b6c70ddf'),
+    4: ('f497e7660d9376c1ad2782d78acbe37de2c84820effc838040831092c1be52c1',
+        'daa682de03417f197c87a4d773fa14a54e89de31bae827756799eae15d4fa61f'),
+    5: ('15ca93b36c99c0af313d54bdfa5fc4c9fa4710b22c933f6a4b700e651c899918',
+        '66529ec9f94c50e509e0fcd6a4dd2ce81c2565476c9d0ca5d42cf0fb86f5cefe'),
+}
+
 
 class GeometryCache(unittest.TestCase):
     @classmethod
@@ -149,16 +162,19 @@ class GeometryCache(unittest.TestCase):
         for stage in (0, 4, 5):
             with self.subTest(stage=stage):
                 result = self.identity(stage)
+                version = result['key_version']
+                self.assertIn(version, (4, 5), 'an upstream namespace change needs explicit new golden vectors')
                 data = struct.pack('<I', stage) + self.control.read_bytes() + struct.pack('<Q', 64) + self.code.read_bytes()
                 data += struct.pack('<I', 8) + bytes.fromhex('123456789abcdef0')
                 code_hash = hashlib.sha256(data).digest()
                 iid = hashlib.sha256(b'TKSI' + struct.pack('<I', 1) + code_hash + masked).digest()
-                key = hashlib.sha256(b'TKSK' + struct.pack('<I', 4) + bytes(range(0x80, 0xa0)) + iid).hexdigest()
-                provisional = hashlib.sha256(b'TKSP' + struct.pack('<I', 4) + bytes(range(0x80, 0xa0)) + code_hash + answers).hexdigest()
+                key = hashlib.sha256(b'TKSK' + struct.pack('<I', version) + bytes(range(0x80, 0xa0)) + iid).hexdigest()
+                provisional = hashlib.sha256(b'TKSP' + struct.pack('<I', version) + bytes(range(0x80, 0xa0)) + code_hash + answers).hexdigest()
                 self.assertEqual(result['answers'], answers.hex())
                 self.assertEqual((result['hash'], result['iid'], result['key'], result['provisional']),
                                  (code_hash.hex(), iid.hex(), key, provisional))
-                self.assertEqual((result['hash'], result['iid'], result['key'], result['provisional']), LEGACY[stage])
+                frozen = LEGACY[stage] if version == 4 else LEGACY[stage][:2] + LEGACY_KEYS_V5[stage]
+                self.assertEqual((result['hash'], result['iid'], result['key'], result['provisional']), frozen)
 
     def request_packet(self, stage):
         suffix = original.framed([original.EXIT]) if stage == 5 else original.program(stage={0: 'vs', 3: 'gs', 4: 'ps'}[stage])

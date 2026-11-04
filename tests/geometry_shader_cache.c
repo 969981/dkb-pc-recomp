@@ -137,7 +137,7 @@ int main(int argc, char **argv) {
         printf("{\"hash\":\""); hex_bytes(hash,32); printf("\",\"key\":\""); hex_bytes(key,32);
         printf("\",\"iid\":\""); hex_bytes(iid,32); printf("\",\"provisional\":\""); hex_bytes(provisional,32);
         printf("\",\"use\":\""); hex_bytes(name,32); printf("\",\"answers\":\"");
-        hex_bytes(packed, pack_answers(packed,&a)); printf("\",\"known\":%d}\n",known);
+        hex_bytes(packed, pack_answers(packed,&a)); printf("\",\"known\":%d,\"key_version\":%u}\n",known,KEY_VERSION);
         free(code); free(control); return 0;
     }
     if (!strcmp(argv[1], "learn")) {
