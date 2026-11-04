@@ -210,6 +210,17 @@ class Passthrough(unittest.TestCase):
         replies = self.translate(jobs, valid=False)
         self.assertTrue(all('explicit attribute writes or emission' in reply for reply in replies))
 
+    def test_portable_sph_kind_and_version_are_exact(self):
+        jobs = []
+        for kind, version in ((0, 3), (2, 3), (31, 3), (1, 0), (1, 1), (1, 2), (1, 4), (1, 31)):
+            code = bytearray(fixture.program())
+            word0 = struct.unpack_from('<I', code)[0]
+            word0 = (word0 & ~(31 | (31 << 5))) | kind | (version << 5)
+            struct.pack_into('<I', code, 0, word0)
+            jobs.append(self.packet('sph_' + str(kind) + '_' + str(version), bytes(code)))
+        replies = self.translate(jobs, valid=False)
+        self.assertTrue(all('kind-1 version-3 SPH' in reply for reply in replies))
+
     def test_legacy_byte_and_reflection_parity(self):
         jobs = []
         for stage in ('vs', 'ps', 'cs'):

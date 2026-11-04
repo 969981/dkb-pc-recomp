@@ -92,6 +92,8 @@ static class SwshXlate
                 GeometryInputName = name;
                 if (v == 2)
                 {
+                    if ((word0 & 31) != 1 || ((word0 >> 5) & 31) != 3)
+                        throw new InvalidDataException("Portable passthrough requires a Maxwell kind-1 version-3 SPH");
                     if (name != "triangles" || GeometryOutputName != "triangle_strip" ||
                         (BitConverter.ToUInt32(code, 8) >> 24) != 1 || (BitConverter.ToUInt32(code, 16) & 0xfff) != 1)
                         throw new NotSupportedException("Portable passthrough requires triangles, triangle strip, one invocation and raw maximum vertex count 1");
