@@ -305,9 +305,18 @@ def module_glue(layout, linked, hashes, paths, version):
 
 def port_version():
     """VERSION at the root: the repository's semver, or in a release folder the release string (make_release.py
-    version)."""
+    version). A build from a git checkout appends the short commit, as a release does, so the settings menu says which
+    commit a report came from."""
     path = ROOT / 'VERSION'
-    return path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
+    version = path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
+    if '+' not in version and (ROOT / '.git').exists():
+        try:
+            commit = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', '--short=7', 'HEAD'], capture_output=True,
+                                    text=True, timeout=10).stdout.strip()
+        except OSError:
+            commit = ''
+        if commit: version += '+' + commit
+    return version
 
 
 def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
