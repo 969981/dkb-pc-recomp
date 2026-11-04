@@ -34,6 +34,7 @@ enum { GFX_GEOMETRY_NONE, GFX_GEOMETRY_POINTS, GFX_GEOMETRY_LINES, GFX_GEOMETRY_
        GFX_GEOMETRY_TRIANGLES, GFX_GEOMETRY_TRIANGLES_ADJACENCY };
 enum { GFX_GEOMETRY_OUTPUT_POINTS = 1, GFX_GEOMETRY_OUTPUT_LINE_STRIP, GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP };
 #define GFX_GEOMETRY_VERSION 1
+#define GFX_GEOMETRY_PASSTHROUGH_VERSION 2
 typedef struct {                                           // the translator's answers (Program.cs Accessor)
     uint8_t tex_type[32], img_type[32], img_format[32];    // per c2 slot; 0 = not asked; types are GFX_TEX_*,
                                                            // img_format is Ryujinx TextureFormat

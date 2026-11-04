@@ -65,6 +65,9 @@ class GeometryCache(unittest.TestCase):
             data = (subprocess.check_output(['git', 'show', args.source_revision + ':runtime/' + name], cwd=ROOT)
                     if args.source_revision else path.read_bytes())
             (cls.source_dir / name).write_bytes(data)
+        # The new pure writer is a baseline fixture adapter only: it authors the
+        # same original input bytes while --source-revision keeps the shader TU old.
+        (cls.source_dir / 'nvn_geometry_control.h').write_bytes((ROOT / 'runtime/nvn_geometry_control.h').read_bytes())
         production = (cls.source_dir / 'gfx_shader.c').read_text()
         header = (cls.source_dir / 'gfx.h').read_text()
         parameters = re.search(r'static int build_code_hash\(([^{};]+)\)\s*\{', production).group(1)

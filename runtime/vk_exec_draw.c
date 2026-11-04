@@ -25,6 +25,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
+#include "nvn_geometry_control.h"
 #include "nvn_indirect_reset.h"
 #include "vk.h"
 #include "vk_exec.h"
@@ -2302,7 +2303,7 @@ static int experimental_geometry_on(void) {
 static int geometry_draw(VkExec *ex, uint32_t prim) {
     geometry_input = 0;
     if (!experimental_geometry_on() || !ex->prog) return 0;
-    int found = 0;
+    int found = 0, portable = 0;
     uint32_t stages = 0;
     if (ex->prog->nstage > 6) goto unsupported;
     for (uint32_t i = 0; i < ex->prog->nstage; i++) {
@@ -2319,12 +2320,21 @@ static int geometry_draw(VkExec *ex, uint32_t prim) {
         if (len < 0x30 + 0x60 || nvn2_origin(code) || c0_on()) goto unsupported;
         uint32_t sph;
         memcpy(&sph, code + 0x30, 4);
-        if ((sph >> 10 & 15) != 4 || (sph & (1u << 24))) goto unsupported;
+        if ((sph >> 10 & 15) != 4) goto unsupported;
+        if (sph & (1u << 24)) {
+            uint32_t skip[8];
+            if (nvn_geometry_control_get(ctl, 0x880, code, len, skip) != 1 ||
+                vk_geometry_input(prim) != GFX_GEOMETRY_TRIANGLES) goto unsupported;
+            portable = 1;
+        }
     }
     if (found) {
         // Replay currently replaces a complete program, not individual stages. Partial GS binds need a separate
         // merging contract; do not execute a GS which this bind did not request.
         if (!(stages & (1u << NVN_STAGE_VS)) || ((uint32_t)ex->prog_stages & stages) != stages) goto unsupported;
+        // Portable metadata currently follows the verified whole-program SDK binding path.
+        if (portable && ((uint32_t)ex->prog_stages != NVN_SHADER_STAGE_ALL_GRAPHICS_BITS ||
+                         !(stages & (1u << NVN_STAGE_FS)))) goto unsupported;
         geometry_input = vk_geometry_input(prim);
         if (!geometry_input) goto unsupported;
     }

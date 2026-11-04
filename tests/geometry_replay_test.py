@@ -26,7 +26,7 @@ def source():
     replay = (ROOT / 'runtime/vk_exec.c').read_text()
     pipeline = (ROOT / 'runtime/vk_pipeline.c').read_text()
     base = descriptor.source().replace('int main(void)', 'static int descriptor_checks(void)', 1)
-    base = base.replace('#include "vk_exec.h"', '#include "vk_exec.h"\n#include "nvn_hmap.h"')
+    base = base.replace('#include "vk_exec.h"', '#include "vk_exec.h"\n#include "nvn_hmap.h"\n#include "nvn_geometry_control.h"')
     base = base.replace('uint8_t body[16];', 'uint8_t body[8192]; int volatile_;')
     old_stage = function(base, 'int gfx_shader_stage(')
     old_res = function(base, 'int gfx_shader_resources(')
@@ -184,6 +184,27 @@ int main(int argc,char **argv) {
     fix_c0=1;CHECK(geometry_draw(&ex,0)<0,"synthetic GS c0 rejected");fix_c0=0;
     native_code=code[1];CHECK(geometry_draw(&ex,0)<0,"native lowering origin rejected");native_code=NULL;
     put32(code[1]+0x30,(4<<10)|(1<<24));CHECK(geometry_draw(&ex,0)<0,"passthrough rejected");put32(code[1]+0x30,4<<10);
+    // Host-authored portable metadata is distinct from a bare NVN1 passthrough flag.
+    put32(code[1]+0x30,1|(3<<5)|(4<<10)|(1<<24));
+    put32(code[1]+0x38,1u<<24);put32(code[1]+0x3c,7u<<24);put32(code[1]+0x40,1);
+    put32(ctl[1]+0x700,sizeof code[1]);
+    CHECK(geometry_draw(&ex,NVN_DRAW_PRIMITIVE_TRIANGLES)<0,"bare passthrough has no host metadata");
+    uint32_t skip[8]={0x0fffffff,0xfffffff0,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    CHECK(nvn_geometry_control_pack_portable(ctl[1],sizeof ctl[1],code[1],sizeof code[1],skip),"owned portable metadata packed");
+    CHECK(geometry_draw(&ex,NVN_DRAW_PRIMITIVE_TRIANGLES)<0,"portable draw requires the complete VS/GS/FS program");
+    put32(ctl[2]+0x714,NVN_STAGE_FS);program.nstage=3;
+    CHECK(geometry_draw(&ex,NVN_DRAW_PRIMITIVE_TRIANGLES)==1 && geometry_input==GFX_GEOMETRY_TRIANGLES,"canonical portable triangles accepted");
+    ex.prog_stages=7;
+    CHECK(geometry_draw(&ex,NVN_DRAW_PRIMITIVE_TRIANGLES)<0,"portable binding follows the verified whole-program mask");
+    ex.prog_stages=NVN_SHADER_STAGE_ALL_GRAPHICS_BITS;
+    CHECK(geometry_draw(&ex,NVN_DRAW_PRIMITIVE_POINTS)<0,"portable point topology remains unsupported");
+    nvn_geometry_control_put(ctl[1]+0x810,NVN_GEOMETRY_CONTROL_NATIVE);
+    CHECK(geometry_draw(&ex,NVN_DRAW_PRIMITIVE_TRIANGLES)<0,"native metadata remains unsupported");
+    nvn_geometry_control_put(ctl[1]+0x810,NVN_GEOMETRY_CONTROL_PORTABLE);
+    native_code=code[1];
+    CHECK(geometry_draw(&ex,NVN_DRAW_PRIMITIVE_TRIANGLES)<0,"portable metadata cannot enable native-origin code");native_code=NULL;
+    memset(ctl[1]+NVN_GEOMETRY_CONTROL_OFFSET,0,NVN_GEOMETRY_CONTROL_SIZE);
+    put32(ctl[1]+0x700,0);put32(code[1]+0x30,4<<10);put32(ctl[2]+0x714,NVN_STAGE_GS);program.nstage=2;
     for(unsigned stage=3;stage<=4;stage++){put32(ctl[1]+0x714,stage);CHECK(geometry_draw(&ex,0)<0,"tessellation rejected");}
     put32(ctl[1]+0x714,99);CHECK(geometry_draw(&ex,0)<0,"unknown stage rejected");put32(ctl[1]+0x714,NVN_STAGE_GS);
     program.nstage=3;CHECK(geometry_draw(&ex,0)<0,"duplicate GS rejected");program.nstage=2;

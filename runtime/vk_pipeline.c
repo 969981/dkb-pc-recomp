@@ -1341,10 +1341,14 @@ static const char *geometry_validate(const VkPipeState *s, const VkPhysicalDevic
     if (!s->vs || !s->gs || gfx_shader_stage(s->vs) != GFX_STAGE_VS ||
         (s->fs && gfx_shader_stage(s->fs) != GFX_STAGE_FS)) return "geometry shader stage mismatch";
     const GfxShaderGeometry *g = gfx_shader_geometry(s->gs);
-    if (!P.f_geometry || !g || g->version != GFX_GEOMETRY_VERSION || g->passthrough ||
+    if (!P.f_geometry || !g ||
+        (g->version != GFX_GEOMETRY_VERSION && g->version != GFX_GEOMETRY_PASSTHROUGH_VERSION) || g->passthrough ||
         !vk_geometry_input(s->prim) || vk_geometry_input(s->prim) != g->input ||
         g->input_vertices != input_vertices[g->input] || g->output < GFX_GEOMETRY_OUTPUT_POINTS ||
         g->output > GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP) return "geometry input/stage contract differs from draw";
+    if (g->version == GFX_GEOMETRY_PASSTHROUGH_VERSION &&
+        (!s->fs || g->input != GFX_GEOMETRY_TRIANGLES || g->output != GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP ||
+         g->invocations != 1 || g->max_output_vertices != 3)) return "unsupported portable geometry contract";
     // VUID-VkGraphicsPipelineCreateInfo-shaderTessellationAndGeometryPointSize-08776
     // requires PointSize on every emitted point. A declaration is not proof of
     // those writes. Polygon-mode points can also consume last-stage PointSize
