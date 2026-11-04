@@ -101,6 +101,8 @@ static uint64_t expected_count_bytes=sizeof output_words;
 static uint64_t pending_addr,pending_size;
 static int last_use;
 static struct {VkBuffer zbuf;} Z;
+static const Nvn2C0Layout *c0_lay;
+static uint32_t c0_dim[3];
 int vk_mirror_on=1;
 uint32_t rt_trace;
 static void *grow(void *p,int *cap,size_t bytes) {
@@ -129,6 +131,12 @@ static void count_use(int cls,int use,uint64_t bytes) {(void)cls;CHECK(bytes==ex
 static void *scratch(VkExec *ex,uint64_t n,VkBuffer *b,VkDeviceSize *o) {(void)ex;(void)n;(void)b;(void)o;abort();}
 static void limits_init(void) {abort();}
 static VkDescriptorBufferInfo c0_info(VkExec *ex,int st) {(void)ex;(void)st;abort();}
+// This ordinary-GS fixture must never construct a synthetic compute bank. The
+// actual guarded-storage selector below rejects GS before this provider.
+void vk_c0_fill(uint8_t bank[VK_C0_BYTES],int st,const p_bind_buf ssbo[16],const p_bind_buf ubo[16],
+                const uint32_t dispatch[3],uint32_t base_instance) {
+    (void)bank;(void)st;(void)ssbo;(void)ubo;(void)dispatch;(void)base_instance;abort();
+}
 int vk_usnap_find(uint64_t a,uint64_t n,uint64_t align,VkDescriptorBufferInfo *out) {(void)a;(void)n;(void)align;(void)out;return 0;}
 void vk_exec_pass_end(VkExec *ex) {passes++;ex->in_pass=0;}
 VkExecFrame vk_exec_frame;
@@ -143,7 +151,8 @@ void rc_vkCmdPipelineBarrier2(VkCommandBuffer cb,const VkDependencyInfo *di) {
 '''
     lim = function(draw, 'static struct { uint64_t ubo_max,') + ' LIM;'
     memory_helpers = '\n'.join(function(draw, prefix) for prefix in ('static VkDescriptorBufferInfo zero_info(',
-        'static int bind_range(', 'static void note_written(', 'static VkDescriptorBufferInfo ssbo_info(', 'static VkDescriptorBufferInfo ubo_info('))
+        'static int bind_range(', 'static void note_written(', 'static p_bind_buf guarded_storage_binding(',
+        'static VkDescriptorBufferInfo ssbo_info(', 'static VkDescriptorBufferInfo ubo_info('))
     barrier_helpers = '\n'.join(function(replay, prefix) for prefix in ('static int has_image(',
         'static VkImageMemoryBarrier2 layout_barrier(', 'static void barrier_to(', 'void vk_exec_barrier('))
     cases = r'''
@@ -221,6 +230,10 @@ int main(int argc,char **argv) {
     CHECK(callback_resources.nwritten==1 && pending_writes==1 && pending_addr==(uintptr_t)output_words &&
           pending_size==sizeof output_words,"GS write range is retained for fence completion");
     note_written(&ex,(uintptr_t)output_words,sizeof output_words);CHECK(pending_writes==1,"same write range retained once");
+    Nvn2C0Layout compute_layout={0};c0_lay=&compute_layout;
+    p_bind_buf guarded=guarded_storage_binding(&ex,NVN_STAGE_GS,&buffer);
+    CHECK(!guarded.addr && !guarded.size,"guarded compute candidates cannot inherit an ordinary GS pointer block");
+    c0_lay=NULL;
     ex.ubo[NVN_STAGE_GS][14]=(p_bind_buf){.addr=(uintptr_t)pointer_words,.size=sizeof pointer_words};
     expected_count_bytes=sizeof pointer_words;out=ubo_info(&ex,NVN_STAGE_GS,17);
     CHECK((uintptr_t)out.buffer==22 && out.range==sizeof pointer_words && uses==2 && counts==2 &&
