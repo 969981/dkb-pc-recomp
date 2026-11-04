@@ -108,6 +108,9 @@ static void summary(const GfxShader *s, int owned) {
     printf("{\"accepted\":%s,\"owned\":%d",s?"true":"false",owned);
     if(s) {
         printf(",\"stage\":%d,\"inputs\":%u,\"outputs\":%u",gfx_shader_stage(s),gfx_shader_inputs(s,NULL),gfx_shader_outputs(s,NULL));
+        const Nvn2C0Layout *c0=gfx_shader_c0_layout(s);
+        printf(",\"has_c0\":%s",c0?"true":"false");
+        if(c0)printf(",\"c0_ssbos\":%u,\"c0_root0\":%u",c0->ssbos,c0->roots[0]);
 #if FIXTURE_GEOMETRY
         const GfxShaderGeometry *g=gfx_shader_geometry(s);
         if(g)printf(",\"input\":%u,\"invocations\":%u,\"max_vertices\":%u",g->input,g->invocations,g->max_output_vertices);
@@ -137,7 +140,7 @@ int main(int argc, char **argv) {
         printf("{\"hash\":\""); hex_bytes(hash,32); printf("\",\"key\":\""); hex_bytes(key,32);
         printf("\",\"iid\":\""); hex_bytes(iid,32); printf("\",\"provisional\":\""); hex_bytes(provisional,32);
         printf("\",\"use\":\""); hex_bytes(name,32); printf("\",\"answers\":\"");
-        hex_bytes(packed, pack_answers(packed,&a)); printf("\",\"known\":%d}\n",known);
+        hex_bytes(packed, pack_answers(packed,&a)); printf("\",\"known\":%d,\"key_version\":%u}\n",known,KEY_VERSION);
         free(code); free(control); return 0;
     }
     if (!strcmp(argv[1], "learn")) {

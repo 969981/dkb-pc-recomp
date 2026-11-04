@@ -118,12 +118,13 @@ class ShaderFailureCapture(unittest.TestCase):
                 if stage == 4:
                     self.assertTrue(job['early_fragment_tests'])
                     self.assertEqual(job['subgroup'], 64)
-                    for key in ('c0', 'c0_version', 'c0_roots'):
+                    for key in ('c0', 'c0_version', 'c0_roots', 'storage_candidates_version'):
                         self.assertNotIn(key, job)
                 else:
                     self.assertEqual(job['local'], [4, 2, 1])
                     self.assertEqual(job['c0'], [1, 2, 3, 4])
                     self.assertEqual(job['c0_version'], 2)
+                    self.assertEqual(job['storage_candidates_version'], 1)
                     self.assertEqual(job['c0_roots'], [1, 0, 7, 4, 64, 2, 0, 9])
                 self.assertIn('writes=3', text)
 

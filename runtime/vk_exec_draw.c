@@ -25,6 +25,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
+#include "nvn_indirect_reset.h"
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
@@ -50,7 +51,7 @@ static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
     c0_push = ex->push[1];
 }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_GEOMETRY, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_RESET, W_GEOMETRY, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -268,6 +269,55 @@ static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
     vk_mem_gpu_pending(addr, size);
 }
 
+static int reset_mapped(void *context, uint64_t addr, uint32_t size) {
+    (void)context;
+    VkMemSpan span;
+    return vk_mem_resolve(addr, size, &span);
+}
+
+// The pointer list may have been written earlier in this submission. Read its GPU-visible contents after submitting
+// that prefix, then validate every target before recording a write. Null pointers have no record to reset.
+int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_bytes, int64_t first, int64_t count) {
+    NvnIndirectResetList list;
+    if (!nvn_indirect_reset_list(list_addr, descriptor_bytes, first, count, &list)) return 0;
+    uint64_t *pointers = malloc(list.bytes);
+    if (!pointers) rt_fatal("vk: out of memory reading an indirect-reset pointer list");
+    if (!vk_exec_read_buffer(ex, list.begin, list.bytes, pointers) ||
+        !nvn_indirect_reset_targets(&list, pointers, reset_mapped, NULL)) {
+        free(pointers);
+        return 0;
+    }
+    VkBuffer source;
+    VkDeviceSize source_offset;
+    static const uint32_t record[5] = {0, 1, 0, 0, 0};
+    memcpy(scratch(ex, sizeof record, &source, &source_offset), record, sizeof record);
+    CbRes *resources = cb_res(ex);
+    Chunk *chunk = &resources->chunks[resources->nchunks - 1];
+    if (vmaFlushAllocation(vk_ctx()->vma, chunk->alloc, source_offset, sizeof record) != VK_SUCCESS)
+        rt_fatal("vk: flushing indirect-reset values failed");
+    for (uint32_t i = 0; i < list.count; i++) {
+        uint64_t addr = pointers[i];
+        if (!addr) continue;
+        VkMemSpan span;
+        if (!vk_mem_resolve(addr, sizeof record, &span))
+            rt_fatal("vk: an indirect-reset mapping changed during replay");
+        // Commit first-use imports to their mirror before choosing the destination. A later indirect bind must
+        // read this same backing rather than create a mirror from the old contents.
+        VK_MEM_USE(span);
+        vk_exec_barrier(ex);   // also preserves the input order of duplicate or overlapping target ranges
+        VkBufferCopy copy = {source_offset, span.offset, sizeof record};
+        vkCmdCopyBuffer(ex->cb, source, span.buffer, 1, &copy);
+        ex->recorded++;
+        vk_mem_gpu_wrote(&span, sizeof record);
+        vk_usnap_drop(addr, sizeof record);
+        vk_mem_count(span.cls, VK_MUSE_GPU_WRITE, sizeof record);
+        note_written(ex, addr, sizeof record);
+    }
+    free(pointers);
+    vk_exec_barrier(ex);   // subsequent shader accesses and indirect reads see every completed record
+    return 1;
+}
+
 // ---- stand-ins for what a binding names but the game did not bind (zeros, a 1x1 image, the default sampler)
 
 enum { DV_1D, DV_1D_ARRAY, DV_2D, DV_2D_ARRAY, DV_3D, DV_CUBE, DV_CUBE_ARRAY, DV_2D_MS, DV_2D_MS_ARRAY, DV_COUNT };
@@ -385,10 +435,10 @@ static void twins_release(VkCtx *c);
 // Releases the stand-ins and the depth twins. The device must be idle; the game path leaves them to process exit like
 // the pipelines.
 void vk_exec_draw_shutdown(void) {
-    if (!Z.ready) return;
     VkCtx *c = vk_ctx();
+    if (!c) return;
     twins_release(c);
-    for (int i = 0; i < DV_COUNT; i++) {
+    for (int i = 0; Z.ready && i < DV_COUNT; i++) {
         if (Z.img[i].sview != Z.img[i].view) vkDestroyImageView(c->device, Z.img[i].sview, NULL);
         vkDestroyImageView(c->device, Z.img[i].view, NULL);
         vmaDestroyImage(c->vma, Z.img[i].image, Z.img[i].alloc);
@@ -404,9 +454,12 @@ void vk_exec_draw_shutdown(void) {
     for (int i = 0; i < nspare_pool; i++) vkDestroyDescriptorPool(c->device, spare_pool[i], NULL);
     for (int i = 0; i < nspare_chunk; i++) vmaDestroyBuffer(c->vma, spare_chunk[i].buf, spare_chunk[i].alloc);
     nspare_pool = nspare_chunk = 0;
+    cur = NULL, cur_fence = 0;
     vk_usnap_shutdown();
-    vkDestroyBufferView(c->device, Z.zview, NULL);
-    vmaDestroyBuffer(c->vma, Z.zbuf, Z.zalloc);
+    if (Z.ready) {
+        vkDestroyBufferView(c->device, Z.zview, NULL);
+        vmaDestroyBuffer(c->vma, Z.zbuf, Z.zalloc);
+    }
     memset(&Z, 0, sizeof Z);
 }
 
@@ -808,8 +861,9 @@ static void count_use(int cls, int use, uint64_t n) {
 // A buffer descriptor for [addr, addr+size) of guest memory: its backing (a pool's VRAM mirror when it has one) when
 // aligned, a copy in transient memory when the backing is host memory with an unaligned offset. 0 when neither works.
 // written: the shader stores into it (a mirror's range goes back to guest memory at the end of the submission).
+// direct_only: guarded aliases must share the real backing; a transient copy would lose writes and alias coherence.
 static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, uint64_t max, int use, int written,
-                      VkDescriptorBufferInfo *out) {
+                      int direct_only, VkDescriptorBufferInfo *out) {
     VkMemSpan sp;
     if (!addr || !vk_mem_resolve(addr, 1, &sp)) return 0;
     uint64_t n = size && size < sp.avail ? size : sp.avail;
@@ -823,7 +877,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
         VK_MEM_BOUND(sp);
         return 1;
     }
-    if (sp.alloc) return 0;
+    if (sp.alloc || direct_only) return 0;
     VkBuffer b;
     VkDeviceSize o;
     RS.volatile_ = 1;
@@ -928,7 +982,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         uint32_t len, c1;
         if (find_stage(ex->prog, st, &ctl, &code, &len)) {
             memcpy(&c1, ctl + 0x700, 4);
-            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, &bi))
+            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, 0, &bi))
                 return bi;
             if (c1 < len && len - c1 <= max) {   // NVN 2 stages: the lowered code (nvn2_lower.cpp) is host memory
                 VkBuffer b;
@@ -964,7 +1018,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
             return bi;
         }
-        if (bind_range(ex, b->addr, b->size, align, max, VK_MUSE_UBO, 0, &bi)) return bi;
+        if (bind_range(ex, b->addr, b->size, align, max, VK_MUSE_UBO, 0, 0, &bi)) return bi;
     }
     return zero_info(max);
 }
@@ -1038,20 +1092,63 @@ static uint64_t ubo_ptr(const VkExec *ex, int st, const GfxShaderRes *r) {
     return a;
 }
 
+// Guarded NVN 2 candidates use the same bytes that the dispatch binds as uniform banks. Bank 0 includes pushed
+// roots and packed descriptor tables; bank 1 is the program's bounded compiler-constant data. No scalar is guessed
+// to be a pointer here: bind_range determines whether a candidate has backing, and the shader checks the true range.
+static p_bind_buf guarded_storage_binding(const VkExec *ex, int st, const GfxShaderRes *r) {
+    uint64_t off = (uint64_t)r->handle * 4;
+    p_bind_buf b = {0};
+    if (st != NVN_STAGE_CS || !c0_lay) return b;
+    if (r->cbuf_slot == 0) {
+        if (!c0_on() || off > VK_C0_BYTES - 8) return b;
+        uint8_t bank[VK_C0_BYTES];
+        vk_c0_fill(bank, st, ex->ssbo[st], ex->ubo[st], c0_dim, c0_binst);
+        memcpy(&b.addr, bank + off, 8);
+        size_t ub = nvn2_c0_part(c0_lay, 1), end = nvn2_c0_part(c0_lay, 3);
+        if (off >= ub && off < end && (off - ub) % 16 == 0) {
+            uint32_t bytes;
+            memcpy(&bytes, bank + off + 8, 4);
+            b.size = bytes;   // preserve a typed table's declared extent, not the remainder of its pool
+        }
+    } else if (r->cbuf_slot == 1 && ex->prog) {
+        const uint8_t *ctl, *code;
+        uint32_t len, c1;
+        if (!find_stage(ex->prog, st, &ctl, &code, &len)) return b;
+        memcpy(&c1, ctl + 0x700, 4);
+        if (c1 > len || off > len - c1 || len - c1 - off < 8) return b;
+        memcpy(&b.addr, code + c1 + off, 8);
+    } else if (r->cbuf_slot == 17) {
+        // ubo_info binds the synthetic compute push bank here, before its user-UBO mapping. Unwritten words are zero.
+        if (off > sizeof ex->push[1][0] - 8) return b;
+        uint32_t words[2] = {0};
+        for (unsigned i = 0; i < 2; i++) {
+            unsigned word = r->handle + i;
+            if (ex->push_set[1][0] >> word & 1) words[i] = ex->push[1][0][word];
+        }
+        memcpy(&b.addr, words, 8);
+    } else if (ubo_ptr_res(r)) {
+        b.addr = ubo_ptr(ex, st, r);
+    }
+    return b;
+}
+
 static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *r, int written) {
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
     uint64_t max = LIM.sbo_max, align = LIM.sbo_align;
     VkDescriptorBufferInfo bi;
-    int ubo, slot = ssbo_slot(r, st, &ubo);
+    int ubo = 0, slot = -1;
     p_bind_buf up = {0};
     const p_bind_buf *b = NULL;
-    if (slot >= 0 && slot < 16) b = ubo ? &ex->ubo[st][slot] : &ex->ssbo[st][slot];
+    int guarded = !!(r->flags & GFX_RES_SSBO_GUARDED);
+    if (!guarded) slot = ssbo_slot(r, st, &ubo);
+    if (guarded) up = guarded_storage_binding(ex, st, r), b = &up;
+    else if (slot >= 0 && slot < 16) b = ubo ? &ex->ubo[st][slot] : &ex->ssbo[st][slot];
     else if (ubo_ptr_res(r)) up.addr = ubo_ptr(ex, st, r), b = &up;   // size 0: up to the end of the backing
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
-                       written, &bi)) {
+                       written, guarded, &bi)) {
             if (written && bi.buffer != VK_NULL_HANDLE) {
                 note_written(ex, b->addr - lead, bi.range);
                 const uint8_t *ctl, *code;
@@ -1061,13 +1158,17 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
             }
             return bi;
         }
-        if (b->addr) warn_once(W_SSBO_ALIGN, "storage buffer %#llx is not backed or not aligned: a zero buffer is bound",
+        if (b->addr && !guarded) warn_once(W_SSBO_ALIGN, "storage buffer %#llx is not backed or not aligned: a zero buffer is bound",
                                (unsigned long long)b->addr);
     } else {
         warn_once(W_SSBO_SLOT, "a storage buffer whose address is at c%d+%#x (stage %d) is not replayed: a zero buffer is bound",
                   r->cbuf_slot, r->handle * 4, st);
     }
-    return zero_info(max);
+    bi = zero_info(max);
+    // Vulkan requires a nonzero descriptor range. One byte is zero elements of the shader's uint runtime array;
+    // the guarded operation branches away without touching it. Unguarded users retain the existing 64 KiB dummy.
+    if (guarded) bi.range = 1;
+    return bi;
 }
 
 // ---- feedback loops (maxwell.md 1.9, vk.h VkCtx.feedback)
@@ -2389,8 +2490,28 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
     ex->recorded++;
 }
 
+// The Bananza reset vertex program loses stores through pointers loaded from a list. Match both locally confirmed
+// stages and the observed one-instance point-draw form. Other programs and parameter forms keep the shader path.
+static int indirect_reset_draw(VkExec *ex, const p_draw *d) {
+    if (rt_game_version || !cfg_bool("TOTK_FIX_INDIRECT_RESET") || !c0_on() || ex->render_disabled ||
+        getenv("DKB_SKIP_DRAWS") || !ex->prog || ex->prog->nstage != 2 || d->prim != NVN_DRAW_PRIMITIVE_POINTS ||
+        d->count <= 0 || d->first < 0 || d->base_instance || d->instances != 1) return 0;
+    const uint8_t *ctl, *code;
+    uint32_t length;
+    if (!find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &length) || nvn2_origin(code) != 0xe78abde51f2d6bfaull ||
+        !find_stage(ex->prog, NVN_STAGE_FS, &ctl, &code, &length) || nvn2_origin(code) != 0x57b0d7b4959f03c0ull) return 0;
+    const p_bind_buf *list = &ex->ssbo[NVN_STAGE_VS][0];
+    // c0_table encodes the binding's size as u32 at +0x118; use the same extent, including its zero rejection.
+    if (!vk_exec_reset_indirect(ex, list->addr, (uint32_t)list->size, d->first, d->count)) {
+        warn_once(W_RESET, "the matched indirect reset has an unsupported list or record: using its shader");
+        return 0;
+    }
+    return 1;
+}
+
 static void op_draw(VkExec *ex, const p_draw *d) {
     c0_binst = (uint32_t)d->base_instance;
+    if (indirect_reset_draw(ex, d)) return;
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, 0)) return;
     vk_exec_frame.draws++;
     uint32_t inst = d->instances > 0 ? (uint32_t)d->instances : 1, first = (uint32_t)d->first, n = (uint32_t)d->count;
