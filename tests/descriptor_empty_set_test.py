@@ -44,6 +44,8 @@ def main():
     parser.add_argument('--cc', default=os.environ.get('CC') or shutil.which('clang') or shutil.which('gcc'))
     parser.add_argument('--deps', type=Path, required=True, help='runtime dependency root with include/vulkan and include/vma')
     parser.add_argument('--baseline', metavar='REV', help='use an earlier unmodified production binder')
+    parser.add_argument('--out', type=Path, default=ROOT / 'build/test/descriptor-empty-set',
+                        help='output root; current/baseline results use separate subdirectories')
     args = parser.parse_args()
     if not args.cc:
         parser.error('pass --cc with a C compiler')
@@ -54,7 +56,7 @@ def main():
     else:
         draw = (ROOT / 'runtime/vk_exec_draw.c').read_text()
         tag = 'current'
-    out = ROOT / 'build/test/descriptor-empty-set' / tag
+    out = args.out / tag
     out.mkdir(parents=True, exist_ok=True)
     src = out / 'fixture.c'
     src.write_text(source(draw))

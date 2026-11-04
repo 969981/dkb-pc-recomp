@@ -53,10 +53,10 @@ static void tex_info(VkExec *ex,const GfxShaderRes *r,uint64_t h,int image,int s
     (void)ex; (void)r; (void)h; (void)image; (void)separate; (void)out; abort();
 }
 
-// Bounded, aligned packet storage replaces the ring and its thread only. The
-// real producer functions still decide packet sizes and copy every payload.
-enum { R_PushTpl=1, R_Push=2 };
-typedef struct { uint64_t words[512]; uint32_t op; size_t bytes; int published; } Packet;
+// Bounded malloc storage supplies alignment without imposing an array's declared
+// effective type. The real producers decide packet sizes and copy every payload.
+enum { R_PushTpl=1, R_Push=2, MAX_PACKET_BYTES=4096 };
+typedef struct { void *data; uint32_t op; size_t bytes; int published; } Packet;
 static Packet packets[4], *pending, *consuming;
 static unsigned packet_count;
 static VkCommandBuffer rec_cb;
@@ -64,15 +64,17 @@ static int rec_live=1;
 #define OWNED(cb) (rec_live && (cb)==rec_cb)
 #define FALLBACK() abort()
 static void *put(uint32_t op,size_t bytes) {
-    if (packet_count>=4 || bytes>sizeof packets[0].words || pending) abort();
-    pending=&packets[packet_count++]; memset(pending,0xa5,sizeof *pending);
-    pending->op=op; pending->bytes=bytes; pending->published=0; return pending->words;
+    if (packet_count>=4 || !bytes || bytes>MAX_PACKET_BYTES || pending) abort();
+    pending=&packets[packet_count++];
+    *pending=(Packet){.data=malloc(bytes),.op=op,.bytes=bytes};
+    if (!pending->data) abort();
+    memset(pending->data,0xa5,bytes); return pending->data;
 }
 static void pub(void) { if (!pending) abort(); pending->published=1; pending=NULL; }
 @RECORDER@
 
 static int packet_range(const void *data,size_t bytes) {
-    uintptr_t start=(uintptr_t)consuming->words, at=(uintptr_t)data;
+    uintptr_t start=(uintptr_t)consuming->data, at=(uintptr_t)data;
     return at>=start && at-start<=consuming->bytes && bytes<=consuming->bytes-(at-start);
 }
 static void expect_slots(uint32_t set,const void *data) {
@@ -150,13 +152,14 @@ void rc_vkCmdBindDescriptorSets(VkCommandBuffer cb,VkPipelineBindPoint bp,VkPipe
 static void consume(void) {
     for (unsigned i=0;i<packet_count;i++) {
         consuming=&packets[i]; CHECK(consuming->published,"only published packets reach the consumer");
-        uint32_t op=consuming->op; void *p=consuming->words; VkCommandBuffer cb=rec_cb;
+        uint32_t op=consuming->op; void *p=consuming->data; VkCommandBuffer cb=rec_cb;
         switch (op) {
 @CONSUMERS@
         default: abort();
         }
+        free(consuming->data); consuming->data=NULL;
     }
-    consuming=NULL;
+    consuming=NULL; packet_count=0;
 }
 static void run(const char *name,uint32_t vs,uint32_t fs,int compute,int default_sets) {
     case_name=name;
