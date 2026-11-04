@@ -27,6 +27,7 @@ def source():
 #include "vk_exec.h"
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
+#define NVN_STAGE_GS 2
 #define NVN_STAGE_CS 5
 #define FM_N 8192
 #define TD_N 8192
@@ -34,6 +35,7 @@ def source():
 static struct { unsigned ac_miss; } BS;
 static uint64_t bind_gen=1;
 static uint32_t c0_binst;
+static uint8_t geometry_input;
 static uint64_t memory_generation=1;
 static unsigned remapped, lookup_count, full_count, locked;
 static unsigned checks, failures;
@@ -84,6 +86,10 @@ int gfx_shader_resources(const GfxShader *s,int kind,const GfxShaderRes **out) {
     if (s!=(const GfxShader *)&resource || kind!=GFX_RES_TEX) abort();
     *out=&resource; return 1;
 }
+int gfx_shader_stage(const GfxShader *s) {
+    if (s!=(const GfxShader *)&resource) abort();
+    return GFX_STAGE_FS;   // this original provider represents one fragment texture binding
+}
 static int shader_memo_on(void) { return 1; }
 static int td_mode(void) { return 1; }
 // Full descriptor construction is a bounded provider: this test checks whether
@@ -109,7 +115,7 @@ static uint64_t ubo_ptr(const VkExec *ex,int st,const GfxShaderRes *r) { (void)e
     td = draw[td_begin:draw.index('} TD[TD_N];', td_begin) + len('} TD[TD_N];')]
     memo_end = draw.index('} MemoKey;')
     memo = draw[draw.rfind('typedef struct {', 0, memo_end):memo_end + len('} MemoKey;')]
-    sm = function(draw, 'static struct { int on, valid, has_fs; MemoKey k;') + ' SM = {.on=-1};\n'
+    sm = function(draw, 'static struct { int on, valid, has_fs') + ' SM = {.on=-1};\n'
     range_types = '\n'.join(function(draw, prefix) + suffix for prefix, suffix in (
         ('typedef struct { uint32_t off, len;', ' RsRange;'),
         ('typedef struct { int st; const GfxShaderRes *res;', ' RsPtr;'),
@@ -137,7 +143,7 @@ static const RsList *rs_list(const VkExec *ex,const VkPipeInfo *info) {
 }
 '''
     pieces = [function(draw, prefix) for prefix in (
-        'static int gfx_type_of(', 'static uint64_t token_of(', 'static int slot_still(',
+        'static int nvn_stage_of(', 'static int gfx_type_of(', 'static uint64_t token_of(', 'static int slot_still(',
         'static uint8_t type_of_handle(', 'static int in_fbl(', 'static SubRange sub_of(',
         'static uint32_t attached_as(', 'static void descriptor_state(VkExec *ex) {', 'static void answers_for(',
         'static SubRange sampled_sub(', 'static uint32_t feedback_scan(', 'static void tex_info_lookup(',
