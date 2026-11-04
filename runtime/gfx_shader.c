@@ -1160,9 +1160,9 @@ static int reflect(GfxShader *s, int require_c0) {
         uint32_t locations = 0;
         for (unsigned i = 0; i < 32; i++)
             if (!(s->geometry_skip[1 + i / 8] >> ((i % 8) * 4) & 15)) locations |= 1u << i;
-        // A lowered native body (DKB_NATIVE_GS, vk_exec_draw.c, native_gs_control) may read or declare more locations
-        // than it forwards.
-        if ((s->in_mask & locations) != locations || (s->out_mask & locations) != locations) return 0;
+        // Portable-v2 metadata describes this exact interface. Native bodies with extra inputs or outputs need
+        // their own source-checked contract; accepting them here would also weaken ordinary cached shaders.
+        if (s->in_mask != locations || s->out_mask != locations) return 0;
         for (unsigned i = 0; i < 32; i++) if (locations >> i & 1) {
             const GfxShaderIo *a = &s->in[i], *b = &s->out[i];
             if (a->scalar_bits != 32 || b->scalar_bits != 32 || a->comps != 4 || b->comps != 4 ||
