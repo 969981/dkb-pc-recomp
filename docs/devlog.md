@@ -5,6 +5,14 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Ordinary geometry shaders translate and cache** (#49 and #50 by monsterlag, beec7c4,
+  [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)). A geometry stage request now names its input
+  topology. The translator checks it against the stage's header and returns the output topology, invocation count
+  and maximum output vertices, and the cache keeps that contract next to the SPIR-V. The other stages keep their code
+  hashes and input ids. Passthrough geometry stages are still refused, because the translator can't see which
+  varyings the next stage needs, and the terrain's geometry stage is one of them. No geometry stage is replayed yet.
+  `--probe-shader-geometry` runs all five input topologies through the real translator and cache. A tutorial run
+  with both merged gave 10,573 frames with no validation error and no shader failure.
 - **The terrain's indirect records are reset in replay order** (#48 by monsterlag, 629ceea,
   [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)). Before the destructible terrain draws, a point
   draw resets each piece's 5-word indexed indirect record to {0, 1, 0, 0, 0} by storing through pointers it loads from
