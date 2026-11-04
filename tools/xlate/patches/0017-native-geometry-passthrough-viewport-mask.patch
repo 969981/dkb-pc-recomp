@@ -1,0 +1,85 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -197,6 +197,13 @@ namespace Ryujinx.Graphics.Shader.Translation
+             }
+         }
+ 
++        public bool ExplicitGeometryPassthrough => _explicitGeometryPassthrough;
++
++        private static bool WritesOnlyViewportMask(InstAst op)
++        {
++            return !op.Phys && !op.P && op.AlSize == AlSize._32 && op.Imm11 == AttributeConsts.ViewportMask;
++        }
++
+         public void SetGeometryPassthroughAttributes(int mask)
+         {
+             if (Stage != ShaderStage.Geometry || !Definitions.GpPassthrough ||
+@@ -206,14 +213,15 @@ namespace Ryujinx.Graphics.Shader.Translation
+             }
+ 
+             // AST includes fixed builtins and physical/per-patch writes. OUT includes emission and cuts.
++            // A single write to the viewport mask is kept: InstEmitAttribute.Ast holds it, and the copy at the end culls on it.
+             // Reject decoded predicated forms too: this subset forwards inputs and only retains body side effects.
+             foreach (DecodedFunction function in _program)
+             foreach (Block block in function.Blocks)
+             foreach (InstOp op in block.OpCodes)
+             {
+-                if (op.Name == InstName.Ast || op.Name == InstName.Out)
++                if (op.Name == InstName.Out || (op.Name == InstName.Ast && !WritesOnlyViewportMask(new InstAst(op.RawOpCode))))
+                 {
+-                    throw new NotSupportedException("Portable passthrough does not support explicit attribute writes or emission");
++                    throw new NotSupportedException("Portable passthrough supports no emission and no attribute writes but the viewport mask");
+                 }
+             }
+ 
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -162,6 +162,12 @@ namespace Ryujinx.Graphics.Shader.Translation
+                     initializationOperations = context.OperationsCount;
+                 }
+ 
++                if (index == 0 && translatorContext.ExplicitGeometryPassthrough)
++                {
++                    // A stage that never writes the viewport mask draws: R254 holds the mask for EmitterContext's passthrough copy.
++                    context.Copy(Register(254, RegisterType.Gpr), Const(1));
++                }
++
+                 DecodedFunction function = program.GetFunctionById(index);
+ 
+                 foreach (Block block in function.Blocks)
+--- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
+@@ -366,6 +366,17 @@ namespace Ryujinx.Graphics.Shader.Translation
+                     Operand z = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(2));
+                     Operand w = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(3));
+ 
++                    if (TranslatorContext.ExplicitGeometryPassthrough)
++                    {
++                        // A viewport mask of 0 selects no viewport. Without the NV extension the primitive is moved outside the
++                        // clip volume, as in Eglantine's translate_program.cpp, EmitGeometryPassthrough.
++                        Operand culled = this.ICompareEqual(Register(254, RegisterType.Gpr), Const(0));
++                        x = this.ConditionalSelect(culled, ConstF(2.0f), x);
++                        y = this.ConditionalSelect(culled, ConstF(2.0f), y);
++                        z = this.ConditionalSelect(culled, ConstF(2.0f), z);
++                        w = this.ConditionalSelect(culled, ConstF(1.0f), w);
++                    }
++
+                     this.Store(StorageKind.Output, IoVariable.Position, null, Const(0), x);
+                     this.Store(StorageKind.Output, IoVariable.Position, null, Const(1), y);
+                     this.Store(StorageKind.Output, IoVariable.Position, null, Const(2), z);
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAttribute.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAttribute.cs
+@@ -132,6 +132,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+                     int offset = op.Imm11 + index * 4;
+ 
++                    if (context.TranslatorContext.ExplicitGeometryPassthrough)
++                    {
++                        // TranslatorContext.SetGeometryPassthroughAttributes admits only the viewport mask here.
++                        context.Copy(Register(254, RegisterType.Gpr), Register(rd));
++                        continue;
++                    }
++
+                     if (!context.TranslatorContext.AttributeUsage.IsUsedOutputAttribute(offset))
+                     {
+                         return;
