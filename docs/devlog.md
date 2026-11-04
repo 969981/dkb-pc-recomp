@@ -5,6 +5,10 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **The terrain record reset costs half as much** (9b12091). The reset used a full barrier before each of its
+  roughly 1,480 record copies. Every record gets the same bytes, so it now copies disjoint targets after one barrier
+  and keeps the per-record barrier only when two targets share a byte. In the mining tunnel the average replay goes
+  from 5.86 to 5.05 ms (4.32 ms without the reset), and a run with the validation layer reports no error.
 - **Ordinary geometry shaders translate and cache** (#49 and #50 by monsterlag, beec7c4,
   [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)). A geometry stage request now names its input
   topology. The translator checks it against the stage's header and returns the output topology, invocation count
