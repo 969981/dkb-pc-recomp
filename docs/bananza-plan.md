@@ -73,6 +73,11 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 - [ ] Some textures look blocky (checkerboard rocks) [#5]: the deswizzle now uses the Switch 2 GOB layout, which fixes the gold rock in the tutorial cave; the other rock surfaces still need a check.
 - [ ] Getting past the tutorial cave. [#7] A hand-played run reached the Ingot Isle Cave-In section; respawning
       there stalled the GPU.
+- [ ] Destructible terrain renders black. [#45] Its indirect records are now reset on the host in replay order
+      (#48, `TOTK_FIX_INDIRECT_RESET`), which should also end the garbage arguments behind the respawn stall in
+      #10 (not retested yet). The index counts come from the geometry stage, still to be lowered and run. Ordinary
+      geometry shaders now translate and cache under an explicit topology contract (#49, #50). The terrain's own
+      geometry stage is a passthrough one, which that contract still refuses, and nothing replays a geometry stage yet.
 - [x] Saves: the game writes `progress.sav`, `caption.sav` and `config.sav` as it plays, and a later run on the same
       profile offers Continue and resumes at the last checkpoint (the mining tunnel of the tutorial).
 - [x] Performance in the tutorial: the game picks its own present interval (1 to 3 vsyncs) from how long its frames

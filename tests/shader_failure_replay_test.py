@@ -53,18 +53,24 @@ class ShaderFailureCapture(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.work = Path(cls.temp.name)
         shader = (ROOT / 'runtime/gfx_shader.c').read_text()
-        header = (ROOT / 'runtime/gfx.h').read_text()
         functions = [function(shader, name) for name in ('json_esc', 'key_hex', 'nvn2_shared', 'attr_name', 'build_request')]
+        modern = 'static int shader_matches_request(' in shader
+        if modern:
+            functions.append(function(shader, 'shader_matches_request'))
         if 'static void dump_failed_request(' in shader:
             functions.append(function(shader, 'dump_failed_request'))
         functions.append(function(shader, 'translate_one'))
         names = []
-        for name in ('tex_names', 'fmt_names'):
+        for name in (('tex_names', 'fmt_names', 'geometry_names') if modern else ('tex_names', 'fmt_names')):
             start = shader.index('static const char *const ' + name)
             names.append(shader[start:shader.index(';', start) + 1])
         source = (ROOT / 'tests/shader_failure_capture.c').read_text()
         source = source.replace('@TYPES@', '\n'.join(record(text, name) for text, name in
-                                ((header, 'GfxShaderAnswers'), (shader, 'UseMask'), (shader, 'Req'))))
+                                ((shader, 'UseMask'), (shader, 'Req'))))
+        start = shader.index('struct GfxShader {')
+        source = source.replace('@SHADER@', shader[start:shader.index('\n};', start) + len('\n};')])
+        if modern:
+            source = '#define FIXTURE_GEOMETRY_CONTRACT 1\n' + source
         source = source.replace('@FUNCTIONS@', '\n'.join(names + functions))
         generated = cls.work / 'fixture.c'
         generated.write_text(source)
@@ -112,12 +118,13 @@ class ShaderFailureCapture(unittest.TestCase):
                 if stage == 4:
                     self.assertTrue(job['early_fragment_tests'])
                     self.assertEqual(job['subgroup'], 64)
-                    for key in ('c0', 'c0_version', 'c0_roots'):
+                    for key in ('c0', 'c0_version', 'c0_roots', 'storage_candidates_version'):
                         self.assertNotIn(key, job)
                 else:
                     self.assertEqual(job['local'], [4, 2, 1])
                     self.assertEqual(job['c0'], [1, 2, 3, 4])
                     self.assertEqual(job['c0_version'], 2)
+                    self.assertEqual(job['storage_candidates_version'], 1)
                     self.assertEqual(job['c0_roots'], [1, 0, 7, 4, 64, 2, 0, 9])
                 self.assertIn('writes=3', text)
 

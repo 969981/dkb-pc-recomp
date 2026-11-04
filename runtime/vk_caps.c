@@ -113,6 +113,8 @@ void vk_caps_init(VkCtx *c) {
     // as Maxwell does. TOTK_GATHER_BIAS=<bits> forces it (0: off).
     uint32_t gather = env_u32("TOTK_GATHER_BIAS", c->props.vendorID == 0x10de ? 0 : l->subTexelPrecisionBits);
     gfx_shader_set_host(vk_caps.float64, vk_caps.sbuf_align, told, gather);
+    uint32_t geometry_told = vk_caps.sg_pin_stages & VK_SHADER_STAGE_GEOMETRY_BIT ? want : sg.subgroupSize;
+    gfx_shader_set_geometry_host(geometry_told);
     if (gather) rt_log("vk caps: gather coordinates biased for %u sub-texel bits (TOTK_GATHER_BIAS)", gather);
 
     char dv[32];
@@ -141,8 +143,8 @@ void vk_caps_init(VkCtx *c) {
     rt_log("vk caps: gpl %s fast-link %s (graphicsPipelineLibrary %u%s)", vk_caps.gpl ? "yes" : "no",
            gpl_fast ? "yes" : "no", (unsigned)gpl_lib,
            !gpl_lib || !gpl_fast || vk_caps.gpl ? "" : ge && *ge ? ", off by TOTK_GPL=0" : ", off on AMD's RDNA 1/2 driver");
-    rt_log("vk caps: fallbacks: float64 %s, storage buffers %s %u, subgroup pin %u on stages %#x, translator subgroup vs/fs/cs %u/%u/%u",
+    rt_log("vk caps: fallbacks: float64 %s, storage buffers %s %u, subgroup pin %u on stages %#x, translator subgroup vs/fs/cs/gs %u/%u/%u/%u",
            vk_caps.float64 ? "native" : "softfloat64", vk_caps.sbuf_align ? "rounded down to" : "exact, alignment",
-           (unsigned)l->minStorageBufferOffsetAlignment, want, (unsigned)vk_caps.sg_pin_stages, told[0], told[1], told[2]);
+           (unsigned)l->minStorageBufferOffsetAlignment, want, (unsigned)vk_caps.sg_pin_stages, told[0], told[1], told[2], geometry_told);
     free(ep);
 }

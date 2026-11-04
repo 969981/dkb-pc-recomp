@@ -5,6 +5,36 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **The terrain record reset costs half as much** (9b12091). The reset used a full barrier before each of its
+  roughly 1,480 record copies. Every record gets the same bytes, so it now copies disjoint targets after one barrier
+  and keeps the per-record barrier only when two targets share a byte. In the mining tunnel the average replay goes
+  from 5.86 to 5.05 ms (4.32 ms without the reset), and a run with the validation layer reports no error.
+- **Ordinary geometry shaders translate and cache** (#49 and #50 by monsterlag, beec7c4,
+  [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)). A geometry stage request now names its input
+  topology. The translator checks it against the stage's header and returns the output topology, invocation count
+  and maximum output vertices, and the cache keeps that contract next to the SPIR-V. The other stages keep their code
+  hashes and input ids. Passthrough geometry stages are still refused, because the translator can't see which
+  varyings the next stage needs, and the terrain's geometry stage is one of them. No geometry stage is replayed yet.
+  `--probe-shader-geometry` runs all five input topologies through the real translator and cache. A tutorial run
+  with both merged gave 10,573 frames with no validation error and no shader failure.
+- **The terrain's indirect records are reset in replay order** (#48 by monsterlag, 629ceea,
+  [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)). Before the destructible terrain draws, a point
+  draw resets each piece's 5-word indexed indirect record to {0, 1, 0, 0, 0} by storing through pointers it loads from
+  a list. Those stores are lost in the translated shader, so the records stayed zero on a fresh load and held stale
+  memory later, the garbage arguments of the respawn stall in #10. The host now recognises the reset program, reads
+  the pointer list from its GPU-visible backing at that point of the replay, checks every target, and writes the
+  records itself, as Eglantine does. In the mining tunnel each reset writes about 1,480 records. The terrain is still
+  black: the records' index counts come from the geometry stage, which isn't run yet. Replay time in the tunnel rose
+  from 4.3 to 5.9 ms on average, with the frame still at 60 FPS; the cost points are listed in the review.
+  `TOTK_FIX_INDIRECT_RESET=0` turns it off.
+- **Compute storage bases from guarded runtime candidates** (#42 by monsterlag, e5309ca). Storage buffers whose base
+  address a compute shader reads from c1, from the pushed roots or from bank 17 are resolved at run time against the
+  candidates the dispatch binds, and the shader checks the true range. No bank needs a global preference.
+- **Descriptors resolved through their active pools** (#46 by monsterlag, 0c6f5c7). Equal descriptor indices in
+  different texture or sampler pools used to alias one registration; the descriptor-pool probe passes 60 checks. An
+  A/B in the tutorial showed no cost.
+- **Geometry inputs reflected without the per-vertex array** (#47 by monsterlag, e62dc53), a prerequisite for running
+  the terrain's geometry stage.
 - **Audio checked during gameplay.** With `TOTK_TRACE=audio`, a 90 s tutorial run shows sound from about 20 s in, an
   RMS of 0.02 to 0.04 with peaks up to 0.41, and no underrun or overrun on the SDL3 device.
 - **Copies between decoded ASTC textures** (#43 by monsterlag, e90bc7c). A texture-to-texture copy of an ASTC
