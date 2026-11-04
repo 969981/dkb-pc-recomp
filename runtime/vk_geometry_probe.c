@@ -337,6 +337,20 @@ static int gp_run(int passthrough) {
         GP_REQUIRE(!memcmp(guard, after, sizeof guard), "indirect consumption preserves argument record/canaries");
     } else printf("probe-vkgeometry: indexed-indirect SKIPPED: exact bounded argument preflight failed\n");
     GP_REQUIRE(gfx_shader_failures() == shader_failures, "no translation failures");
+    if (gp_passthrough) {
+        GfxShaderAnswers answers = {0};
+        answers.geometry_input = GFX_GEOMETRY_TRIANGLES;
+        uint32_t length = nvn_geometry_control_u32(gp_control[2] + 0x704);
+        const GfxShader *source = gfx_shader_get(GFX_STAGE_GS, gp_control[2], gp_code[2], length, NULL, &answers);
+        GP_REQUIRE(source && gfx_shader_geometry(source) &&
+                   gfx_shader_geometry(source)->version == GFX_GEOMETRY_PASSTHROUGH_VERSION,
+                   "real portable shader/cache result");
+        int owned = -1;
+        GP_REQUIRE(gfx_shader_load_private(gfx_shader_input_id(source), &owned) == source && !owned,
+                   "borrowed portable shader validates its stored source");
+        GP_REQUIRE(gfx_shader_load_input(gfx_shader_input_id(source), 0) == source,
+                   "portable input-ID lookup preserves its source");
+    }
 done:
     if (pool_live) backend->finish();
     if (command_live) {
