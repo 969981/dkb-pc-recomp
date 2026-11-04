@@ -298,6 +298,15 @@ class BodyInputs(unittest.TestCase):
                 if not accepted:
                     self.assertFalse(list(cache.rglob('*.spv')))
 
+    def test_only_a_lowered_body_may_exceed_what_it_forwards(self):
+        name = 'outside_mask'
+        result = self.fixture('reflect-flags', args.out / 'runtime-flags', (args.out / (name + '.spv')).resolve(),
+                              (args.out / (name + '.res.json')).resolve())
+        self.assertEqual(result, dict(strict=False, lowered=True))
+        result = self.fixture('reflect-flags', args.out / 'runtime-flags', (args.out / 'static.spv').resolve(),
+                              (args.out / 'static.res.json').resolve())
+        self.assertEqual(result, dict(strict=True, lowered=True))
+
     def test_viewport_mask_write_is_the_one_explicit_output(self):
         self.assertEqual(self.replies['viewport_mask'], 'ok viewport_mask')
 

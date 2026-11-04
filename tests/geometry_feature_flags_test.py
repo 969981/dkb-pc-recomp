@@ -45,6 +45,7 @@ static uint8_t geometry_input;
 static int ordinary_enabled, fix_c0, warnings;
 static const uint8_t *original_native_code;
 int cfg_bool(const char *name) {
+    if(!strcmp(name,"TOTK_NATIVE_GS")){const char *e=getenv("DKB_NATIVE_GS");return e&&*e=='1';}
     if(strcmp(name,"TOTK_EXPERIMENTAL_GEOMETRY"))abort();
     return ordinary_enabled;
 }

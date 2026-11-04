@@ -819,10 +819,7 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
 // does; a stage whose real mask differs would forward the wrong set.
 static int native_gs_on(void) {
     static int on = -1;
-    if (on < 0) {
-        const char *e = getenv("DKB_NATIVE_GS");
-        on = e && *e == '1';
-    }
+    if (on < 0) on = cfg_bool("TOTK_NATIVE_GS");
     return on;
 }
 
@@ -846,7 +843,7 @@ static const uint8_t *native_gs_control(const uint8_t *ctl, const uint8_t *code,
     uint8_t *copy = malloc(0x880);
     if (!copy) return NULL;
     memcpy(copy, ctl, 0x880);
-    if (!nvn_geometry_control_pack_portable(copy, 0x880, code, len, skip)) {
+    if (!nvn_geometry_control_pack_lowered(copy, 0x880, code, len, skip)) {
         rt_log("native GS: stage %016llx does not fit the portable control", (unsigned long long)nvn2_origin(code));
         free(copy);
         return NULL;
