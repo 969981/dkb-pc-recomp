@@ -27,7 +27,7 @@
 +                // the maximum and minimum below are defined for every input.
 +                Operand Bound(double value) => srcType == DstFmt.F64 ? context.PackDouble2x32(value) : ConstF((float)value);
 +
-+                srcB = context.ConditionalSelect(context.IsNan(srcB, fpType), Bound(0), srcB);
++                srcB = context.Add(Instruction.ConditionalSelect | fpType, Local(), context.IsNan(srcB, fpType), Bound(0), srcB);
 +                srcB = context.FPMaximum(srcB, Bound(isSignedInt ? sbyte.MinValue : byte.MinValue), fpType);
 +                srcB = context.FPMinimum(srcB, Bound(isSignedInt ? sbyte.MaxValue : byte.MaxValue), fpType);
 +            }
