@@ -84,8 +84,8 @@ static uint32_t vs_outs(const GfxShader *v,const GfxShader *f,GfxShaderIo io[32]
              'static VkFormatFeatureFlags format_features(', 'static VkFormat target_format(',
              'static uint32_t *spirv_rebind(', 'static uint32_t *spirv_set(',
              'static uint32_t *spirv_dual_source(', 'static uint32_t *spirv_add_outputs(',
-             'static uint32_t *spirv_fixup(', 'static int uses_subgroup_ops(',
-             'static void pin_subgroup32(', 'static VkShaderModule make_module(']
+             'static uint32_t *spirv_fixup_linked(', 'static uint32_t *spirv_fixup(', 'static int uses_subgroup_ops(',
+             'static void pin_subgroup32(', 'static VkShaderModule make_module_linked(', 'static VkShaderModule make_module(']
     prefix += '\n'.join(interface.function(source, name) for name in names)
     # Contiguous original definitions: geometry IDs/validation and descriptor merge.
     start = source.index('typedef struct {', source.index('static VkShaderModule make_module('))
@@ -184,6 +184,36 @@ def primitive_id_fragment(data):
     return struct.pack('<' + 'I' * len(result), *result)
 
 
+def input_block_variant(data, flat=False):
+    """Original valid GS controls: reordered members or a Flat builtin member."""
+    types, pointers, arrays, variables, builtins = {}, {}, {}, {}, {}
+    for op, a in original.instructions(data):
+        if op == 30: types[a[0]] = a[1:]
+        elif op == 32: pointers[a[0]] = a[2]
+        elif op == 28: arrays[a[0]] = a[1]
+        elif op == 59 and a[2] == 1: variables[a[1]] = a[0]
+        elif op == 72 and a[2] == 11: builtins[a[0], a[1]] = a[3]
+    blocks = [(var, arrays[pointers[pointer]]) for var, pointer in variables.items()
+              if pointers[pointer] in arrays and arrays[pointers[pointer]] in types]
+    assert len(blocks) == 1
+    variable, block = blocks[0]
+    assert (builtins[block, 0], builtins[block, 1]) == (0, 1)
+    assert not any(op in (65, 66) and a[2] == variable for op, a in original.instructions(data))
+    result = list(struct.unpack('<5I', data[:20]))
+    flat_added = False
+    for op, a in original.instructions(data):
+        a = list(a)
+        if flat and not flat_added and 19 <= op <= 39:
+            result += [4 << 16 | 72, block, 0, 14]
+            flat_added = True
+        if not flat and op == 30 and a[0] == block:
+            a[1], a[2] = a[2], a[1]
+        elif not flat and op in (6, 72) and a[0] == block and a[1] in (0, 1):
+            a[1] ^= 1
+        result += [(len(a) + 1) << 16 | op] + a
+    return struct.pack('<' + 'I' * len(result), *result)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cc', required=True)
@@ -237,6 +267,15 @@ def main():
     path = args.out / 'gs_live_clip.code'
     path.write_bytes(code[:80] + original.framed(live + [original.EXIT]))
     jobs.append(dict(jobs[2], key='gs_live_clip', code=str(path.resolve())))
+    code = (args.out / 'stage0.code').read_bytes()
+    words = struct.unpack('<' + 'Q' * ((len(code) - 80) // 8), code[80:])
+    ops = [word for i, word in enumerate(words) if i % 4]
+    ops = ops[:ops.index(original.EXIT)]
+    ops += [original.movi(register, 0) for register in range(8, 12)]
+    ops += [original.ast(8, address) for address in (0x2c0, 0x2d0)] + [original.EXIT]
+    path = args.out / 'vs_live_clip.code'
+    path.write_bytes(code[:80] + original.framed(ops))
+    jobs.append(dict(jobs[0], key='vs_live_clip', code=str(path.resolve())))
     request = ''.join(json.dumps({'job': job, 'out': str(args.out.resolve())}) + '\n' for job in jobs)
     (args.out / 'request.jsonl').write_text(request)
     result = run([args.translator.resolve(), '--serve'], args.out / 'translate.log', input=request)
@@ -262,6 +301,12 @@ def main():
     (args.out / 'ps_primitive.spv').write_bytes(primitive_id_fragment((args.out / 'ps.spv').read_bytes()))
     (args.out / 'ps_primitive.res.json').write_bytes((args.out / 'ps.res.json').read_bytes())
     names.append('ps_primitive')
+    (args.out / 'gs_reordered.spv').write_bytes(input_block_variant((args.out / 'gs.spv').read_bytes()))
+    (args.out / 'gs_reordered.res.json').write_bytes((args.out / 'gs.res.json').read_bytes())
+    names.append('gs_reordered')
+    (args.out / 'gs_flat_builtin.spv').write_bytes(input_block_variant((args.out / 'gs.spv').read_bytes(), flat=True))
+    (args.out / 'gs_flat_builtin.res.json').write_bytes((args.out / 'gs.res.json').read_bytes())
+    names.append('gs_flat_builtin')
     for name in names:
         run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'{name}.spv'], args.out / f'{name}-val.log')
     for use in ('unused', 'direct', 'alias', 'whole', 'derived', 'clip', 'clip_alias', 'clip_derived', 'clip_dynamic', 'cull_dynamic'):
@@ -283,6 +328,7 @@ def main():
         raise AssertionError('legacy version-3 key bytes changed')
     for index in (1, 2, 3):
         run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'module{index}.spv'], args.out / f'module{index}-val.log')
+    run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / 'plain-vs.spv'], args.out / 'plain-vs-val.log')
     for use in ('unused', 'clip'):
         run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'fixed-cull-{use}.spv'], args.out / f'fixed-cull-{use}-val.log')
     manifest = {'optimization': args.opt, 'result': output.strip(), 'providers': [

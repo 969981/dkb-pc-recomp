@@ -10,6 +10,7 @@ static uint32_t captured_outputs[8];
 static unsigned captured_clip_declarations[8], captured_cull_declarations[8];
 static VkCtx fixture_context;
 static const char *output_directory;
+static int capture_plain_module;
 VkCaps vk_caps;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; fprintf(stderr,"line %d: %s\n",__LINE__,#c); } } while (0)
 
@@ -32,7 +33,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device,
     CHECK(index < 8);
     captured_clip_declarations[index]=captured_cull_declarations[index]=0;
     if(!pipeline_calls) {
-        char path[4096]; snprintf(path,sizeof path,"%s/module%u.spv",output_directory,index);
+        char path[4096];
+        if(capture_plain_module)snprintf(path,sizeof path,"%s/plain-vs.spv",output_directory);
+        else snprintf(path,sizeof path,"%s/module%u.spv",output_directory,index);
         FILE *f=fopen(path,"wb"); if(!f)abort();
         if(fwrite(info->pCode,1,info->codeSize,f)!=info->codeSize || fclose(f))abort();
     }
@@ -150,6 +153,13 @@ static void interface_tests(VkPipeState *s) {
             (unsigned long long)gi.builtin[i],(unsigned long long)go.builtin[i]);
     CHECK(vo.mask==1 && gi.mask==1 && go.mask==1 && fi.mask==1);
     CHECK(vo.builtin_mask & 2); // Extra VS PointSize is legal with triangle-emitting GS.
+    CHECK(geometry_builtin_link(&vo,&gi));
+    GeometryInterface changed=gi;
+    changed.block_members--; CHECK(!geometry_builtin_link(&vo,&changed));
+    changed=gi; changed.block_invariant^=1; CHECK(!geometry_builtin_link(&vo,&changed));
+    changed=gi; changed.block_builtin[0]=1; CHECK(!geometry_builtin_link(&vo,&changed));
+    changed=gi; changed.builtin[0]^=UINT64_C(1)<<62; CHECK(!geometry_builtin_link(&vo,&changed));
+    changed=gi; changed.builtin[0]^=UINT64_C(1)<<8; CHECK(!geometry_builtin_link(&vo,&changed));
     CHECK(!geometry_interface(s->gs,1,3,&gi));
     GfxShader *gs=(GfxShader*)s->gs;
     for(unsigned bits=0;bits<=64;bits+=16)if(bits!=32) {
@@ -206,6 +216,8 @@ static void descriptor_tests(VkPipeState *s) {
     // These original programs never read or write distance arrays. Both GS
     // input/output boilerplate arrays must be absent from the uploaded module.
     CHECK(captured_clip_declarations[2]==0 && captured_cull_declarations[2]==0);
+    CHECK(captured_clip_declarations[3]==captured_clip_declarations[2] &&
+        captured_cull_declarations[3]==captured_cull_declarations[2]);
     CHECK(captured_outputs[3]==s->vs->out_mask); // GS path must not repair VS→FS.
     for(unsigned module=1;module<=3;module++) {
         unsigned expected=module==1?fs_off:module==2?gs_off:0;
@@ -247,9 +259,27 @@ int main(int argc,char **argv) {
     capabilities(); topology_tests(); cull_tests(argv[1]);
     GfxShader vs,gs,fs; load_shader(&vs,argv[1],"vs",GFX_STAGE_VS);
     load_shader(&gs,argv[1],"gs",GFX_STAGE_GS); load_shader(&fs,argv[1],"ps",GFX_STAGE_FS);
+    // The plain wrapper keeps the legacy VS Clip[8] declaration. The GS-chain
+    // create path below must trim it without changing this default behavior.
+    capture_plain_module=1; CHECK(make_module(vs.spirv,vs.words)); capture_plain_module=0;
+    CHECK(captured_clip_declarations[1]==1 && captured_cull_declarations[1]==0);
     VkPipeState s={.vs=&vs,.fs=&fs,.gs=&gs,.prim=NVN_DRAW_PRIMITIVE_POINTS,.samples=1};
     s.poly.mode=NVN_POLYGON_MODE_FILL;
     interface_tests(&s); descriptor_tests(&s); serialization_tests(&s);
+    GfxShader live_vs; load_shader(&live_vs,argv[1],"vs_live_clip",GFX_STAGE_VS);
+    s.vs=&live_vs;
+    const char *mismatch=geometry_validate(&s,&fixture_context.props.limits);
+    CHECK(mismatch && strstr(mismatch,"built-in block mismatch"));
+    made=destroyed=pipeline_calls=fail_module=0;
+    CHECK(make_module_linked(live_vs.spirv,live_vs.words,1));
+    CHECK(captured_clip_declarations[1]==1 && captured_cull_declarations[1]==0);
+    s.vs=&vs;free(live_vs.spirv);
+    GfxShader reordered; load_shader(&reordered,argv[1],"gs_reordered",GFX_STAGE_GS);
+    s.gs=&reordered; CHECK(geometry_validate(&s,&fixture_context.props.limits));
+    s.gs=&gs;free(reordered.spirv);
+    GfxShader flat_builtin; load_shader(&flat_builtin,argv[1],"gs_flat_builtin",GFX_STAGE_GS);
+    s.gs=&flat_builtin; CHECK(geometry_validate(&s,&fixture_context.props.limits));
+    s.gs=&gs;free(flat_builtin.spirv);
     GfxShader live_clip; load_shader(&live_clip,argv[1],"gs_live_clip",GFX_STAGE_GS);
     s.gs=&live_clip;
     const char *limit=geometry_validate(&s,&fixture_context.props.limits);
