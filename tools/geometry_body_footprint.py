@@ -161,7 +161,7 @@ def analyze(data, *, code_end, c1_end, context=''):
 
 def output_path(path):
     resolved = path.resolve()
-    build = ROOT.resolve() / 'build'
+    build = (ROOT / 'build').resolve()
     if resolved == build or not resolved.is_relative_to(build):
         raise ValueError('derived JSON must be below this checkout build directory')
     return resolved
