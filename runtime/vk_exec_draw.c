@@ -275,6 +275,26 @@ static int reset_mapped(void *context, uint64_t addr, uint32_t size) {
     return vk_mem_resolve(addr, size, &span);
 }
 
+static int cmp_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return (x > y) - (x < y);
+}
+
+// Whether two nonnull targets share a byte (duplicates included). Their copies then need a barrier between them to
+// keep the input order; disjoint targets can all be copied after one barrier.
+static int reset_targets_overlap(const uint64_t *pointers, uint32_t count) {
+    uint64_t *sorted = malloc((size_t)count * sizeof *sorted);
+    if (!sorted) rt_fatal("vk: out of memory checking indirect-reset targets");
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (pointers[i]) sorted[n++] = pointers[i];
+    qsort(sorted, n, sizeof *sorted, cmp_u64);
+    int overlap = 0;
+    for (uint32_t i = 1; i < n && !overlap; i++) overlap = sorted[i] - sorted[i - 1] < NVN_INDIRECT_RESET_RECORD_BYTES;
+    free(sorted);
+    return overlap;
+}
+
 // The pointer list may have been written earlier in this submission. Read its GPU-visible contents after submitting
 // that prefix, then validate every target before recording a write. Null pointers have no record to reset.
 int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_bytes, int64_t first, int64_t count) {
@@ -295,6 +315,8 @@ int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_b
     Chunk *chunk = &resources->chunks[resources->nchunks - 1];
     if (vmaFlushAllocation(vk_ctx()->vma, chunk->alloc, source_offset, sizeof record) != VK_SUCCESS)
         rt_fatal("vk: flushing indirect-reset values failed");
+    int ordered = reset_targets_overlap(pointers, list.count);
+    vk_exec_barrier(ex);   // the copies follow every earlier access to the records
     for (uint32_t i = 0; i < list.count; i++) {
         uint64_t addr = pointers[i];
         if (!addr) continue;
@@ -304,7 +326,7 @@ int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_b
         // Commit first-use imports to their mirror before choosing the destination. A later indirect bind must
         // read this same backing rather than create a mirror from the old contents.
         VK_MEM_USE(span);
-        vk_exec_barrier(ex);   // also preserves the input order of duplicate or overlapping target ranges
+        if (ordered) vk_exec_barrier(ex);   // preserves the input order of duplicate or overlapping target ranges
         VkBufferCopy copy = {source_offset, span.offset, sizeof record};
         vkCmdCopyBuffer(ex->cb, source, span.buffer, 1, &copy);
         ex->recorded++;
@@ -2493,8 +2515,12 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
 // The Bananza reset vertex program loses stores through pointers loaded from a list. Match both locally confirmed
 // stages and the observed one-instance point-draw form. Other programs and parameter forms keep the shader path.
 static int indirect_reset_draw(VkExec *ex, const p_draw *d) {
-    if (rt_game_version || !cfg_bool("TOTK_FIX_INDIRECT_RESET") || !c0_on() || ex->render_disabled ||
-        getenv("DKB_SKIP_DRAWS") || !ex->prog || ex->prog->nstage != 2 || d->prim != NVN_DRAW_PRIMITIVE_POINTS ||
+    // Both settings are fixed for the run (TOTK_FIX_INDIRECT_RESET needs a restart), so read them once: this
+    // runs ahead of every draw.
+    static int on = -1;
+    if (on < 0) on = !rt_game_version && cfg_bool("TOTK_FIX_INDIRECT_RESET") && !getenv("DKB_SKIP_DRAWS");
+    if (!on || !c0_on() || ex->render_disabled ||
+        !ex->prog || ex->prog->nstage != 2 || d->prim != NVN_DRAW_PRIMITIVE_POINTS ||
         d->count <= 0 || d->first < 0 || d->base_instance || d->instances != 1) return 0;
     const uint8_t *ctl, *code;
     uint32_t length;
