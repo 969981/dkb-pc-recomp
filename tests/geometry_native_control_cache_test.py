@@ -61,8 +61,9 @@ static void *spy_malloc(size_t bytes) {
 static void *spy_realloc(void *pointer,size_t bytes) {
     realloc_calls++;if(fail_realloc){fail_realloc=0;return NULL;}
     if(!bytes||bytes>65536)abort();
-    unsigned i=slot(pointer);void *p=realloc(pointer,bytes);if(!p)abort();
-    if(!pointer)live_blocks++;
+    int was_null=pointer==NULL;unsigned i=slot(pointer);
+    void *p=realloc(pointer,bytes);if(!p)abort();
+    if(was_null)live_blocks++;
     blocks[i].pointer=p;blocks[i].bytes=bytes;return p;
 }
 static void spy_free(void *pointer) {
