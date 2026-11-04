@@ -9,6 +9,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "nvn_api.h"
+#include "nvn_geometry_control.h"
 #include "vk_exec.h"
 
 #define NVN_PROC(n) void nvnp_##n(Cpu *c);
@@ -21,6 +22,7 @@ enum { GP_CONTROL = 0x880, GP_CODE = 2048, GP_SKIP = 0x30, GP_WIDTH = 32, GP_HEI
        GP_POOL = 0x100000, GP_COLOR = 0x10000, GP_UNIFORM = 0x20000, GP_VERTEX = 0x30000,
        GP_INDEX = 0x31000, GP_RECORD = 0x40100, GP_GUARD = GP_RECORD - 128, GP_COMMAND = 0x50000,
        GP_COMMAND_CONTROL = 8192 };
+static int gp_passthrough;
 
 // Original program authoring. CPU preparation compiles these actual helpers without Vulkan and validates all modules.
 static void gp_u32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
@@ -64,26 +66,33 @@ static uint32_t gp_program(unsigned stage, uint8_t control[GP_CONTROL], uint8_t 
     } else {
         gp_u32(code + GP_SKIP + 8, 1u << 24);    // one invocation
         gp_u32(code + GP_SKIP + 12, 7u << 24);   // triangle strip
-        gp_u32(code + GP_SKIP + 16, 3);         // exactly three emitted vertices
+        gp_u32(code + GP_SKIP + 16, gp_passthrough ? 1 : 3);
+        if (gp_passthrough) {
+            uint32_t sph;
+            memcpy(&sph, code + GP_SKIP, 4);
+            gp_u32(code + GP_SKIP, sph | (1u << 24));
+        }
         ops[n++] = gp_movc(10, 3, 0), ops[n++] = gp_movc(11, 3, 1);
         static const uint32_t args[5] = {3, 1, 0, 0, 0};
         for (unsigned i = 0; i < 5; i++) {
             ops[n++] = gp_movi(8, args[i]);
             ops[n++] = gp_stg(8, i * 4);
         }
-        ops[n++] = gp_movi(9, 0);
-        ops[n++] = gp_attr(12, 0x80, 9, 0, 4); // actual VS->GS Location0 color from valid input vertex0
-        static const uint32_t positions[3][4] = {
-            {0xbf400000u, 0xbf400000u, 0, 0x3f800000u},
-            {0x3f400000u, 0xbf400000u, 0, 0x3f800000u},
-            {0, 0x3f400000u, 0, 0x3f800000u}};
-        for (unsigned v = 0; v < 3; v++) {
-            for (unsigned i = 0; i < 4; i++) ops[n++] = gp_movi(i, positions[v][i]);
-            // Outputs are undefined after EmitVertex; rewrite Position and color for every vertex.
-            ops[n++] = gp_attr(0, 0x70, 255, 1, 4);
-            ops[n++] = gp_attr(12, 0x80, 255, 1, 4);
-            ops[n++] = UINT64_C(0xf6e0000000000000) | (uint64_t)(v == 2 ? 3 : 1) << 39 |
-                       UINT64_C(7) << 16 | UINT64_C(255) << 8 | 255;
+        if (!gp_passthrough) {
+            ops[n++] = gp_movi(9, 0);
+            ops[n++] = gp_attr(12, 0x80, 9, 0, 4); // actual VS->GS Location0 color from valid input vertex0
+            static const uint32_t positions[3][4] = {
+                {0xbf400000u, 0xbf400000u, 0, 0x3f800000u},
+                {0x3f400000u, 0xbf400000u, 0, 0x3f800000u},
+                {0, 0x3f400000u, 0, 0x3f800000u}};
+            for (unsigned v = 0; v < 3; v++) {
+                for (unsigned i = 0; i < 4; i++) ops[n++] = gp_movi(i, positions[v][i]);
+                // Outputs are undefined after EmitVertex; rewrite Position and color for every vertex.
+                ops[n++] = gp_attr(0, 0x70, 255, 1, 4);
+                ops[n++] = gp_attr(12, 0x80, 255, 1, 4);
+                ops[n++] = UINT64_C(0xf6e0000000000000) | (uint64_t)(v == 2 ? 3 : 1) << 39 |
+                           UINT64_C(7) << 16 | UINT64_C(255) << 8 | 255;
+            }
         }
     }
     ops[n++] = UINT64_C(0xe30000000007000f);
@@ -190,7 +199,8 @@ static void gp_prefix(uint8_t *memory, void *control, int indirect) {
     GP_CALL(nvnCommandBufferBindVertexAttribState, GP_U(&gp_command), 2, GP_U(attr));
     GP_CALL(nvnCommandBufferBindVertexStreamState, GP_U(&gp_command), 1, GP_U(&stream));
     GP_CALL(nvnCommandBufferBindVertexBuffer, GP_U(&gp_command), 0,
-        GP_U(memory + GP_VERTEX + (indirect ? 0 : 96)), indirect ? 96 : 32);
+        GP_U(memory + GP_VERTEX + (indirect ? 0 : gp_passthrough ? 96 : 192)),
+        indirect || gp_passthrough ? 96 : 32);
     if (!indirect) GP_CALL(nvnCommandBufferBindUniformBuffer, GP_U(&gp_command), NVN_SHADER_STAGE_GEOMETRY,
         0, GP_U(memory + GP_UNIFORM), 256); // actual shader c3, NVN user UBO slot0
 }
@@ -219,7 +229,8 @@ static int gp_pixels(uint32_t pixels[GP_WIDTH * GP_HEIGHT], uint32_t color, int 
     return *orientation >= 0;
 }
 
-int probe_vkgeometry(void) {
+static int gp_run(int passthrough) {
+    gp_passthrough = passthrough;
     const GfxBackend *backend = &gfx_vulkan_backend;
     if (gfx_backend() != backend || cfg_bool("TOTK_FIX_C0")) {
         printf("probe-vkgeometry: requires TOTK_GPU=vulkan and TOTK_FIX_C0=0 (ordinary Maxwell only)\n");
@@ -257,9 +268,11 @@ int probe_vkgeometry(void) {
     GP_REQUIRE(texture_bytes && texture_bytes <= 0x10000, "bounded color storage");
     GP_REQUIRE((uint8_t)GP_CALL(nvnTextureInitialize, GP_U(&gp_color), GP_U(&gp_texture_builder)), "TextureInitialize");
     texture_live = 1;
-    static const float vertices[4][8] = {
+    static const float vertices[7][8] = {
         {-0.75f, -0.75f, 0, 1, 0, 1, 0, 1}, {0.75f, -0.75f, 0, 1, 0, 1, 0, 1},
-        {0, 0.75f, 0, 1, 0, 1, 0, 1}, {0, 0, 0, 1, 1, 0, 0, 1}};
+        {0, 0.75f, 0, 1, 0, 1, 0, 1},
+        {-0.75f, -0.75f, 0, 1, 1, 0, 0, 1}, {0.75f, -0.75f, 0, 1, 1, 0, 0, 1},
+        {0, 0.75f, 0, 1, 1, 0, 0, 1}, {0, 0, 0, 1, 1, 0, 0, 1}};
     static const uint16_t indices[3] = {0, 1, 2};
     uint64_t record_address = GP_U(memory + GP_RECORD);
     memcpy(memory + GP_UNIFORM, &record_address, 8);
@@ -268,7 +281,13 @@ int probe_vkgeometry(void) {
     GP_CALL(nvnMemoryPoolFlushMappedRange, GP_U(&gp_memory_pool), GP_UNIFORM, GP_POOL - GP_UNIFORM);
     NVNshaderData shaders[3];
     for (unsigned stage = 0; stage < 3; stage++) {
-        gp_program(stage, gp_control[stage], gp_code[stage]);
+        uint32_t length = gp_program(stage, gp_control[stage], gp_code[stage]);
+        if (stage == 2 && gp_passthrough) {
+            static const uint32_t skip[8] = {0x0fffffffu, 0xfffffff0u, UINT32_MAX, UINT32_MAX,
+                                             UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+            GP_REQUIRE(nvn_geometry_control_pack_portable(gp_control[stage], GP_CONTROL,
+                gp_code[stage], length, skip), "canonical portable geometry metadata");
+        }
         shaders[stage] = (NVNshaderData){GP_U(gp_code[stage]), gp_control[stage]};
     }
     GP_REQUIRE((uint8_t)GP_CALL(nvnProgramInitialize, GP_U(&gp_full_program), GP_U(&gp_device)), "full ProgramInitialize");
@@ -281,7 +300,8 @@ int probe_vkgeometry(void) {
     command_live = 1;
     GP_CALL(nvnCommandBufferAddCommandMemory, GP_U(&gp_command), GP_U(&gp_memory_pool), GP_COMMAND, 0x10000);
     gp_prefix(memory, control, 0);
-    GP_CALL(nvnCommandBufferDrawArrays, GP_U(&gp_command), NVN_DRAW_PRIMITIVE_POINTS, 0, 1);
+    GP_CALL(nvnCommandBufferDrawArrays, GP_U(&gp_command),
+        gp_passthrough ? NVN_DRAW_PRIMITIVE_TRIANGLES : NVN_DRAW_PRIMITIVE_POINTS, 0, gp_passthrough ? 3 : 1);
     GP_REQUIRE(gp_submit(), "GS submission completion");
     uint8_t guard[256];
     GP_REQUIRE(gp_read_gpu(GP_U(memory + GP_GUARD), guard, sizeof guard), "GPU argument/canary readback");
@@ -333,7 +353,12 @@ done:
     long errors = vk_validation_errors_total();
     printf("probe-vkgeometry: %s (%u checks, %u failures, %ld validation errors, enabled %d)\n",
         gp_failures || errors ? "FAILED" : "passed", gp_checks, gp_failures, errors, cfg_bool("TOTK_EXPERIMENTAL_GEOMETRY"));
-    puts("probe-vkgeometry: ordinary points->triangle, user-c3 store, separate completed-submission indirect consumption; "
-         "no native lowering, passthrough, other input topologies or same-submission ordering claim");
+    printf("probe-vkgeometry: %s, user-c3 store, separate completed-submission indirect consumption; ",
+           gp_passthrough ? "portable triangles->triangle" : "ordinary points->triangle");
+    puts(
+         "no native lowering, NV passthrough extension, other input topologies or same-submission ordering claim");
     return gp_failures || errors;
 }
+
+int probe_vkgeometry(void) { return gp_run(0); }
+int probe_vkgeometry_passthrough(void) { return gp_run(1); }

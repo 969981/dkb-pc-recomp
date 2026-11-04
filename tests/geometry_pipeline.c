@@ -11,6 +11,7 @@ static unsigned captured_clip_declarations[8], captured_cull_declarations[8];
 static VkCtx fixture_context;
 static const char *output_directory;
 static int capture_plain_module;
+static const char *capture_prefix;
 VkCaps vk_caps;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; fprintf(stderr,"line %d: %s\n",__LINE__,#c); } } while (0)
 
@@ -35,6 +36,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device,
     if(!pipeline_calls) {
         char path[4096];
         if(capture_plain_module)snprintf(path,sizeof path,"%s/plain-vs.spv",output_directory);
+        else if(capture_prefix)snprintf(path,sizeof path,"%s/%s-module%u.spv",output_directory,capture_prefix,index);
         else snprintf(path,sizeof path,"%s/module%u.spv",output_directory,index);
         FILE *f=fopen(path,"wb"); if(!f)abort();
         if(fwrite(info->pCode,1,info->codeSize,f)!=info->codeSize || fclose(f))abort();
@@ -253,6 +255,96 @@ static void serialization_tests(VkPipeState *s) {
     s->gs=gs; free(K.pend); free(K.seen);
 }
 
+static void portable_tests(const char *dir) {
+    GfxShader vs,gs,fs;
+    load_shader(&vs,dir,"vs_portable",GFX_STAGE_VS);
+    load_shader(&gs,dir,"gs_portable",GFX_STAGE_GS);
+    load_shader(&fs,dir,"ps_portable",GFX_STAGE_FS);
+    CHECK(gs.geometry.version==GFX_GEOMETRY_PASSTHROUGH_VERSION);
+    CHECK(gs.geometry.input==GFX_GEOMETRY_TRIANGLES && gs.geometry.input_vertices==3);
+    CHECK(gs.geometry.output==GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP && !gs.geometry.passthrough);
+    CHECK(gs.geometry.invocations==1 && gs.geometry.max_output_vertices==3);
+    CHECK(gs.nres[GFX_RES_SSBO]==1 && gs.res[GFX_RES_SSBO][0].cbuf_slot==3 &&
+        !gs.res[GFX_RES_SSBO][0].handle && gs.res[GFX_RES_SSBO][0].flags==1);
+    VkPipeState s={.vs=&vs,.gs=&gs,.fs=&fs,.prim=NVN_DRAW_PRIMITIVE_TRIANGLES,.samples=1};
+    s.poly.mode=NVN_POLYGON_MODE_FILL;
+    VkPhysicalDeviceLimits *limits=&fixture_context.props.limits;
+    const char *why=geometry_validate(&s,limits);
+    if(why)fprintf(stderr,"portable interface rejected: %s\n",why);
+    CHECK(!why);
+    GeometryInterface vo,gi,go,fi;
+    CHECK(geometry_interface(&vs,3,0,&vo)); CHECK(geometry_interface(&gs,1,3,&gi));
+    CHECK(geometry_interface(&gs,3,0,&go)); CHECK(geometry_interface(&fs,1,0,&fi));
+    CHECK(vo.mask==1 && gi.mask==1 && go.mask==1 && fi.mask==1);
+    CHECK(geometry_builtin_link(&vo,&gi));
+    CHECK(!geometry_interface(&gs,1,1,&gi));
+    GfxShaderGeometry saved=gs.geometry;
+    made=destroyed=pipeline_calls=fail_module=0;
+    s.prim=NVN_DRAW_PRIMITIVE_POINTS; CHECK(geometry_validate(&s,limits));
+    s.prim=NVN_DRAW_PRIMITIVE_LINES; gs.geometry.input=GFX_GEOMETRY_LINES; gs.geometry.input_vertices=2;
+    why=geometry_validate(&s,limits); CHECK(why && strstr(why,"unsupported portable geometry contract"));
+    s.prim=NVN_DRAW_PRIMITIVE_TRIANGLES; gs.geometry=saved;
+    for(unsigned output=GFX_GEOMETRY_OUTPUT_POINTS;output<=GFX_GEOMETRY_OUTPUT_LINE_STRIP;output++) {
+        gs.geometry.output=output; why=geometry_validate(&s,limits);
+        CHECK(why && strstr(why,"unsupported portable geometry contract"));
+    }
+    gs.geometry=saved; gs.geometry.invocations=2;
+    why=geometry_validate(&s,limits); CHECK(why && strstr(why,"unsupported portable geometry contract"));
+    gs.geometry=saved; gs.geometry.max_output_vertices=4;
+    why=geometry_validate(&s,limits); CHECK(why && strstr(why,"unsupported portable geometry contract"));
+    gs.geometry=saved; s.fs=NULL;
+    why=geometry_validate(&s,limits); CHECK(why && strstr(why,"unsupported portable geometry contract"));
+    s.fs=&fs; gs.geometry.passthrough=1; CHECK(geometry_validate(&s,limits));
+    gs.geometry=saved; gs.geometry.version=3; CHECK(geometry_validate(&s,limits));
+    gs.geometry=saved; P.f_vertex_stores=0; CHECK(geometry_validate(&s,limits)); P.f_vertex_stores=1;
+    CHECK(!made && !pipeline_calls);
+    CHECK(!geometry_validate(&s,limits));
+
+    Bindings b={0};
+    uint32_t gs_off=binding_span(&vs)-1,fs_off=gs_off+binding_span(&gs)-1;
+    CHECK(add_stage(&b,&vs,0)); CHECK(add_stage(&b,&gs,gs_off)); CHECK(add_stage(&b,&fs,fs_off));
+    unsigned support=0,storage=0;
+    for(uint32_t i=0;i<b.n;i++) {
+        if(!b.b[i].binding) {
+            support++; CHECK(b.b[i].stageFlags==(VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_GEOMETRY_BIT|VK_SHADER_STAGE_FRAGMENT_BIT));
+        }
+        if(b.pb[i].stage==GFX_STAGE_GS && b.pb[i].kind==GFX_RES_SSBO) {
+            storage++; CHECK(b.b[i].stageFlags==VK_SHADER_STAGE_GEOMETRY_BIT);
+            CHECK(b.b[i].binding==gs.res[GFX_RES_SSBO][0].binding+gs_off);
+        }
+    }
+    CHECK(support==1 && storage==1);
+    Layout *layout=calloc(1,sizeof *layout+b.n*sizeof *layout->b);if(!layout)abort();
+    layout->n=b.n;memcpy(layout->b,b.b,b.n*sizeof *b.b);layout->layout=(VkPipelineLayout)(uintptr_t)88;
+    char reason[256];CHECK(layout_covers(&s,layout,fs_off,reason,sizeof reason));
+    GKey key;gkey_fill(&s,&key);
+    CHECK(key.gs==&gs && key.geometry_input==GFX_GEOMETRY_TRIANGLES && !key.indep);
+    memset(captured_nbinding,0,sizeof captured_nbinding);
+    capture_prefix="portable";
+    CHECK(create_graphics(&s,&key,layout,fs_off));
+    capture_prefix=NULL;
+    CHECK(made==3 && destroyed==3 && pipeline_calls==1 && captured_count==3);
+    CHECK(captured_stages==(VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_GEOMETRY_BIT|VK_SHADER_STAGE_FRAGMENT_BIT));
+    CHECK(captured_topology==VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    CHECK(!captured_clip_declarations[2] && !captured_cull_declarations[2]);
+    CHECK(captured_clip_declarations[3]==captured_clip_declarations[2] &&
+        captured_cull_declarations[3]==captured_cull_declarations[2]);
+    const GfxShader *stages[]={&fs,&gs,&vs};
+    const uint32_t offsets[]={fs_off,gs_off,0};
+    for(unsigned module=1;module<=3;module++) {
+        const GfxShader *stage=stages[module-1];unsigned expected=0,seen=0;
+        for(unsigned kind=0;kind<GFX_RES_KINDS;kind++)expected+=(unsigned)stage->nres[kind];
+        for(unsigned j=0;j<captured_nbinding[module];j++)if(captured_binding[module][j]) {
+            int found=0;seen++;
+            for(unsigned kind=0;kind<GFX_RES_KINDS;kind++)for(int r=0;r<stage->nres[kind];r++)
+                found|=captured_binding[module][j]==stage->res[kind][r].binding+offsets[module-1];
+            CHECK(found);
+        }
+        CHECK(seen==expected);
+    }
+    free(layout);free(vs.spirv);free(gs.spirv);free(fs.spirv);
+}
+
 int main(int argc,char **argv) {
     if(argc!=2)return 2;
     output_directory=argv[1];
@@ -317,6 +409,7 @@ int main(int argc,char **argv) {
     CHECK(vs.out_mask==1 && go.out_mask==2 && fi.in_mask==2);
     CHECK(!geometry_validate(&s,&fixture_context.props.limits)); descriptor_tests(&s);
     free(go.spirv);free(fi.spirv);
+    portable_tests(argv[1]);
     printf("%u checks, %u failures (CPU spies only)\n",checks,failures);
     free(vs.spirv); free(gs.spirv); free(fs.spirv); free(vr.spirv); free(fr.spirv);
     return failures?1:0;

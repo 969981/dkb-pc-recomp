@@ -14,6 +14,7 @@ import subprocess
 
 import spirv_interface_test as interface
 import vk_geometry_probe_test as probe
+import vk_geometry_passthrough_probe_test as portable_probe
 import geometry_shader_fixture as original
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +49,7 @@ def resources(out, names):
             g = report['geometry']
             input = ('points', 'lines', 'lines_adjacency', 'triangles', 'triangles_adjacency').index(report['gs_input']) + 1
             output = ('points', 'line_strip', 'triangle_strip').index(g['output_topology']) + 1
-            text.append(f's->geometry=(GfxShaderGeometry){{1,{input},{g["input_vertices"]},{output},'
+            text.append(f's->geometry=(GfxShaderGeometry){{{report["geometry_version"]},{input},{g["input_vertices"]},{output},'
                         f'{g["invocations"]},{g["max_output_vertices"]},{int(g["passthrough"])}}};')
         for kind, key in enumerate(('cbufs', 'sbufs', 'textures', 'images')):
             entries = report[key]
@@ -229,6 +230,12 @@ def main():
     author_exe = args.out / 'author.exe'
     run([args.cc, '-std=c11', '-O2', author, '-o', author_exe], args.out / 'author-compile.log')
     run([author_exe.resolve(), args.out.resolve()], args.out / 'author.log')
+    portable_author = args.out / 'portable-author.c'
+    portable_author.write_text(portable_probe.cpu_source())
+    portable_exe = args.out / 'portable-author.exe'
+    run([args.cc, '-std=c11', '-O2', '-I', ROOT / 'runtime', portable_author, '-o', portable_exe],
+        args.out / 'portable-author-compile.log')
+    run([portable_exe.resolve(), args.out.resolve(), '1'], args.out / 'portable-author.log')
     jobs = []
     for stage, name in ((0, 'vs'), (1, 'ps'), (2, 'gs')):
         job = {'key': name, 'stage': name, 'code': str((args.out / f'stage{stage}.code').resolve()), 'c1': ''}
@@ -276,6 +283,7 @@ def main():
     path = args.out / 'vs_live_clip.code'
     path.write_bytes(code[:80] + original.framed(ops))
     jobs.append(dict(jobs[0], key='vs_live_clip', code=str(path.resolve())))
+    jobs.extend(portable_probe.jobs(args.out))
     request = ''.join(json.dumps({'job': job, 'out': str(args.out.resolve())}) + '\n' for job in jobs)
     (args.out / 'request.jsonl').write_text(request)
     result = run([args.translator.resolve(), '--serve'], args.out / 'translate.log', input=request)
@@ -328,17 +336,21 @@ def main():
         raise AssertionError('legacy version-3 key bytes changed')
     for index in (1, 2, 3):
         run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'module{index}.spv'], args.out / f'module{index}-val.log')
+        run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'portable-module{index}.spv'],
+            args.out / f'portable-module{index}-val.log')
     run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / 'plain-vs.spv'], args.out / 'plain-vs-val.log')
     for use in ('unused', 'clip'):
         run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'fixed-cull-{use}.spv'], args.out / f'fixed-cull-{use}-val.log')
-    manifest = {'optimization': args.opt, 'result': output.strip(), 'providers': [
+    manifest = {'optimization': args.opt, 'result': output.strip(),
+        'complete_spirv_validations': len(list(args.out.glob('*-val.log'))), 'providers': [
         'Vulkan module/pipeline creation spies; no loader or device',
         'owned translated modules plus exact production SPIR-V interface reflector',
         'resource reflection metadata populated from original shader JSON',
         'fixed generous device limits and disabled timing',
         'legacy vertex input/VS-FS union/format branches abort if reached'], 'source_sha256': {}}
     for name in ('runtime/vk.h', 'runtime/vk_pipeline.c', 'runtime/gfx.h', 'runtime/gfx_shader.c',
-                 'tests/geometry_pipeline.c', 'tests/geometry_pipeline_test.py'):
+                 'runtime/vk_geometry_probe.c', 'runtime/nvn_geometry_control.h',
+                 'tests/vk_geometry_passthrough_probe_test.py', 'tests/geometry_pipeline.c', 'tests/geometry_pipeline_test.py'):
         manifest['source_sha256'][name] = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
     (args.out / 'handoff.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print(output, end='')
