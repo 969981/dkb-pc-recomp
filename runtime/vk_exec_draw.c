@@ -2651,6 +2651,108 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
 
 // ---- bind ops
 
+// Private draw-ingress metadata only. Replay is serialized; the cap is process-wide and later draws are unobserved.
+static void geometry_context_log(const VkExec *ex, uint32_t op, const void *payload) {
+    if (op != OP_DRAW && op != OP_DRAW_IDX && op != OP_DRAW_IDX_IND) return;
+    static int on = -1, filtered;
+    static uint64_t filter;
+    static unsigned records;
+    if (on < 0) {
+        const char *e = getenv("DKB_GEOMETRY_CONTEXT"), *f = getenv("DKB_GEOMETRY_CONTEXT_ORIGIN");
+        on = e && !strcmp(e, "1");
+        if (on && f) {
+            filtered = 1;
+            if (f[0] == '0' && (f[1] == 'x' || f[1] == 'X')) f += 2;
+            unsigned digits = 0;
+            for (; *f; f++) {
+                unsigned d = *f >= '0' && *f <= '9' ? (unsigned)(*f - '0') :
+                             *f >= 'a' && *f <= 'f' ? (unsigned)(*f - 'a' + 10) :
+                             *f >= 'A' && *f <= 'F' ? (unsigned)(*f - 'A' + 10) : 16;
+                if (d == 16 || digits == 16) { on = 0; break; }
+                filter = (filter << 4) | d;
+                digits++;
+            }
+            if (!digits) on = 0;
+            if (!on) rt_log("geometry_context: invalid origin filter; metadata logging disabled");
+        }
+    }
+    if (!on || records == 12 || !ex || !payload) return;
+
+    uint64_t origin[3] = {0};
+    unsigned present = 0;
+    int metadata = ex->prog && ex->prog->nstage <= 6;
+    // Failed native lowering can leave a compact control: do not send it to the legacy-shaped stage getter.
+    if (metadata)
+        for (uint32_t i = 0; i < ex->prog->nstage; i++) {
+            const uint8_t *ctl = ex->prog->sd[i].control;
+            if (ctl && gfx_shader_is_nvn2(ctl)) { metadata = 0; break; }
+        }
+    if (metadata)
+        for (int stage = 0; stage < 3; stage++) {
+            const uint8_t *ctl, *code;
+            uint32_t len;
+            if (find_stage(ex->prog, stage, &ctl, &code, &len)) {
+                present |= 1u << stage;
+                origin[stage] = nvn2_origin(code);   // pointer-to-origin lookup, no shader bytes read
+            }
+        }
+    if (filtered && !((present & 1) && origin[0] == filter) &&
+        !((present & 2) && origin[1] == filter) && !((present & 4) && origin[2] == filter)) return;
+
+    const char *kind;
+    int prim;
+    char draw[256], viewport[192], attachments[512], bindings[384];
+    if (op == OP_DRAW) {
+        const p_draw *d = payload;
+        kind = "direct", prim = d->prim;
+        snprintf(draw, sizeof draw, "first=%d count=%d instances_raw=%d base_instance=%d",
+                 d->first, d->count, d->instances, d->base_instance);
+    } else if (op == OP_DRAW_IDX) {
+        const p_draw_idx *d = payload;
+        kind = "indexed", prim = d->prim;
+        snprintf(draw, sizeof draw, "count=%d instances_raw=%d base_vertex=%d base_instance=%d index_type=%d index_addr=%#llx",
+                 d->count, d->instances, d->base_vertex, d->base_instance, d->itype, (unsigned long long)d->ibuf);
+    } else {
+        const p_draw_idx_ind *d = payload;
+        kind = "indexed_indirect", prim = d->prim;
+        snprintf(draw, sizeof draw, "index_type=%d index_addr=%#llx indirect_addr=%#llx count=unknown instances=unknown",
+                 d->itype, (unsigned long long)d->ibuf, (unsigned long long)d->ind);
+    }
+    if (ex->has_vp)
+        snprintf(viewport, sizeof viewport, "has_vp=1 viewport0_stored=[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g] depth_range=[%.9g,%.9g]",
+                 ex->vp[0][0], ex->vp[0][1], ex->vp[0][2], ex->vp[0][3], ex->vp[0][4], ex->vp[0][5],
+                 ex->depth_range[0], ex->depth_range[1]);
+    else
+        snprintf(viewport, sizeof viewport, "has_vp=0 viewport0_stored=unreported depth_range=[%.9g,%.9g]", ex->depth_range[0], ex->depth_range[1]);
+    if (ex->rt_resolved) {
+        size_t n = (size_t)snprintf(attachments, sizeof attachments, "attachments=resolved pass_noatt=%d pass_layers=%u layer_views=mip:base:count",
+                                  ex->pass_noatt, ex->pass_layers);
+        for (int i = 0; i < 8; i++)
+            if (ex->color[i].image && n < sizeof attachments) {
+                const VkExecTarget *t = &ex->color[i];
+                n += (size_t)snprintf(attachments + n, sizeof attachments - n, " color%d=%u:%u:%u", i, t->level, t->base_layer, t->layers);
+            }
+        if (ex->depth.image && n < sizeof attachments)
+            snprintf(attachments + n, sizeof attachments - n, " depth=%u:%u:%u", ex->depth.level, ex->depth.base_layer, ex->depth.layers);
+    } else {
+        snprintf(attachments, sizeof attachments, "attachments=unresolved pass_layers=unknown");
+    }
+    const p_bind_buf *s0 = &ex->ssbo[NVN_STAGE_GS][0], *s1 = &ex->ssbo[NVN_STAGE_GS][1], *u0 = &ex->ubo[NVN_STAGE_GS][0];
+    snprintf(bindings, sizeof bindings, "gs_ranges=recorded_pod_unresolved gs_ssbo0=%#llx:%llu:%s gs_ssbo1=%#llx:%llu:%s gs_ubo0=%#llx:%llu:%s",
+             (unsigned long long)s0->addr, (unsigned long long)s0->size, s0->addr && s0->size ? "range" : "empty_or_unset",
+             (unsigned long long)s1->addr, (unsigned long long)s1->size, s1->addr && s1->size ? "range" : "empty_or_unset",
+             (unsigned long long)u0->addr, (unsigned long long)u0->size, u0->addr && u0->size ? "range" : "empty_or_unset");
+    rt_log("geometry_context: record=%u limit=12 kind=%s op=%u prim=%d %s fence=%llu program=%llu "
+           "bound_stage_mask=%#x stage_metadata=%s present_stage_mask=%#x vs=%016llx gs=%016llx fs=%016llx "
+           "render_disabled=%d render_cond_present=%d raster_discard=%u pass_active=%d %s %s %s "
+           "clip_cull=untracked xfb=untracked guest_viewport_count=unknown guest_viewport_mask=unknown viewport0_update_provenance=untracked layer_routing=unknown",
+           ++records, kind, op, prim, draw, (unsigned long long)ex->fence,
+           ex->prog ? (unsigned long long)ex->prog->serial : 0ull, (unsigned)ex->prog_stages,
+           metadata ? "available" : "unavailable", present,
+           (unsigned long long)origin[0], (unsigned long long)origin[2], (unsigned long long)origin[1],
+           ex->render_disabled, ex->has_render_cond, (unsigned)ex->pipe.raster_discard, ex->in_pass, viewport, attachments, bindings);
+}
+
 static void bind_handles(uint64_t *dst, int cap, const p_bind_handles *b) {
     if (b->stage < 0 || b->stage >= 6 || b->first < 0 || b->n < 0 || b->n > 32 || b->first + b->n > cap) {
         warn_once(W_BIND, "a bind of %d handles at %d of stage %d is out of range: ignored", b->n, b->first, b->stage);
@@ -2660,6 +2762,7 @@ static void bind_handles(uint64_t *dst, int cap, const p_bind_handles *b) {
 }
 
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
+    geometry_context_log(ex, op, payload);
     switch (op) {
     case OP_BIND_PROGRAM: {
         const p_bind_program *b = payload;
