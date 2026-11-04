@@ -803,12 +803,16 @@ static uint32_t *spirv_add_outputs(const uint32_t *w, uint64_t n, uint32_t missi
     return o;
 }
 
-// Two fixes for what the translator declares but a shader does not use (NULL: nothing to change):
+// Remove unused translator declarations (NULL: nothing to change):
 //  - the fragment shader interlock capability and extension, which Ryujinx adds to every fragment shader when the host
 //    reports interlock support (SpirvGenerator.cs) and vk_device.c does not enable; kept when the shader interlocks;
 //  - the CullDistance[1] member of gl_PerVertex next to ClipDistance[8] (Declarations.cs CreatePerVertexStructType):
 //    9 distances exceed maxCombinedClipAndCullDistances (8 on the RX 9070). Ryujinx never accesses CullDistance; the
-//    member goes when it is the struct's last and no access chain selects it.
+//    member goes when it is the struct's last and no access chain selects it;
+//  - a GS has input and output per-vertex blocks. Remove their unused trailing
+//    ClipDistance/CullDistance members, retaining every referenced distance and
+//    every surviving member index. Declaring ClipDistance[8] in both blocks alone
+//    can exceed the entry-point combined distance limit even when unused.
 static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     enum { OP_EXTENSION = 10, OP_CAPABILITY = 17, OP_MEMBER_NAME = 6, OP_EXECUTION_MODE = 16, OP_TYPE_ARRAY = 28,
            OP_TYPE_STRUCT = 30, OP_CONSTANT = 43, OP_MEMBER_DECORATE = 72, OP_ACCESS_CHAIN = 65, OP_IN_BOUNDS_ACCESS_CHAIN = 66,
@@ -823,12 +827,14 @@ static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     CullFix *blocks = NULL;
     uint32_t nblocks = 0, *o = NULL;
     int interlock_used = 0, interlock_declared = 0, cull_ok = 0;
+    uint32_t entry_points = 0, geometry_entries = 0;
     if (!val || !elem || !len || !pointee || !var_type || !constant) goto out;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
         if (!l || i + l > n) goto out;
         const uint32_t *a = w + i + 1;
-        if (op == OP_BEGIN_INTERLOCK || op == OP_END_INTERLOCK) interlock_used = 1;
+        if (op == SPV_OP_ENTRY_POINT && l >= 3) entry_points++, geometry_entries += a[0] == 3;
+        else if (op == OP_BEGIN_INTERLOCK || op == OP_END_INTERLOCK) interlock_used = 1;
         else if (op == OP_EXECUTION_MODE && l >= 3 && a[1] >= 5366 && a[1] <= 5371) interlock_used = 1;
         else if (op == OP_CAPABILITY && l >= 2 && (a[0] == CAP_PIXEL_INTERLOCK || a[0] == CAP_SAMPLE_INTERLOCK || a[0] == CAP_RATE_INTERLOCK))
             interlock_declared = 1;
@@ -852,7 +858,7 @@ static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
         i += l;
     }
     // A GS has separate arrayed input and output per-vertex blocks. Treat each
-    // independently; a used CullDistance in either block must remain intact.
+    // independently; used bits 1/2 retain CullDistance/ClipDistance respectively.
     int in_function = 0;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
@@ -866,8 +872,13 @@ static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
             } else if ((op == OP_ACCESS_CHAIN || op == OP_IN_BOUNDS_ACCESS_CHAIN) && l >= 5 && a[2] < bound) {
                 uint32_t t = var_type[a[2]], k = 3;
                 if (t < bound && t && elem[t] == b->type) k = 4;
-                if ((t == b->type || k == 4) &&
-                    (k + 1 >= l || a[k] >= bound || !constant[a[k]] || val[a[k]] == b->cull)) b->used = 1;
+                if (t == b->type || k == 4) {
+                    if (k + 1 >= l || a[k] >= bound || !constant[a[k]]) b->used |= 3;
+                    else {
+                        if (val[a[k]] == b->cull) b->used |= 1;
+                        if (val[a[k]] == b->clip) b->used |= 2;
+                    }
+                }
             }
             if (in_function) for (uint32_t k = 0; k + 1 < l; k++) {
                 uint32_t t = a[k] < bound ? var_type[a[k]] : 0;
@@ -875,7 +886,7 @@ static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
                 // Only a direct, constant-member access proves which member is
                 // used. Whole loads, pointer copies/calls/phis and an access to
                 // the array's struct alone retain the complete block.
-                if (!((op == OP_ACCESS_CHAIN || op == OP_IN_BOUNDS_ACCESS_CHAIN) && k == 2)) b->used = 1;
+                if (!((op == OP_ACCESS_CHAIN || op == OP_IN_BOUNDS_ACCESS_CHAIN) && k == 2)) b->used |= 3;
             }
         }
         i += l;
@@ -884,7 +895,18 @@ static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     uint32_t limit = c ? c->props.limits.maxCombinedClipAndCullDistances : 8;
     for (uint32_t j = 0; j < nblocks; j++) {
         CullFix *b = &blocks[j];
-        if (!b->members || b->members > 8 || b->cull != b->members - 1 || b->clip >= b->members || b->used) continue;
+        if (!b->members || b->members > 8) continue;
+        if (entry_points == 1 && geometry_entries == 1) {
+            uint32_t tail = b->members;
+            if (b->cull == tail - 1 && !(b->used & 1)) tail--;
+            if (tail && b->clip == tail - 1 && !(b->used & 2)) tail--;
+            // Keeping a nonempty block avoids needing to delete its variables
+            // and entry-point interface references as well.
+            if (tail) b->drop = b->members - tail;
+            cull_ok |= b->drop;
+            continue;
+        }
+        if (b->cull != b->members - 1 || b->clip >= b->members || (b->used & 1)) continue;
         uint32_t clip_t = b->member_types[b->clip], cull_t = b->member_types[b->cull];
         uint32_t clip_n = clip_t < bound ? len[clip_t] : 0, cull_n = cull_t < bound ? len[cull_t] : 0;
         b->drop = clip_n && cull_n && (uint64_t)clip_n + cull_n > limit && clip_n <= limit;
@@ -902,16 +924,16 @@ static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
         int drop = 0;
         if (strip && op == OP_CAPABILITY && (a[0] == CAP_PIXEL_INTERLOCK || a[0] == CAP_SAMPLE_INTERLOCK || a[0] == CAP_RATE_INTERLOCK)) drop = 1;
         if (strip && op == OP_EXTENSION && l >= 2 && !strncmp((const char *)a, "SPV_EXT_fragment_shader_interlock", (l - 1) * 4)) drop = 1;
-        int shorten = 0;
+        uint32_t shorten = 0;
         for (uint32_t j = 0; j < nblocks; j++) if (blocks[j].drop) {
             if ((op == OP_MEMBER_DECORATE || op == OP_MEMBER_NAME) && l >= 3 &&
-                a[0] == blocks[j].type && a[1] == blocks[j].cull) drop = 1;
-            if (op == OP_TYPE_STRUCT && a[0] == blocks[j].type) shorten = 1;
+                a[0] == blocks[j].type && a[1] >= blocks[j].members - blocks[j].drop) drop = 1;
+            if (op == OP_TYPE_STRUCT && a[0] == blocks[j].type) shorten = blocks[j].drop;
         }
         if (!drop) {
             memcpy(o + on, w + i, l * 4);
-            if (shorten) o[on] = (l - 1) << 16 | op;   // last member gone
-            on += shorten ? l - 1 : l;
+            if (shorten) o[on] = (l - shorten) << 16 | op;
+            on += l - shorten;
         }
         i += l;
     }
@@ -1196,6 +1218,13 @@ static const char *geometry_validate(const VkPipeState *s, const VkPhysicalDevic
         if ((gi.builtin_mask >> i & 1) && gi.builtin[i] != scalar_int) return "geometry invocation/primitive ID type mismatch";
     if (!geometry_per_vertex(&vo, limits) || !geometry_per_vertex(&gi, limits) || !geometry_per_vertex(&go, limits))
         return "geometry per-vertex built-in type/device limit";
+    uint64_t distance_components = 0;
+    for (unsigned i = 3; i <= 4; i++) {
+        if (gi.builtin_mask >> i & 1) distance_components += gi.builtin[i] >> 32 & 0x3fffffff;
+        if (go.builtin_mask >> i & 1) distance_components += go.builtin[i] >> 32 & 0x3fffffff;
+    }
+    if (distance_components > limits->maxCombinedClipAndCullDistances)
+        return "geometry combined input/output distance device limit";
     if (!geometry_link(&vo, &gi)) return "vertex-to-geometry varying mismatch";
     uint64_t need = gi.builtin_mask & ~generated;
     if ((need & ~vo.builtin_mask) || !(go.builtin_mask & 1)) return "geometry per-vertex built-in mismatch";

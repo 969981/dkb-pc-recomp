@@ -7,6 +7,7 @@ static VkShaderStageFlags captured_stages;
 static VkPrimitiveTopology captured_topology;
 static uint32_t captured_count, captured_binding[8][128], captured_nbinding[8];
 static uint32_t captured_outputs[8];
+static unsigned captured_clip_declarations[8], captured_cull_declarations[8];
 static VkCtx fixture_context;
 static const char *output_directory;
 VkCaps vk_caps;
@@ -29,6 +30,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device,
     unsigned index = ++made;
     if (fail_module && index == fail_module) return VK_ERROR_OUT_OF_HOST_MEMORY;
     CHECK(index < 8);
+    captured_clip_declarations[index]=captured_cull_declarations[index]=0;
     if(!pipeline_calls) {
         char path[4096]; snprintf(path,sizeof path,"%s/module%u.spv",output_directory,index);
         FILE *f=fopen(path,"wb"); if(!f)abort();
@@ -41,6 +43,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device,
         CHECK(len && len<=info->codeSize/4-i);
         if (!len || len>info->codeSize/4-i) break;
         if(op==15 && len>=3) reflected.stage=w[i+1]==3?GFX_STAGE_GS:w[i+1]==4?GFX_STAGE_FS:GFX_STAGE_VS;
+        if(op==72 && len==5 && w[i+3]==11) {
+            captured_clip_declarations[index]+=w[i+4]==3;
+            captured_cull_declarations[index]+=w[i+4]==4;
+        }
         if (op==71 && len==4 && w[i+2]==33) {
             CHECK(captured_nbinding[index]<128);
             captured_binding[index][captured_nbinding[index]++]=w[i+3];
@@ -108,13 +114,25 @@ static void topology_tests(void) {
 }
 
 static void cull_tests(const char *dir) {
-    static const char *uses[]={"unused","direct","alias","whole","derived"};
-    for(unsigned k=0;k<5;k++) {
+    static const char *uses[]={"unused","direct","alias","whole","derived",
+        "clip","clip_alias","clip_derived","clip_dynamic","cull_dynamic"};
+    for(unsigned k=0;k<sizeof uses/sizeof *uses;k++) {
         char name[64]; snprintf(name,sizeof name,"cull-%s",uses[k]);
         GfxShader s; load_shader(&s,dir,name,GFX_STAGE_GS);
         uint64_t count=0; uint32_t *fixed=spirv_fixup(s.spirv,s.words,&count);
-        if(!k) { CHECK(fixed && count<s.words); }
+        if(!k || k==5 || k==8) { CHECK(fixed && count<s.words); }
         else CHECK(!fixed); // Static, aliased or whole-struct use retains CullDistance.
+        if(fixed && (!k || k==5)) {
+            unsigned clip=0,cull=0;
+            for(uint64_t i=5;i<count;i+=fixed[i]>>16)
+                if((fixed[i]&65535)==72 && fixed[i]>>16==5 && fixed[i+3]==11) {
+                    clip+=fixed[i+4]==3; cull+=fixed[i+4]==4;
+                }
+            CHECK(!cull && clip==(k==5));
+            char path[4096];snprintf(path,sizeof path,"%s/fixed-%s.spv",dir,name);
+            FILE *f=fopen(path,"wb");if(!f)abort();
+            if(fwrite(fixed,4,(size_t)count,f)!=(size_t)count || fclose(f))abort();
+        }
         free(fixed); free(s.spirv);
     }
 }
@@ -185,6 +203,9 @@ static void descriptor_tests(VkPipeState *s) {
     CHECK(captured_count==3 && captured_stages==(VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_GEOMETRY_BIT|VK_SHADER_STAGE_FRAGMENT_BIT));
     CHECK(captured_topology==VK_PRIMITIVE_TOPOLOGY_POINT_LIST);
     CHECK(made==3 && destroyed==3 && pipeline_calls==1);
+    // These original programs never read or write distance arrays. Both GS
+    // input/output boilerplate arrays must be absent from the uploaded module.
+    CHECK(captured_clip_declarations[2]==0 && captured_cull_declarations[2]==0);
     CHECK(captured_outputs[3]==s->vs->out_mask); // GS path must not repair VS→FS.
     for(unsigned module=1;module<=3;module++) {
         unsigned expected=module==1?fs_off:module==2?gs_off:0;
@@ -229,6 +250,11 @@ int main(int argc,char **argv) {
     VkPipeState s={.vs=&vs,.fs=&fs,.gs=&gs,.prim=NVN_DRAW_PRIMITIVE_POINTS,.samples=1};
     s.poly.mode=NVN_POLYGON_MODE_FILL;
     interface_tests(&s); descriptor_tests(&s); serialization_tests(&s);
+    GfxShader live_clip; load_shader(&live_clip,argv[1],"gs_live_clip",GFX_STAGE_GS);
+    s.gs=&live_clip;
+    const char *limit=geometry_validate(&s,&fixture_context.props.limits);
+    CHECK(limit && strstr(limit,"combined input/output distance device limit"));
+    s.gs=&gs;free(live_clip.spirv);
     GfxShader primitive; load_shader(&primitive,argv[1],"ps_primitive",GFX_STAGE_FS);
     s.fs=&primitive; CHECK(geometry_validate(&s,&fixture_context.props.limits));
     s.fs=&fs; free(primitive.spirv);

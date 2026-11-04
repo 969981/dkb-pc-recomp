@@ -112,6 +112,13 @@ def cull_module(use):
     for member, builtin in ((0, 0), (1, 3), (2, 4)):
         op(72, 11, member, 11, builtin)
     op(71, 17, 11, 0)
+    if use.endswith('dynamic'):
+        op(71, 44, 11, 8)  # InvocationId, bounded to zero by Invocations1.
+        # Append this interface variable to the original entry point.
+        entry = next(i for i in range(5, len(w)) if w[i] & 65535 == 15)
+        end = entry + (w[entry] >> 16)
+        w[entry] += 1 << 16
+        w.insert(end, 44)
     op(19, 1); op(33, 2, 1); op(22, 3, 32); op(23, 4, 3, 4); op(21, 5, 32, 0)
     for id, value in ((6, 0), (7, 1), (8, 8), (21, 2)):
         op(43, 5, id, value)
@@ -119,8 +126,19 @@ def cull_module(use):
     op(32, 13, 1, 12); op(59, 13, 14, 1); op(32, 15, 1, 3)
     op(32, 16, 3, 4); op(59, 16, 17, 3); op(32, 22, 1, 11)
     op(43, 3, 18, 0); op(43, 3, 19, 0x3f800000); op(44, 4, 20, 18, 18, 18, 19)
+    if use.endswith('dynamic'):
+        op(32, 45, 1, 5); op(59, 45, 44, 1)
     op(54, 1, 30, 0, 2); op(248, 31)
-    if use == 'direct':
+    if use.endswith('dynamic'):
+        op(61, 5, 43, 44)
+        op(65, 15, 41, 14, 6, 7 if use.startswith('clip') else 21, 43); op(61, 3, 42, 41)
+    elif use == 'clip':
+        op(65, 15, 41, 14, 6, 7, 6); op(61, 3, 42, 41)
+    elif use == 'clip_alias':
+        op(83, 13, 40, 14); op(65, 15, 41, 40, 6, 7, 6); op(61, 3, 42, 41)
+    elif use == 'clip_derived':
+        op(65, 22, 40, 14, 6); op(65, 15, 41, 40, 7, 6); op(61, 3, 42, 41)
+    elif use == 'direct':
         op(65, 15, 41, 14, 6, 21, 6); op(61, 3, 42, 41)
     elif use == 'alias':
         op(83, 13, 40, 14); op(65, 15, 41, 40, 6, 21, 6); op(61, 3, 42, 41)
@@ -204,6 +222,21 @@ def main():
         jobs.append(job)
     for input in ('lines', 'lines_adjacency', 'triangles', 'triangles_adjacency'):
         jobs.append(dict(jobs[2], key='gs_' + input, gs_input=input))
+    code = (args.out / 'stage2.code').read_bytes()
+    words = struct.unpack('<' + 'Q' * ((len(code) - 80) // 8), code[80:])
+    ops = [word for i, word in enumerate(words) if i % 4]
+    ops = ops[:ops.index(original.EXIT)]
+    live = [original.movi(12, 0)]
+    for word in ops:
+        if word >> 51 == original.out_vertex() >> 51 and (word >> 39) & 1:
+            # Carry all eight actually used input clip distances into every
+            # emitted vertex. They must never be deleted as boilerplate.
+            for address in (0x2c0, 0x2d0):
+                live += [original.ald(8, address, 12), original.ast(8, address)]
+        live.append(word)
+    path = args.out / 'gs_live_clip.code'
+    path.write_bytes(code[:80] + original.framed(live + [original.EXIT]))
+    jobs.append(dict(jobs[2], key='gs_live_clip', code=str(path.resolve())))
     request = ''.join(json.dumps({'job': job, 'out': str(args.out.resolve())}) + '\n' for job in jobs)
     (args.out / 'request.jsonl').write_text(request)
     result = run([args.translator.resolve(), '--serve'], args.out / 'translate.log', input=request)
@@ -231,7 +264,7 @@ def main():
     names.append('ps_primitive')
     for name in names:
         run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'{name}.spv'], args.out / f'{name}-val.log')
-    for use in ('unused', 'direct', 'alias', 'whole', 'derived'):
+    for use in ('unused', 'direct', 'alias', 'whole', 'derived', 'clip', 'clip_alias', 'clip_derived', 'clip_dynamic', 'cull_dynamic'):
         path = args.out / f'cull-{use}.spv'
         path.write_bytes(cull_module(use))
         run([args.spirv_val, '--target-env', 'vulkan1.3', path], args.out / f'cull-{use}-val.log')
@@ -250,6 +283,8 @@ def main():
         raise AssertionError('legacy version-3 key bytes changed')
     for index in (1, 2, 3):
         run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'module{index}.spv'], args.out / f'module{index}-val.log')
+    for use in ('unused', 'clip'):
+        run([args.spirv_val, '--target-env', 'vulkan1.3', args.out / f'fixed-cull-{use}.spv'], args.out / f'fixed-cull-{use}-val.log')
     manifest = {'optimization': args.opt, 'result': output.strip(), 'providers': [
         'Vulkan module/pipeline creation spies; no loader or device',
         'owned translated modules plus exact production SPIR-V interface reflector',
