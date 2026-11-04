@@ -1,0 +1,29 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitConversion.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitConversion.cs
+@@ -179,7 +179,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             Instruction fpType = srcType.ToInstFPType();
+ 
+-            bool isSignedInt = dstType is IDstFmt.S16 or IDstFmt.S32 or IDstFmt.S64;
++            // Destination size 0 is not a Maxwell F2I format. DKB Recomp's Ampere lowering (lower_to_maxwell.h, F2I
++            // byte mode, from Eglantine) emits it for F2I.S8 and F2I.U8, the sign in bit 12: IDstFmt 4 is signed,
++            // 0 unsigned. Convert and saturate to the 8-bit range, as the Ampere instruction does. Read as an unsigned
++            // format it clamped every negative byte to 0: Bananza packs skinned tangents as SNORM bytes this way.
++            bool isByte = (int)dstType is 0 or 4;
++            bool isSignedInt = dstType is IDstFmt.S16 or IDstFmt.S32 or IDstFmt.S64 || (int)dstType == 4;
+             bool isSmallInt = dstType is IDstFmt.U16 or IDstFmt.S16;
+ 
+             Operand srcB = context.FPAbsNeg(src, absolute, negate, fpType);
+@@ -223,6 +228,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                     ? context.IClampS32(srcB, Const(min), Const(max))
+                     : context.IClampU32(srcB, Const(min), Const(max));
+             }
++            else if (isByte)
++            {
++                srcB = isSignedInt
++                    ? context.IClampS32(srcB, Const(sbyte.MinValue), Const(sbyte.MaxValue))
++                    : context.IClampU32(srcB, Const(byte.MinValue), Const(byte.MaxValue));
++            }
+ 
+             Operand dest = GetDest(rd);
+ 
