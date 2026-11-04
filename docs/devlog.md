@@ -3,6 +3,20 @@
 Milestones of DKB Recomp, newest first. The plan they follow is [bananza-plan.md](bananza-plan.md); open work is in
 the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
+## 4 November 2026
+
+- **Geometry stages replay behind a flag** (#51, #52, #53, #54, #57, #58 by monsterlag, 5ff620b,
+  [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)). With `TOTK_EXPERIMENTAL_GEOMETRY=1`, draws with
+  an ordinary geometry stage replay through it, and `--probe-vkgeometry` checks a points-to-triangle stage and the
+  indirect record it writes on the GPU. The translator accepts a portable passthrough subset when the request names
+  which varyings pass through (patch 0016). Shader-cache contracts are read only from root fields. Ampere program
+  capture no longer stops at an EXIT whose second predicate can fall through, a check Eglantine's copy has too. Two
+  opt-in tools help with the terrain: `DKB_GEOMETRY_CONTEXT=1` logs the first geometry draws and their buffers, and
+  `tools/geometry_body_footprint.py` reports which attributes a geometry stage reads and writes. The terrain is
+  still black, because its passthrough stage is rejected by the replay until #55. With the flag off, the mining
+  tunnel replays in 4.91 ms, as before. With it on, the replay takes about 0.95 ms more even though no geometry
+  stage runs there.
+
 ## 3 November 2026
 
 - **The terrain record reset costs half as much** (9b12091). The reset used a full barrier before each of its
