@@ -69,9 +69,11 @@ def program(case):
 class ScalarModule:
     """Execute only the authored scalar, acyclic, void-call control programs.
 
-    Exact leaf memory; undefined/OOB data, unsupported operations/types/loops,
-    recursion and excessive steps fail loudly. This is not a Vulkan memory model,
-    general SPIR-V engine, floating-point evaluator or hardware viewport oracle.
+    Loads require initialized leaves; SSBO stores require owned record leaves.
+    Output/Private/Function stores rely on these validated static fixture shapes,
+    without a general type-shape or store-bounds proof. Unsupported operations,
+    result types, loops, recursion and excessive steps fail loudly. This is not a
+    Vulkan memory model, general engine, float evaluator or hardware viewport oracle.
     """
     def __init__(self, data, report):
         self.ops = list(geometry.instructions(data))
