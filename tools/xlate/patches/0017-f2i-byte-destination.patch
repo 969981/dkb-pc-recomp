@@ -5,25 +5,33 @@
              Instruction fpType = srcType.ToInstFPType();
  
 -            bool isSignedInt = dstType is IDstFmt.S16 or IDstFmt.S32 or IDstFmt.S64;
-+            // Destination size 0 is not a Maxwell F2I format. DKB Recomp's Ampere lowering (lower_to_maxwell.h, F2I
-+            // byte mode, from Eglantine) emits it for F2I.S8 and F2I.U8, the sign in bit 12: IDstFmt 4 is signed,
-+            // 0 unsigned. Convert and saturate to the 8-bit range, as the Ampere instruction does. Read as an unsigned
-+            // format it clamped every negative byte to 0: Bananza packs skinned tangents as SNORM bytes this way.
++            // Destination size 0 is the 8-bit destination, signed by bit 12: IDstFmt 4 is S8 and 0 is U8. DKB Recomp's
++            // Ampere lowering (lower_to_maxwell.h, F2I byte mode, from Eglantine) emits it for F2I.S8 and F2I.U8, and
++            // Eglantine's Maxwell F2I translation models it as I8. Without byte handling here, IDstFmt 4 read as
++            // unsigned: every negative byte became 0, which zeroed the SNORM tangents Bananza's skinning pass packs.
 +            bool isByte = (int)dstType is 0 or 4;
 +            bool isSignedInt = dstType is IDstFmt.S16 or IDstFmt.S32 or IDstFmt.S64 || (int)dstType == 4;
              bool isSmallInt = dstType is IDstFmt.U16 or IDstFmt.S16;
  
              Operand srcB = context.FPAbsNeg(src, absolute, negate, fpType);
-@@ -223,6 +228,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
-                     ? context.IClampS32(srcB, Const(min), Const(max))
-                     : context.IClampU32(srcB, Const(min), Const(max));
-             }
-+            else if (isByte)
+@@ -193,7 +198,19 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                 _ => srcB,
+             };
+ 
+-            if (!isSignedInt)
++            if (isByte)
 +            {
-+                srcB = isSignedInt
-+                    ? context.IClampS32(srcB, Const(sbyte.MinValue), Const(sbyte.MaxValue))
-+                    : context.IClampU32(srcB, Const(byte.MinValue), Const(byte.MaxValue));
++                // Saturate in the floating-point domain, before the conversion: a value outside the 32-bit
++                // intermediate's range, or an infinity, has no defined conversion result, so an integer clamp after
++                // it could not saturate. NaN converts to 0, as Eglantine's I8 path selects. With NaN removed first,
++                // the maximum and minimum below are defined for every input.
++                Operand Bound(double value) => srcType == DstFmt.F64 ? context.PackDouble2x32(value) : ConstF((float)value);
++
++                srcB = context.ConditionalSelect(context.IsNan(srcB, fpType), Bound(0), srcB);
++                srcB = context.FPMaximum(srcB, Bound(isSignedInt ? sbyte.MinValue : byte.MinValue), fpType);
++                srcB = context.FPMinimum(srcB, Bound(isSignedInt ? sbyte.MaxValue : byte.MaxValue), fpType);
 +            }
- 
-             Operand dest = GetDest(rd);
- 
++            else if (!isSignedInt)
+             {
+                 // Negative float to uint cast is undefined, so we clamp the value before conversion.
+                 Operand c0 = srcType == DstFmt.F64 ? context.PackDouble2x32(0.0) : ConstF(0);

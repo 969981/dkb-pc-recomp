@@ -1,10 +1,11 @@
 """Translate an owned Maxwell fragment shader with 8-bit F2I destinations and execute the emitted conversions.
 
 runtime/third_party/eglantine/shader_recompiler/frontend/ampere/lower_to_maxwell.h (F2I byte mode) lowers Ampere
-F2I.S8 and F2I.U8 to a Maxwell F2I with destination size 0, which Maxwell itself does not define; the sign is bit 12.
-Bananza packs skinned tangents as SNORM bytes through F2I.S8, and a translator that read size 0 as unsigned stored
-every negative component as 0, which turned whole tangents into zero vectors and their normalisation into NaN
-(tools/xlate/patches/0017-f2i-byte-destination.patch).
+F2I.S8 and F2I.U8 to a Maxwell F2I with the 8-bit destination (size 0), signed by bit 12. Without byte handling the
+translator read that destination as unsigned and stored every negative component as 0: Bananza packs skinned
+tangents as SNORM bytes through F2I.S8, so whole tangents became zero vectors and their normalisation NaN
+(tools/xlate/patches/0017-f2i-byte-destination.patch). The patch saturates in the floating-point domain before the
+conversion, with NaN as 0, so inputs beyond the 32-bit intermediate and infinities saturate too.
 
 The fixture loads c[0][0] (dynamic, so nothing folds) and converts it four ways, as lower_to_maxwell.h encodes them:
 R0 F2I.S8, R1 F2I.U8, R2 F2I.S16 and R3 F2I.S32, all truncating. The test executes the emitted SPIR-V for each input
@@ -73,25 +74,22 @@ def s32(u):
 
 def evaluate(code, c0):
     """Run the straight-line fragment body on raw 32-bit words; returns the four output words. Booleans are 0 or 1.
-    Covers the default translator and --defined-float-minmax, whose patch 0014 emits the unsigned clamp's FMax as
+    A float-to-integer conversion of a NaN or of a value outside its 32-bit result range is undefined in SPIR-V: it
+    yields None, which every later operation carries, so a result built on one cannot pass for a defined value.
+    Covers the default translator and --defined-float-minmax, whose patch 0014 emits float minimum and maximum as
     integer selection."""
-    types, consts, ptr_storage, var_storage, values, outputs = {}, {}, {}, {}, {}, {}
+    consts, var_storage, values, outputs = {}, {}, {}, {}
     glsl, chains, body = None, {}, False
 
     def val(x):
         return values[x] if x in values else consts[x]
 
+    def put(result, args, fn):
+        values[result] = None if any(v is None for v in args) else fn(*args)
+
     for op, a in code:
         if op == 11 and bytes(struct.pack('<%dI' % (len(a) - 1), *a[1:])).rstrip(b'\0') == b'GLSL.std.450':
             glsl = a[0]
-        elif op == 21:
-            types[a[0]] = ('int', a[2])
-        elif op == 22:
-            types[a[0]] = ('float', 0)
-        elif op == 23:
-            types[a[0]] = ('vector', a[2])
-        elif op == 32:
-            ptr_storage[a[0]] = a[1]
         elif op == 43:
             consts[a[1]] = a[2]
         elif op == 59:
@@ -118,37 +116,41 @@ def evaluate(code, c0):
             else:
                 values[('var', a[0])] = values[a[1]]
         elif op == 124:  # OpBitcast keeps the bits
-            values[a[1]] = val(a[2])
-        elif op in (110, 109):   # OpConvertFToS, OpConvertFToU: the fixture's inputs stay in range here
-            x = f32(val(a[2]))
-            assert not math.isnan(x), 'conversion reached with a NaN'
-            values[a[1]] = int(x) & 0xffffffff
+            put(a[1], [val(a[2])], lambda v: v)
+        elif op == 110:  # OpConvertFToS
+            put(a[1], [val(a[2])], lambda v: None if math.isnan(f32(v)) or not -2 ** 31 <= f32(v) < 2 ** 31
+                else int(f32(v)) & 0xffffffff)
+        elif op == 109:  # OpConvertFToU
+            put(a[1], [val(a[2])], lambda v: None if math.isnan(f32(v)) or not 0 <= f32(v) < 2 ** 32 else int(f32(v)))
+        elif op == 156:  # OpIsNan
+            put(a[1], [val(a[2])], lambda v: int(math.isnan(f32(v))))
         elif op == 169:  # OpSelect
-            values[a[1]] = val(a[3]) if val(a[2]) else val(a[4])
-        elif op in (170, 171, 172, 173):   # OpIEqual, OpINotEqual, OpUGreaterThan, OpSGreaterThan
-            x, y = val(a[2]), val(a[3])
-            values[a[1]] = int(x == y if op == 170 else x != y if op == 171 else x > y if op == 172 else
-                               s32(x) > s32(y))
+            put(a[1], [val(a[2])], lambda c: val(a[3]) if c else val(a[4]))
+        elif 170 <= op <= 179:   # OpIEqual, OpINotEqual, then unsigned/signed >, >=, <, <=
+            compare = {170: lambda x, y: x == y, 171: lambda x, y: x != y,
+                       172: lambda x, y: x > y, 173: lambda x, y: s32(x) > s32(y),
+                       174: lambda x, y: x >= y, 175: lambda x, y: s32(x) >= s32(y),
+                       176: lambda x, y: x < y, 177: lambda x, y: s32(x) < s32(y),
+                       178: lambda x, y: x <= y, 179: lambda x, y: s32(x) <= s32(y)}[op]
+            put(a[1], [val(a[2]), val(a[3])], lambda x, y: int(compare(x, y)))
         elif op in (197, 198, 199):   # OpBitwiseOr, OpBitwiseXor, OpBitwiseAnd
-            x, y = val(a[2]), val(a[3])
-            values[a[1]] = x | y if op == 197 else x ^ y if op == 198 else x & y
+            put(a[1], [val(a[2]), val(a[3])], lambda x, y: x | y if op == 197 else x ^ y if op == 198 else x & y)
         elif op == 200:  # OpNot
-            values[a[1]] = ~val(a[2]) & 0xffffffff
+            put(a[1], [val(a[2])], lambda v: ~v & 0xffffffff)
         elif op == 12 and a[2] == glsl:
             inst, args = a[3], [val(x) for x in a[4:]]
             if inst == 3:      # Trunc
-                values[a[1]] = u32(math.trunc(f32(args[0]))) if math.isfinite(f32(args[0])) else args[0]
-            elif inst == 40:   # FMax (no NaN reaches it in these vectors)
-                values[a[1]] = u32(max(f32(args[0]), f32(args[1])))
-            elif inst == 37:   # FMin
-                values[a[1]] = u32(min(f32(args[0]), f32(args[1])))
+                put(a[1], args, lambda v: u32(math.trunc(f32(v))) if math.isfinite(f32(v)) else v)
+            elif inst in (37, 40):   # FMin, FMax: undefined with a NaN operand
+                put(a[1], args, lambda x, y: None if math.isnan(f32(x)) or math.isnan(f32(y)) else
+                    u32((min if inst == 37 else max)(f32(x), f32(y))))
+            elif inst == 43:   # FClamp: undefined with a NaN operand
+                put(a[1], args, lambda x, lo, hi: None if any(math.isnan(f32(v)) for v in (x, lo, hi)) else
+                    u32(min(max(f32(x), f32(lo)), f32(hi))))
             elif inst == 45:   # SClamp
-                v = min(max(s32(args[0]), s32(args[1])), s32(args[2]))
-                values[a[1]] = v & 0xffffffff
+                put(a[1], args, lambda x, lo, hi: min(max(s32(x), s32(lo)), s32(hi)) & 0xffffffff)
             elif inst == 44:   # UClamp
-                values[a[1]] = min(max(args[0], args[1]), args[2])
-            elif inst == 43:   # FClamp
-                values[a[1]] = u32(min(max(f32(args[0]), f32(args[1])), f32(args[2])))
+                put(a[1], args, lambda x, lo, hi: min(max(x, lo), hi))
             else:
                 raise AssertionError('unsupported GLSL.std.450 instruction %d' % inst)
         elif op in (248, 253, 56, 249):   # OpLabel, OpReturn, OpFunctionEnd, OpBranch
@@ -160,6 +162,11 @@ def evaluate(code, c0):
 
 
 def saturate(x, lo, hi):
+    """The Ampere conversion: truncate, saturate to [lo, hi]; NaN gives 0."""
+    if math.isnan(x):
+        return 0
+    if math.isinf(x):
+        return hi if x > 0 else lo
     return max(lo, min(hi, math.trunc(x)))
 
 
@@ -182,20 +189,27 @@ def main():
     if args.spirv_val:
         subprocess.run([str(args.spirv_val.resolve()), '--target-env', 'vulkan1.2', str(spirv)], check=True)
     code = module(spirv)
-    failures, checks = 0, 0
-    # Tangent-like values (component x 127, truncated), zero, the ends of each range and beyond them. Values outside
-    # the 32-bit range are left out: SPIR-V leaves that conversion undefined, and this patch does not change it.
+    failures, checks, skipped = 0, 0, 0
+    # Tangent-like values (component x 127, truncated), zero, the ends of each range, beyond them, beyond the 32-bit
+    # intermediate (2^31, 2^32, 1e20), infinities and NaN. Every byte result must be defined and saturated. The S16
+    # and S32 controls are compared only where their conversion is defined (finite and inside the 32-bit range):
+    # this patch does not change them.
     for x in (-63.5, -127.0, -1.0, -0.75, 0.0, 0.5, 1.0, 63.5, 127.0, 128.0, 200.0, -129.0, -300.0, 255.0, 256.0,
-              40000.0, -40000.0):
+              40000.0, -40000.0, 2.0 ** 31, 2.0 ** 32, 1e20, -1e20, math.inf, -math.inf, math.nan):
         got = evaluate(code, x)
         want = [saturate(x, -128, 127) & 0xffffffff, saturate(x, 0, 255), saturate(x, -32768, 32767) & 0xffffffff,
                 saturate(x, -2 ** 31, 2 ** 31 - 1) & 0xffffffff]
+        defined32 = math.isfinite(x) and -2 ** 31 <= x < 2 ** 31
         for name, g, w in zip(('S8', 'U8', 'S16', 'S32'), got, want):
+            if name in ('S16', 'S32') and not defined32:
+                skipped += 1
+                continue
             checks += 1
             if g != w:
                 failures += 1
-                print('FAIL F2I.%s(%r): got %d, want %d' % (name, x, s32(g), s32(w)))
-    print('f2i byte: %d checks, %d failures' % (checks, failures))
+                print('FAIL F2I.%s(%r): got %s, want %d' % (name, x, 'an undefined conversion' if g is None
+                                                              else s32(g), s32(w)))
+    print('f2i byte: %d checks, %d failures (%d undefined 16/32-bit controls skipped)' % (checks, failures, skipped))
     return 1 if failures else 0
 
 
