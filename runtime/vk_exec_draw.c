@@ -2358,19 +2358,22 @@ static int experimental_geometry_on(void) {
 // DKB_NATIVE_GS does, for the passthrough subset checked first.
 static int geometry_draw(VkExec *ex, uint32_t prim) {
     geometry_input = 0;
-    if (native_gs_on() && ex->prog) {   // anything but the passthrough subset below keeps the vertex and fragment path
+    if (native_gs_on() && ex->prog) {   // native failures keep VS/FS; ordinary stages retain their separate opt-in
         const uint8_t *ctl, *code, *fctl, *fcode;
         uint32_t len, flen, sph[5];
-        if (!find_stage(ex->prog, NVN_STAGE_GS, &ctl, &code, &len) || !nvn2_origin(code) || len < 0x30 + 0x60 ||
-            !find_stage(ex->prog, NVN_STAGE_FS, &fctl, &fcode, &flen) ||
-            vk_geometry_input(prim) != GFX_GEOMETRY_TRIANGLES) return 0;
-        memcpy(sph, code + 0x30, sizeof sph);
-        if (!(sph[0] & (1u << 24)) || sph[2] >> 24 != 1 || (sph[3] >> 24 & 15) != 7 || (sph[4] & 0xfff) != 1) {
-            warn_once(W_GEOMETRY, "native GS: a stage outside the passthrough subset keeps the vertex and fragment path");
-            return 0;
+        if (!find_stage(ex->prog, NVN_STAGE_GS, &ctl, &code, &len)) return 0;
+        if (nvn2_origin(code)) {
+            if (len < 0x30 + 0x60 || !find_stage(ex->prog, NVN_STAGE_FS, &fctl, &fcode, &flen) ||
+                vk_geometry_input(prim) != GFX_GEOMETRY_TRIANGLES) return 0;
+            memcpy(sph, code + 0x30, sizeof sph);
+            if (!(sph[0] & (1u << 24)) || sph[2] >> 24 != 1 || (sph[3] >> 24 & 15) != 7 || (sph[4] & 0xfff) != 1) {
+                warn_once(W_GEOMETRY, "native GS: a stage outside the passthrough subset keeps the vertex and fragment path");
+                return 0;
+            }
+            geometry_input = GFX_GEOMETRY_TRIANGLES;
+            return 1;
         }
-        geometry_input = GFX_GEOMETRY_TRIANGLES;
-        return 1;
+        // An ordinary GS still follows its own opt-in and validation below.
     }
     if (!experimental_geometry_on() || !ex->prog) return 0;
     int found = 0, portable = 0;
