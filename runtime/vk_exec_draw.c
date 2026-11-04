@@ -829,12 +829,14 @@ static int native_gs_on(void) {
 static const GfxShader *native_gs_vs, *native_gs_fs;   // the draw's stages, set before its geometry lookup
 
 static const uint8_t *native_gs_control(const uint8_t *ctl, const uint8_t *code, uint32_t len) {
-    static struct { const uint8_t *ctl; uint32_t mask; uint8_t *copy; } made[256];
+    // nvn2_lower.cpp::nvn2_lower keeps these source controls for the process lifetime. Keep the packed copies
+    // just as long, including after the first 256 contexts; shader_for borrows them even on shader-cache hits.
+    static struct { const uint8_t *ctl; uint32_t mask; uint8_t *copy; } *made;
+    static size_t count, capacity;
     GfxShaderIo io[32];
     const uint32_t fs_in = gfx_shader_inputs(native_gs_fs, io), vs_out = gfx_shader_outputs(native_gs_vs, io);
     const uint32_t mask = fs_in & vs_out;
-    const unsigned capacity = sizeof made / sizeof *made;
-    for (unsigned i = 0; i < capacity && made[i].ctl; i++)
+    for (size_t i = 0; i < count; i++)
         if (made[i].ctl == ctl && made[i].mask == mask) return made[i].copy;
     uint32_t skip[8];
     skip[0] = 0x0fffffffu;
@@ -849,14 +851,19 @@ static const uint8_t *native_gs_control(const uint8_t *ctl, const uint8_t *code,
         free(copy);
         return NULL;
     }
-    for (unsigned i = 0; i < capacity; i++)
-        if (!made[i].ctl) {
-            made[i].ctl = ctl, made[i].mask = mask, made[i].copy = copy;
-            rt_log("native GS: stage %016llx forwards locations %#x (vertex writes %#x, fragment reads %#x)",
-                   (unsigned long long)nvn2_origin(code), mask, vs_out, fs_in);
-            return copy;
-        }
-    return copy;   // table full: still valid, only built again on the next lookup
+    if (count == capacity) {
+        if (capacity > SIZE_MAX / 2) { free(copy); return NULL; }
+        size_t next = capacity ? capacity * 2 : 256;
+        if (next > SIZE_MAX / sizeof *made) { free(copy); return NULL; }
+        void *grown = realloc(made, next * sizeof *made);
+        if (!grown) { free(copy); return NULL; }
+        made = grown, capacity = next;
+    }
+    made[count].ctl = ctl, made[count].mask = mask, made[count].copy = copy;
+    count++;
+    rt_log("native GS: stage %016llx forwards locations %#x (vertex writes %#x, fragment reads %#x)",
+           (unsigned long long)nvn2_origin(code), mask, vs_out, fs_in);
+    return copy;
 }
 
 // *present: the program has this stage. Returns NULL when it has not or the translation failed. pending (graphics
