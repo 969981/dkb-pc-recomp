@@ -67,7 +67,7 @@ def source():
 #define CODE_SKIP 0x30
 #define COUNT(a) (sizeof(a)/sizeof(*(a)))
 static int host_f64=1;
-static uint32_t host_sbuf=256, host_sg[3]={32,32,32}, host_gather;
+static uint32_t host_sbuf=256, host_sg[3]={32,32,32}, host_gather, host_gs_sg;
 static const char *tex_names[]={"unused"}, *fmt_names[]={"unused"};
 static char cache_dir[]=".";
 #define PATH_CAP 1024
@@ -75,17 +75,13 @@ enum { PACK_SPV=1, PACK_RES=2 };
 static uint32_t pack_n;
 static unsigned cache_reads;
 typedef int UseMask;
-typedef struct { const char *stage_name; uint32_t length, c1_len; const uint8_t *c1;
-                 uint8_t code_hash[32], key[32], iid[32]; int final, require_c0; } Req;
+/* Production Req and private GfxShader layouts are inserted below. */
 void rt_log(const char *message, ...) { (void)message; }
 static int fmt_code(const char *name) { (void)name; abort(); } // This fixture has no images.
 static void reflect_spirv(GfxShader *s) { (void)s; }
 static const char *error;
 static int fail(const char *why, const char *detail) { (void)detail; error = why; return 0; }
-static int build_code_hash(int stage, const uint8_t *control, const uint8_t *code, uint64_t length,
-                           const uint8_t *c1, uint32_t c1_len, uint8_t *hash) {
-    (void)stage; (void)control; (void)code; (void)length; (void)c1; (void)c1_len; (void)hash; return 1;
-}
+/* The hash provider keeps the production signature for older-source compatibility. */
 static void paths(void) {}
 static int use_find(const uint8_t *hash, UseMask *mask) { (void)hash; (void)mask; return 0; }
 static void build_key(const uint8_t *hash, const GfxShaderAnswers *answers, const UseMask *mask,
@@ -240,19 +236,39 @@ int main(void) {
     return failures != 0;
 }
 '''
+    req_start = production.index('typedef struct {', production.index('// A validated request:'))
+    req = production[req_start:production.index('} Req;', req_start) + len('} Req;')]
+    shader = function(production, 'struct GfxShader {') + ';'
+    before = before.replace('/* Production Req and private GfxShader layouts are inserted below. */', req + '\n' + shader)
+    hash_start = production.index('static int build_code_hash(')
+    hash_signature = production[hash_start:production.index('{', hash_start)]
+    extra = '(void)geometry_input;' if 'geometry_input' in hash_signature else ''
+    # Use the actual parameter names; newer source calls the length code_size.
+    size_name = 'code_size' if 'code_size' in hash_signature else 'length'
+    hash_provider = hash_signature + '{ (void)stage; (void)control; (void)code; (void)' + size_name + ';' + extra + r'''
+    (void)c1; (void)c1_len; (void)hash; return 1;
+}
+'''
+    before = before.replace('/* The hash provider keeps the production signature for older-source compatibility. */', hash_provider)
     pieces = [function(production, name) for name in (
         'static void json_esc(', 'static uint32_t nvn2_shared(', 'static const char *attr_name(',
-        'static const char *json_key(', 'static long json_int(', 'static void json_str(',
-        'static int json_objects(', 'static int handle_slot(', 'static void add_res(',
-        'static int storage_contract_version(', 'int gfx_shader_is_nvn2(', 'static int req_init(',
-        'static size_t build_request(')]
+        'static const char *json_key(', 'static long json_int(', 'static void json_str(')]
+    # This contiguous production block holds the JSON scanners and the geometry topology table and parser.
+    start = production.index('static const char *json_space(')
+    pieces.append(production[start:production.index('// The objects of the flat array', start)])
+    pieces += [function(production, name) for name in (
+        'static int json_objects(', 'static int handle_slot(', 'static void add_res(')]
+    enum_start = production.index('enum { OP_ENTRY_POINT')
+    pieces.append(production[enum_start:production.index('};', enum_start) + 2])
+    pieces += [function(production, name) for name in (
+        'static int geometry_spirv(', 'static int storage_contract_version(', 'int gfx_shader_is_nvn2(',
+        'static int req_init(', 'static size_t build_request(')]
     pieces.append(function(production[production.rindex('static int reflect('):], 'static int reflect('))
     pieces += [function(production,name) for name in (
         'static void shader_free(', 'static void key_hex(', 'static int reflection_valid(',
         'static int spirv_complete(', 'static GfxShader *disk_load_from(', 'static GfxShader *disk_load(',
         'const GfxShader *gfx_shader_load_private(', 'void gfx_shader_release_private(')]
-    shader = function(production, 'struct GfxShader {') + ';\n'
-    return before + shader + '\n'.join(pieces) + after
+    return before + '\n'.join(pieces) + after
 
 
 def main():
