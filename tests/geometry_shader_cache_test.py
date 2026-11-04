@@ -281,6 +281,96 @@ class GeometryCache(unittest.TestCase):
         self.assertTrue(self.run_fixture('load', 'private', key, iid, cache=cache)['accepted'])
         self.assertFalse(self.run_fixture('load', 'private', key, iid, cache=cache, subgroup=0)['accepted'])
 
+    def scope_load(self, name, topology, reflection, mode):
+        cache = args.out / ('scope-' + name + '-' + mode)
+        iid = hashlib.sha256(('original scoped metadata ' + name).encode()).hexdigest()
+        key = self.run_fixture('input-key', iid, cache=cache)['key']
+        self.put_pair(cache, key, self.module(topology)[0], reflection)
+        if 'packed' in mode:
+            self.packer.pack(cache, keep=True)
+        return self.run_fixture('load', mode, key, iid, cache=cache)
+
+    def test_nested_geometry_compute_layout_is_ignored_without_inheriting_c0(self):
+        for location in ('geometry', 'extra'):
+            _, reflection = self.module('points')
+            reflection.setdefault(location, {}).update(c0=[0, 0, 0, 0], c0_version=2, c0_roots=[0] * 8)
+            for mode in ('loose', 'private-packed', 'input'):
+                with self.subTest(location=location, mode=mode):
+                    result = self.scope_load('gs-nested-c0-' + location, 'points', reflection, mode)
+                    self.assertTrue(result['accepted'], 'extra nested metadata is ignored, not treated as a driver layout')
+                    self.assertEqual(result['stage'], 3)
+                    self.assertFalse(result['has_c0'], 'a nested compute layout must never become a GS layout')
+
+    def test_storage_contract_version_uses_a_unique_root_field(self):
+        for topology, root_version, nested_version, accepted in (
+                ('points', 1, 0, False), ('points', 0, 1, True), ('points', None, 1, True),
+                ('compute', 2, 1, False), ('compute', 1, 0, True)):
+            _, base = self.module(topology)
+            base.pop('storage_candidates_version', None)
+            # Deliberately place the nested key before the real root key.
+            reflection = dict(extra={'storage_candidates_version': nested_version}, **base)
+            if root_version is not None:
+                reflection['storage_candidates_version'] = root_version
+            if topology == 'compute':
+                reflection.update(c0=[0, 0, 0, 0], c0_version=2, c0_roots=[0] * 8)
+            name = topology + '-root-' + str(root_version) + '-nested-' + str(nested_version)
+            for mode in ('loose', 'private-packed', 'input'):
+                with self.subTest(case=name, mode=mode):
+                    result = self.scope_load(name, topology, reflection, mode)
+                    self.assertEqual(result['accepted'], accepted)
+                    if accepted:
+                        self.assertEqual(result['has_c0'], topology == 'compute')
+        _, compute = self.module('compute')
+        compute.update(c0=[0, 0, 0, 0], c0_version=2, c0_roots=[0] * 8)
+        for first, second in ((0, 1), (1, 0), (1, 1)):
+            compute['storage_candidates_version'] = first
+            text = json.dumps(compute)[:-1] + ',"storage_candidates_version":' + str(second) + '}'
+            for mode in ('loose', 'private-packed'):
+                with self.subTest(duplicate=(first, second), mode=mode):
+                    self.assertFalse(self.scope_load('duplicate-storage-' + str(first) + str(second), 'compute', text, mode)['accepted'])
+
+    def test_compute_layout_root_fields_are_unique_and_warm_compatible(self):
+        _, compute = self.module('compute')
+        compute.pop('storage_candidates_version', None)
+        nested = dict(c0=[0, 0, 7, 0], c0_version=2, c0_roots=[3] + [0] * 7)
+        valid = dict(extra=nested, **compute, storage_candidates_version=1,
+                     c0=[0, 0, 2, 0], c0_version=2, c0_roots=[1] + [0] * 7)
+        for mode in ('loose', 'private-packed', 'input'):
+            with self.subTest(valid_root_layout=mode):
+                result = self.scope_load('cs-root-layout', 'compute', valid, mode)
+                self.assertTrue(result['accepted'])
+                self.assertTrue(result['has_c0'])
+                self.assertEqual((result['c0_ssbos'], result['c0_root0']), (2, 1), 'root layout wins over nested metadata')
+        for field, value in (('c0', [0, 0, 0, 0]), ('c0_version', 2), ('c0_roots', [0] * 8)):
+            for mode in ('loose', 'private-packed'):
+                with self.subTest(duplicate=field, mode=mode):
+                    text = json.dumps(valid)[:-1] + ',' + json.dumps(field) + ':' + json.dumps(value) + '}'
+                    self.assertFalse(self.scope_load('duplicate-' + field, 'compute', text, mode)['accepted'])
+        for missing in ('c0', 'c0_version', 'c0_roots'):
+            reflection = dict(valid)
+            del reflection[missing]
+            with self.subTest(missing_root_field=missing):
+                self.assertFalse(self.scope_load('missing-root-' + missing, 'compute', reflection, 'private')['accepted'])
+        # The actual request-keyed warm path still requires a valid v1 compute contract.
+        code, control = self.request_packet(5)
+        data = bytearray(control.read_bytes())
+        data[0x860:0x868] = b'DKC1' + bytes((0, 0, 2, 0))
+        data[0x86c] = 1
+        control.write_bytes(data)
+        cache = args.out / 'scope-compute-request-warm'
+        request = self.run_fixture('request', 5, 0, code, control, cache=cache)
+        self.assertTrue(request['accepted'])
+        self.run_fixture('learn', request['hash'], cache=cache)
+        request = self.run_fixture('request', 5, 0, code, control, cache=cache)
+        warm = dict(valid, extra=dict(nested, storage_candidates_version=0))
+        self.put_pair(cache, request['key'], self.module('compute')[0], warm)
+        for mode in ('request-load', 'request-memory'):
+            with self.subTest(valid_compute_warm=mode):
+                result = self.run_fixture(mode, 5, 0, code, control, cache=cache)
+                self.assertTrue(result['accepted'])
+                self.assertTrue(result['has_c0'])
+                self.assertEqual((result['c0_ssbos'], result['c0_root0']), (2, 1))
+
     def malformed_reflections(self):
         _, good = self.module('points')
         text = json.dumps(good)

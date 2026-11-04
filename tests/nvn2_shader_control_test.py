@@ -251,7 +251,7 @@ int main(void) {
     before = before.replace('/* The hash provider keeps the production signature for older-source compatibility. */', hash_provider)
     names = ['static void json_esc(', 'static uint32_t nvn2_shared(', 'static const char *attr_name(',
              'static const char *json_key(', 'static long json_int(', 'static void json_str(', 'static int json_objects(',
-             'static int handle_slot(', 'static void add_res(', 'static int storage_contract_version(',
+             'static int handle_slot(', 'static void add_res(',
              'int gfx_shader_is_nvn2(']
     pieces = [function(production, name) for name in names]
     if 'static int geometry_json(' in production:
@@ -263,6 +263,7 @@ int main(void) {
         pieces.append(production[enum_start:production.index('};', enum_start) + 2])
         pieces.append(function(production, 'static int geometry_spirv('))
         pieces.append('static uint32_t host_gs_sg;\n')
+    pieces.append(function(production, 'static int storage_contract_version('))
     pieces.append(function(production, 'static int req_init('))
     pieces.append(function(production, 'static size_t build_request('))
     pieces.append(function(production[production.rindex('static int reflect('):], 'static int reflect('))

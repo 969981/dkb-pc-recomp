@@ -108,6 +108,9 @@ static void summary(const GfxShader *s, int owned) {
     printf("{\"accepted\":%s,\"owned\":%d",s?"true":"false",owned);
     if(s) {
         printf(",\"stage\":%d,\"inputs\":%u,\"outputs\":%u",gfx_shader_stage(s),gfx_shader_inputs(s,NULL),gfx_shader_outputs(s,NULL));
+        const Nvn2C0Layout *c0=gfx_shader_c0_layout(s);
+        printf(",\"has_c0\":%s",c0?"true":"false");
+        if(c0)printf(",\"c0_ssbos\":%u,\"c0_root0\":%u",c0->ssbos,c0->roots[0]);
 #if FIXTURE_GEOMETRY
         const GfxShaderGeometry *g=gfx_shader_geometry(s);
         if(g)printf(",\"input\":%u,\"invocations\":%u,\"max_vertices\":%u",g->input,g->invocations,g->max_output_vertices);
