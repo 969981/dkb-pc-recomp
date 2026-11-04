@@ -1016,12 +1016,10 @@ out:
 
 // This ABI field is an exact JSON integer, not a numeric prefix such as 1.5 or 1e1. Missing means legacy version 0.
 static int storage_contract_version(const char *js, const char *end) {
-    const char *p = json_key(js, end, "storage_candidates_version");
+    const char *p = json_member(js, end, "storage_candidates_version");
     if (!p) return 0;
-    if (*p != '0' && *p != '1') return -1;
-    int v = *p++ - '0';
-    while (p < end && isspace((unsigned char)*p)) p++;
-    return p < end && (*p == ',' || *p == '}') ? v : -1;
+    uint32_t version;
+    return json_uint(js, end, "storage_candidates_version", &version) && version <= 1 ? (int)version : -1;
 }
 
 static int reflect(GfxShader *s, int require_c0) {
@@ -1038,12 +1036,15 @@ static int reflect(GfxShader *s, int require_c0) {
     } else if (json_member(js, end, "geometry_version") || json_member(js, end, "gs_input") ||
                json_member(js, end, "geometry")) return 0;
     if (!geometry_spirv(s)) return 0;
-    const char *c0 = json_key(js, end, "c0");
-    if (s->stage == GFX_STAGE_GS && (require_c0 || json_member(js, end, "c0") ||
-        json_member(js, end, "c0_version") || json_member(js, end, "c0_roots"))) return 0;
-    if (c0 && *c0 == '[') {
-        const char *roots = json_key(js, end, "c0_roots");
-        if (json_int(js, end, "c0_version", 0) != 2 || !roots || *roots != '[') {
+    // Driver contracts are unique root fields. Extra nested properties are metadata, not alternate layouts.
+    const char *c0 = json_member(js, end, "c0"), *roots = json_member(js, end, "c0_roots"),
+               *c0_version = json_member(js, end, "c0_version");
+    if (c0 == end || roots == end || c0_version == end) return 0;
+    if (s->stage == GFX_STAGE_GS && (require_c0 || c0 || roots || c0_version)) return 0;
+    if (!c0 && (roots || c0_version)) return 0;
+    if (c0) {
+        uint32_t version;
+        if (*c0 != '[' || !json_uint(js, end, "c0_version", &version) || version != 2 || !roots || *roots != '[') {
             rt_log("gfx_shader: NVN 2 reflection lacks root layout version 2; rebuild the shader translator");
             return 0;   // an old translator must not silently use image counts as root-table sizes
         }
