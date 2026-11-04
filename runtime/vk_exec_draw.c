@@ -2651,6 +2651,17 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
 
 // ---- bind ops
 
+static void geometry_context_buffer_log(unsigned record, const char *name, const p_bind_buf *binding) {
+    VkMemInspect view = {0};
+    int backed = binding->addr && binding->size && vk_mem_inspect(binding->addr, binding->size, &view);
+    rt_log("geometry_buffer_context: record=%u range=%s snapshot=passive requested=%llu full_range_backed_now=%d "
+           "pool_kind=%u pool_flags=%#x class_before_mirror_pick=%d offset=%llu available=%llu "
+           "mirror_state=%d mirror_present=%d shadow_storage=%d buffer_present=%d contents=unread descriptor=unobserved",
+           record, name, (unsigned long long)binding->size, backed, view.pool_kind, view.pool_flags, view.cls,
+           (unsigned long long)view.offset, (unsigned long long)view.avail,
+           view.mirror_state, view.mirror_present, view.shadow_storage, view.buffer_present);
+}
+
 // Private draw-ingress metadata only. Replay is serialized; the cap is process-wide and later draws are unobserved.
 static void geometry_context_log(const VkExec *ex, uint32_t op, const void *payload) {
     if (op != OP_DRAW && op != OP_DRAW_IDX && op != OP_DRAW_IDX_IND) return;
@@ -2751,6 +2762,9 @@ static void geometry_context_log(const VkExec *ex, uint32_t op, const void *payl
            metadata ? "available" : "unavailable", present,
            (unsigned long long)origin[0], (unsigned long long)origin[2], (unsigned long long)origin[1],
            ex->render_disabled, ex->has_render_cond, (unsigned)ex->pipe.raster_discard, ex->in_pass, viewport, attachments, bindings);
+    geometry_context_buffer_log(records, "gs_ssbo0", s0);
+    geometry_context_buffer_log(records, "gs_ssbo1", s1);
+    geometry_context_buffer_log(records, "gs_ubo0", u0);
 }
 
 static void bind_handles(uint64_t *dst, int cap, const p_bind_handles *b) {
