@@ -156,6 +156,21 @@ typedef struct {
     void *pool;   // the imported pool record behind the span (NULL for device memory), for VK_MEM_BOUND
 } VkMemSpan;
 
+// Passive snapshot only, called on the serialized replay thread (mirror state belongs to that thread). Lookup holds
+// the shared pool lock but does not resolve/use/pick a span, create/sync mirrors, touch shadows or mark pools used.
+// Selects the normal one-byte lookup candidate, then requires the whole request to fit that pool/contiguous backing.
+// avail is capped by that original registered pool and contiguous backing. No handles/pointers or storage bytes escape.
+// Success describes a currently present normal backing buffer, not later descriptor/content/write/visibility validity.
+enum { VK_MEM_INSPECT_POOL_IMPORT = 1, VK_MEM_INSPECT_POOL_PHYSICAL, VK_MEM_INSPECT_POOL_VIRTUAL };
+enum { VK_MEM_INSPECT_MIRROR_NONE, VK_MEM_INSPECT_MIRROR_ON, VK_MEM_INSPECT_MIRROR_REFUSED };
+typedef struct {
+    uint64_t offset, avail;
+    uint32_t pool_kind, pool_flags;
+    int32_t cls;                        // VK_MCLS_* before optional mirror picking
+    uint8_t mirror_state, mirror_present, shadow_storage, buffer_present;
+} VkMemInspect;
+int vk_mem_inspect(uint64_t addr, uint64_t size, VkMemInspect *out);   // nonnull out: zeroed on any failure
+
 // Canonical descriptor bytes: imported storage uses its host address (storage 0); device storage a unique physical
 // lifetime and byte offset. A virtual alias resolves to the same key as its physical storage. No GPU-use side effects.
 typedef struct { uint64_t storage, offset; } VkDescKey;
