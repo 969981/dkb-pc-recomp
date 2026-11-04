@@ -2,16 +2,78 @@
 
 No translator, Vulkan loader, or GPU is used. Cache tests use platform I/O/thread adapters and an identity
 name-hash adapter; reflection, mask generation, cache headers/loaders and vertex-output unions are production code.
-Usage: python tests/spirv_interface_test.py [--cc clang] [--source-root PATH]
+Usage: python tests/spirv_interface_test.py [--cc clang] [--source-root PATH] [--spirv-val PATH] [--opt 0|1|2]
 """
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def geometry_module(nested=False, packed=False, inner_count=2):
+    """Complete original GS: triangle inputs, one emitted point, two array outputs.
+
+    The outer input array has three vertices. Only a nested inner array consumes
+    multiple Locations. The output array is an ordinary two-Location array.
+    """
+    words = [0x07230203, 0x00010300, 0, 64, 0]
+    def emit(opcode, *operands):
+        words.extend([(len(operands) + 1) << 16 | opcode, *operands])
+    emit(17, 1)                         # OpCapability Shader
+    emit(17, 2)                         # OpCapability Geometry
+    emit(14, 0, 1)                      # Logical GLSL450
+    emit(15, 3, 24, 0x6e69616d, 0, 14, 17, 19)  # Geometry main; interface variables
+    emit(16, 24, 22)                    # InputTriangles
+    emit(16, 24, 0, 1)                  # Invocations 1
+    emit(16, 24, 26, 1)                 # OutputVertices 1
+    emit(16, 24, 27)                    # OutputPoints
+    emit(71, 14, 30, 0 if inner_count == 32 else 6)
+    if packed:
+        emit(71, 14, 31, 2)             # input Component 2, vec2
+    emit(71, 17, 30, 12)                # output Location 12
+    emit(71, 19, 11, 0)                 # output BuiltIn Position
+    emit(19, 1)                         # void
+    emit(33, 2, 1)                      # void function
+    emit(22, 3, 32)                     # float
+    emit(23, 4, 3, 4)                   # vec4
+    emit(21, 5, 32, 0)                  # uint
+    emit(43, 5, 6, 0)
+    emit(43, 5, 7, 1)
+    emit(43, 5, 8, 2)
+    emit(43, 5, 9, 3)
+    emit(43, 5, 28, inner_count)
+    emit(23, 10, 3, 2)                  # vec2
+    emit(28, 11, 10, 28)                # inner vec2 array
+    emit(28, 12, 11 if nested else 10 if packed else 4, 9)
+    emit(32, 13, 1, 12)                 # pointer Input outer[3]
+    emit(59, 13, 14, 1)
+    emit(28, 15, 4, 8)                  # vec4[2]
+    emit(32, 16, 3, 15)
+    emit(59, 16, 17, 3)
+    emit(32, 18, 3, 4)
+    emit(59, 18, 19, 3)
+    emit(43, 3, 20, 0)
+    emit(43, 3, 21, 0x3f800000)
+    emit(44, 4, 22, 20, 20, 20, 21)
+    emit(54, 1, 24, 0, 2)
+    emit(248, 25)
+    emit(62, 19, 22)
+    emit(65, 18, 26, 17, 6)
+    emit(62, 26, 22)
+    emit(65, 18, 27, 17, 7)
+    emit(62, 27, 22)
+    emit(218)                           # EmitVertex
+    emit(219)                           # EndPrimitive
+    emit(253)
+    emit(56)
+    return struct.pack('<' + 'I' * len(words), *words)
 
 
 def function(source, declaration):
@@ -28,6 +90,9 @@ def function(source, declaration):
 def source(root):
     shader = (root / 'runtime/gfx_shader.c').read_text()
     pipeline = (root / 'runtime/vk_pipeline.c').read_text()
+    gfx = (root / 'runtime/gfx.h').read_text()
+    stage_start = gfx.index('enum { GFX_STAGE_VS')
+    stages = gfx[stage_start:gfx.index('};', stage_start) + 2]
     enum_start = shader.index('enum { OP_ENTRY_POINT')
     opcodes = shader[enum_start:shader.index('};', enum_start) + 2]
     prelude = r'''
@@ -45,7 +110,7 @@ def source(root):
 #include <unistd.h>
 #endif
 enum { GFX_TYPE_FLOAT, GFX_TYPE_SINT, GFX_TYPE_UINT };
-enum { GFX_STAGE_VS, GFX_STAGE_FS=4 };
+@STAGE_ENUM@
 typedef struct { uint8_t type, comps, packed; } GfxShaderIo;
 typedef struct {
     const uint32_t *spirv; uint64_t words; uint32_t local[3], in_mask, out_mask;
@@ -61,6 +126,7 @@ static void plat_mutex_lock(int *lock) { (void)lock; }
 static void plat_mutex_unlock(int *lock) { (void)lock; }
 #define LOG_ONCE(...) ((void)0)
 '''
+    prelude = prelude.replace('@STAGE_ENUM@', stages)
     extracted = [opcodes, function(shader, 'static void reflect_spirv('),
                  function(shader, 'uint32_t gfx_shader_inputs('),
                  function(shader, 'uint32_t gfx_shader_outputs('),
@@ -181,6 +247,26 @@ static void check_io(const GfxShader *s,unsigned first,unsigned count,unsigned t
         CHECK(io[i].type==type && io[i].comps==comps && io[i].packed==packed,"per-slot type/components/Component");
     }
     CHECK(s->in_guard==0x12345678 && s->out_guard==0x87654321,"reflection array bounds");
+}
+static GfxShader reflect_geometry(Module *m) {
+    GfxShader s={.spirv=m->w,.words=m->n,.stage=GFX_STAGE_GS,
+                 .in_guard=0x12345678,.out_guard=0x87654321};
+    reflect_spirv(&s); return s;
+}
+static void geometry_checks(const char *path,unsigned first,unsigned locations,unsigned comps,unsigned packed) {
+    uint64_t bytes=0;
+    uint8_t *data=read_file(path,&bytes);
+    CHECK(data && bytes>=20 && !(bytes%4),"complete original GS module loaded");
+    if (!data || bytes<20 || bytes%4) { free(data); return; }
+    GfxShader s={.spirv=(const uint32_t *)data,.words=bytes/4,.stage=GFX_STAGE_GS,
+                 .in_guard=0x12345678,.out_guard=0x87654321};
+    reflect_spirv(&s);
+    uint32_t mask=locations==32?UINT32_MAX:((1u<<locations)-1u)<<first;
+    CHECK(s.in_mask==mask,"GS per-vertex outer array does not consume Locations");
+    check_io(&s,first,locations,GFX_TYPE_FLOAT,comps,packed,0);
+    CHECK(s.out_mask==0x3000,"GS output array retains both Locations12..13");
+    check_io(&s,12,2,GFX_TYPE_FLOAT,4,0,1);
+    free(data);
 }
 static void cache_clear(void) {
     for (unsigned i=0;i<BUCKETS;i++) while (use_buckets[i]) {
@@ -321,7 +407,26 @@ int main(int argc,char **argv) {
     fm=array(0,16,UINT32_MAX,1); fm.w[fm.n++]=7u<<16|71u; fs=reflect(&fm);
     CHECK(fs.in_mask==0xffff,"truncated trailing instruction stops without losing reflected slots");
     CHECK(guarded_constant(),"short 64-bit constant ends at a protected page without an extra-word read");
-    if (argc!=2) return 2;
+    if (argc!=6) return 2;
+    geometry_checks(argv[2],6,1,4,0);
+    geometry_checks(argv[3],6,2,2,0);
+    geometry_checks(argv[4],6,1,2,1);
+    geometry_checks(argv[5],0,32,2,0); // Full span must survive even though outer[3] saturated the old total.
+    for (unsigned mode=0;mode<6;mode++) {
+        fm=begin(); emit(&fm,71,3,7u,30u,2u); emit(&fm,22,2,1u,32u); emit(&fm,23,3,2u,1u,4u);
+        if (mode==3) emit(&fm,22,2,3u,32u); else emit(&fm,21,3,3u,32u,mode==1);
+        if (mode!=2) emit(&fm,mode==4?50u:43u,3,3u,4u,mode==0?0u:mode==1?0xffffffffu:3u);
+        emit(&fm,28,3,5u,2u,mode==5?200u:4u); emit(&fm,32,3,6u,1u,5u); emit(&fm,59,3,6u,7u,1u);
+        GfxShader gs=reflect_geometry(&fm);
+        CHECK(!gs.in_mask,"GS outer array length must remain supported and known");
+    }
+    for (unsigned width=16;width<=64;width*=4) {
+        fm=begin(); emit(&fm,71,3,7u,30u,2u); emit(&fm,22,2,1u,width); emit(&fm,23,3,2u,1u,4u);
+        emit(&fm,21,3,3u,32u,0u); emit(&fm,43,3,3u,4u,3u);
+        emit(&fm,28,3,5u,2u,4u); emit(&fm,32,3,6u,1u,5u); emit(&fm,59,3,6u,7u,1u);
+        GfxShader gs=reflect_geometry(&fm);
+        CHECK(!gs.in_mask,"GS array element widths absent from GfxShaderIo remain unsupported");
+    }
     cache_checks(argv[1]);
     printf("SPIR-V interfaces: %d checks, %d failures\n",checks,failures);
     return failures?1:0;
@@ -334,18 +439,44 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cc',default=os.environ.get('CC','clang'))
     parser.add_argument('--source-root',type=Path,default=ROOT)
+    parser.add_argument('--spirv-val',type=Path,help='validate the complete original GS modules before CPU reflection')
+    parser.add_argument('--opt',choices=('0','1','2'),default='1')
+    parser.add_argument('--out',type=Path,default=ROOT/'build'/'tests'/'spirv-interface')
     args=parser.parse_args()
     cc=shutil.which(args.cc) or args.cc
     if not Path(cc).is_file():
         parser.error('C compiler unavailable; pass --cc PATH')
-    build=ROOT/'build'/'tests'/'spirv-interface'
+    build=args.out.resolve()
     build.mkdir(parents=True,exist_ok=True)
+    fixtures=[]
+    validation=[]
+    for name,nested,packed,count in (('gs-array',False,False,2),('gs-nested',True,False,2),
+                                     ('gs-component',False,True,2),('gs-saturated',True,False,32)):
+        path=build/(name+'.spv')
+        data=geometry_module(nested,packed,count)
+        path.write_bytes(data)
+        fixtures.append(path)
+        if args.spirv_val:
+            run=subprocess.run([str(args.spirv_val.resolve()),'--target-env','vulkan1.3',str(path)],capture_output=True,text=True)
+            (build/(name+'.validation.log')).write_text(run.stdout+run.stderr)
+            if run.returncode:
+                print(run.stdout+run.stderr)
+                return run.returncode
+        validation.append(dict(path=str(path),sha256=hashlib.sha256(data).hexdigest(),
+                               spirv_val='PASS' if args.spirv_val else 'not requested'))
     cfile=build/'spirv-interface.c'
     exe=build/('spirv-interface.exe' if os.name=='nt' else 'spirv-interface')
     cfile.write_text(source(args.source_root.resolve()))
-    subprocess.run([str(cc),'-std=c11','-O1','-Wall','-Wextra','-Werror',str(cfile),'-o',str(exe)],check=True)
+    subprocess.run([str(cc),'-std=c11','-O'+args.opt,'-Wall','-Wextra','-Werror',str(cfile),'-o',str(exe)],check=True)
     cache = tempfile.mkdtemp(prefix='use-cache-',dir=build)
-    return subprocess.run([str(exe),cache]).returncode
+    run=subprocess.run([str(exe),cache,*map(str,fixtures)],capture_output=True,text=True)
+    (build/'result.log').write_text(run.stdout+run.stderr)
+    (build/'result.json').write_text(json.dumps(dict(optimization='O'+args.opt,exit_code=run.returncode,
+        source_root=str(args.source_root.resolve()),fixtures=validation,
+        generated_c_sha256=hashlib.sha256(cfile.read_bytes()).hexdigest(),
+        output=run.stdout+run.stderr),indent=2))
+    print(run.stdout+run.stderr,end='')
+    return run.returncode
 
 
 if __name__=='__main__':
