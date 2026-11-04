@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // --probe-vkgeometry: original Maxwell VS/GS/FS through NVN recording and ordinary Vulkan replay.
-// The indirect draw is recorded only after a completed GPU readback proves its exact bounded arguments.
+// A completed readback proves the producer's exact bounded arguments before any indirect draw. The optional
+// ordering round starts from a verified zero-count record and uses an explicit NVN dependency in one submission.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +21,7 @@ void vk_exec_xfer_shutdown(void);
 
 enum { GP_CONTROL = 0x880, GP_CODE = 2048, GP_SKIP = 0x30, GP_WIDTH = 32, GP_HEIGHT = 32,
        GP_POOL = 0x100000, GP_COLOR = 0x10000, GP_UNIFORM = 0x20000, GP_VERTEX = 0x30000,
-       GP_INDEX = 0x31000, GP_RECORD = 0x40100, GP_GUARD = GP_RECORD - 128, GP_COMMAND = 0x50000,
+       GP_INDEX = 0x31000, GP_RECORD = 0x40100, GP_GUARD = GP_RECORD - 128, GP_RESET = 0x40200, GP_COMMAND = 0x50000,
        GP_COMMAND_CONTROL = 8192 };
 static int gp_passthrough;
 
@@ -229,7 +230,53 @@ static int gp_pixels(uint32_t pixels[GP_WIDTH * GP_HEIGHT], uint32_t color, int 
     return *orientation >= 0;
 }
 
-static int gp_run(int passthrough) {
+// Both possible argument records are bounded: reset draws no indices, and the already validated original GS
+// writes exactly three owned indices/one instance. Reset completion is checked before the combined recording;
+// there is no CPU readback or wait between its producer and consumer. The normal NVN barrier supplies ordering.
+static int gp_ordered(uint8_t *memory, void *control, uint64_t record_address,
+                      const uint8_t verified[256], int expected_orientation) {
+    int ok = 0;
+    uint8_t expected_guard[256], reset[256], after[256];
+    static const uint32_t produced[5] = {3, 1, 0, 0, 0}, initial[5] = {0, 1, 0, 0, 0};
+    memset(expected_guard, 0xa5, sizeof expected_guard);
+    memcpy(expected_guard + 128, produced, sizeof produced);
+    GP_REQUIRE(memory && control && gp_passthrough && record_address == GP_U(memory + GP_RECORD) &&
+        expected_orientation >= 0 && expected_orientation <= 1, "ordering round owned inputs");
+    GP_REQUIRE(verified && !memcmp(verified, expected_guard, sizeof expected_guard), "ordering round prior bounded GPU proof");
+    memcpy(memory + GP_RESET, initial, sizeof initial);
+    GP_CALL(nvnMemoryPoolFlushMappedRange, GP_U(&gp_memory_pool), GP_RESET, sizeof initial);
+    GP_CALL(nvnCommandBufferAddControlMemory, GP_U(&gp_command), GP_U(control), GP_COMMAND_CONTROL);
+    GP_CALL(nvnCommandBufferBeginRecording, GP_U(&gp_command));
+    GP_CALL(nvnCommandBufferCopyBufferToBuffer, GP_U(&gp_command), GP_U(memory + GP_RESET),
+        record_address, sizeof initial, 0);
+    GP_REQUIRE(gp_submit(), "ordering round reset submission completion");
+    GP_REQUIRE(gp_read_gpu(GP_U(memory + GP_GUARD), reset, sizeof reset), "ordering round reset GPU readback");
+    memcpy(expected_guard + 128, initial, sizeof initial);
+    GP_REQUIRE(!memcmp(reset, expected_guard, sizeof reset), "ordering round exact zero-count record and canaries");
+
+    gp_prefix(memory, control, 0);
+    GP_CALL(nvnCommandBufferDrawArrays, GP_U(&gp_command), NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
+    GP_CALL(nvnCommandBufferBarrier, GP_U(&gp_command),
+        NVN_BARRIER_ORDER_PRIMITIVES_BIT | NVN_BARRIER_ORDER_INDIRECT_DATA_BIT);
+    GP_CALL(nvnCommandBufferBindProgram, GP_U(&gp_command), GP_U(&gp_plain_program),
+        NVN_SHADER_STAGE_VERTEX_BIT | NVN_SHADER_STAGE_FRAGMENT_BIT);
+    GP_CALL(nvnCommandBufferBindVertexBuffer, GP_U(&gp_command), 0, GP_U(memory + GP_VERTEX), 96);
+    GP_CALL(nvnCommandBufferDrawElementsIndirect, GP_U(&gp_command), NVN_DRAW_PRIMITIVE_TRIANGLES,
+        NVN_INDEX_TYPE_UNSIGNED_SHORT, GP_U(memory + GP_INDEX), record_address);
+    GP_REQUIRE(gp_submit(), "ordering round combined submission completion");
+    uint32_t pixels[GP_WIDTH * GP_HEIGHT];
+    int orientation;
+    GP_REQUIRE(gp_pixels(pixels, 0xff00ff00u, &orientation) && orientation == expected_orientation,
+        "ordering round producer/barrier/indirect green triangle");
+    GP_REQUIRE(gp_read_gpu(GP_U(memory + GP_GUARD), after, sizeof after), "ordering round final GPU readback");
+    GP_REQUIRE(!memcmp(after, verified, sizeof after), "ordering round exact produced record and canaries");
+    puts("probe-vkgeometry: verified zero reset -> GS -> NVN barrier -> indirect in one NVN recording/submission");
+    ok = 1;
+done:
+    return ok;
+}
+
+static int gp_run(int passthrough, int ordered) {
     gp_passthrough = passthrough;
     const GfxBackend *backend = &gfx_vulkan_backend;
     if (gfx_backend() != backend || cfg_bool("TOTK_FIX_C0")) {
@@ -335,6 +382,7 @@ static int gp_run(int passthrough) {
         uint8_t after[256];
         GP_REQUIRE(gp_read_gpu(GP_U(memory + GP_GUARD), after, sizeof after), "post-indirect GPU record readback");
         GP_REQUIRE(!memcmp(guard, after, sizeof guard), "indirect consumption preserves argument record/canaries");
+        if (ordered) GP_REQUIRE(gp_ordered(memory, control, record_address, guard, first_orientation), "same-submission ordering round");
     } else printf("probe-vkgeometry: indexed-indirect SKIPPED: exact bounded argument preflight failed\n");
     GP_REQUIRE(gfx_shader_failures() == shader_failures, "no translation failures");
     if (gp_passthrough) {
@@ -367,12 +415,14 @@ done:
     long errors = vk_validation_errors_total();
     printf("probe-vkgeometry: %s (%u checks, %u failures, %ld validation errors, enabled %d)\n",
         gp_failures || errors ? "FAILED" : "passed", gp_checks, gp_failures, errors, cfg_bool("TOTK_EXPERIMENTAL_GEOMETRY"));
-    printf("probe-vkgeometry: %s, user-c3 store, separate completed-submission indirect consumption; ",
-           gp_passthrough ? "portable triangles->triangle" : "ordinary points->triangle");
+    printf("probe-vkgeometry: %s, user-c3 store, %s; ",
+           gp_passthrough ? "portable triangles->triangle" : "ordinary points->triangle",
+           ordered ? "explicit NVN dependency in one NVN submission" : "separate completed-submission indirect consumption");
     puts(
-         "no native lowering, NV passthrough extension, other input topologies or same-submission ordering claim");
+         "no native lowering, NV passthrough extension or other input topologies");
     return gp_failures || errors;
 }
 
-int probe_vkgeometry(void) { return gp_run(0); }
-int probe_vkgeometry_passthrough(void) { return gp_run(1); }
+int probe_vkgeometry(void) { return gp_run(0, 0); }
+int probe_vkgeometry_passthrough(void) { return gp_run(1, 0); }
+int probe_vkgeometry_ordering(void) { return gp_run(1, 1); }
