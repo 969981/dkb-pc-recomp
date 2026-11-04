@@ -11,6 +11,7 @@
 #define plat_thread_spawn fixture_thread_spawn
 #define plat_file_write_atomic fixture_atomic_write
 #include "@SHADER_SOURCE@"
+#include "nvn_geometry_control.h"
 #undef plat_file_write_atomic
 // Reuse the real header's function type; the normal symbol is linked from the
 // platform TU. Parser, codec, SHA and cache functions are never replaced.
@@ -108,6 +109,7 @@ static void summary(const GfxShader *s, int owned) {
     printf("{\"accepted\":%s,\"owned\":%d",s?"true":"false",owned);
     if(s) {
         printf(",\"stage\":%d,\"inputs\":%u,\"outputs\":%u",gfx_shader_stage(s),gfx_shader_inputs(s,NULL),gfx_shader_outputs(s,NULL));
+        printf(",\"iid\":\"");hex_bytes(gfx_shader_input_id(s),32);printf("\"");
         const Nvn2C0Layout *c0=gfx_shader_c0_layout(s);
         printf(",\"has_c0\":%s",c0?"true":"false");
         if(c0)printf(",\"c0_ssbos\":%u,\"c0_root0\":%u",c0->ssbos,c0->roots[0]);
@@ -122,6 +124,41 @@ static void summary(const GfxShader *s, int owned) {
 int main(int argc, char **argv) {
     if (argc < 3) return 2;
     setup(argv[2]);
+    if (!strcmp(argv[1], "pack-pass") || !strcmp(argv[1], "get-pass")) {
+        if(argc!=7)return 2;
+        uint64_t cn=0,nn=0;uint8_t *code=read_file(argv[3],&cn),*control=read_file(argv[4],&nn);
+        if(!code||!control||nn!=CONTROL_SIZE)return 3;
+        uint32_t words[8],got[8];const char *p=argv[5];
+        for(unsigned i=0;i<8;i++) {char *end;unsigned long long n=strtoull(p,&end,0);
+            if(end==p||n>UINT32_MAX||*end!=(i==7?'\0':','))return 3;words[i]=(uint32_t)n;p=end+1;}
+        int packed=!strcmp(argv[1],"get-pass")?0:nvn_geometry_control_pack_portable(control,(size_t)nn,code,cn,words);
+        int read=nvn_geometry_control_get(control,(size_t)nn,code,cn,got);
+        if(!write_file(argv[6],control,(size_t)nn))return 4;
+        printf("{\"accepted\":%s,\"status\":%d,\"skip\":[",packed?"true":"false",read);
+        for(unsigned i=0;i<8;i++)printf("%s%u",i?",":"",got[i]);puts("]}");free(code);free(control);return 0;
+    }
+    if (!strcmp(argv[1], "seed-pass") || !strcmp(argv[1], "record-pass")) {
+        if(argc!=7)return 2;
+        uint64_t cn=0,nn=0,sn=0,rn=0;uint8_t *code=read_file(argv[3],&cn),*control=read_file(argv[4],&nn);
+        GfxShader *s=calloc(1,sizeof *s);s->spirv=(uint32_t *)read_file(argv[5],&sn);s->reflection=(char *)read_file(argv[6],&rn);
+        s->words=sn/4;s->reflection_size=rn;
+        GfxShaderAnswers a;answers(&a,4);Req req={0};
+        if(!code||!control||nn!=CONTROL_SIZE||!s->spirv||sn%4||!s->reflection||
+           !reflect(s,0)||!req_init(&req,3,control,code,cn,NULL,&a)) {puts("{\"accepted\":false}");shader_free(s);free(code);free(control);return 0;}
+        UseMask use=use_of(s);use_store(req.code_hash,&use);
+        if(!req_init(&req,3,control,code,cn,NULL,&a))return 4;
+        memcpy(s->key,req.key,32);memcpy(s->iid,req.iid,32);
+        char hex[65],path[PATH_CAP+80];key_hex(req.key,hex);
+        snprintf(path,sizeof path,"%s/%s.spv",cache_dir,hex);if(!write_file(path,s->spirv,(size_t)sn))return 4;
+        snprintf(path,sizeof path,"%s/%s.res.json",cache_dir,hex);if(!write_file(path,s->reflection,(size_t)rn))return 4;
+        in_store(req.iid,3,control,code,&req,&a);
+        if(!strcmp(argv[1],"record-pass")) {
+            char keys[PATH_CAP+40];snprintf(keys,sizeof keys,"%s/pipeline-keys.bin",cache_dir);
+            gfx_shader_record_at(keys);ans_note(&req,3,control,code,&a,s);gfx_shader_record_flush(1);
+        }
+        printf("{\"accepted\":true,\"hash\":\"");hex_bytes(req.code_hash,32);printf("\",\"iid\":\"");hex_bytes(req.iid,32);
+        printf("\",\"key\":\"");hex_bytes(req.key,32);puts("\"}");shader_free(s);free(code);free(control);return 0;
+    }
     if (!strcmp(argv[1], "identity")) {
         if (argc != 7) return 2;
         int stage = atoi(argv[3]); unsigned input = (unsigned)atoi(argv[4]);
@@ -155,9 +192,13 @@ int main(int argc, char **argv) {
         if(argc!=6)return 2;uint8_t key[32],iid[32];if(!hex32(argv[4],key)||!hex32(argv[5],iid))return 3;
         int packed=strstr(argv[3],"packed")!=NULL,owned=0;
         if(packed)pack_open();
+        if(strstr(argv[3],"memory")) {
+            GfxShader *cached=disk_load(key,iid,0);if(cached)mem_insert(cached);
+            if(strstr(argv[3],"missing")) {char path[PATH_CAP+80];in_path(iid,path);plat_file_delete(path);}
+        }
         const GfxShader *s;
         if(!strncmp(argv[3],"private",7))s=gfx_shader_load_private(iid,&owned);
-        else if(!strncmp(argv[3],"input",5))s=gfx_shader_load_input(iid,0);
+        else if(!strncmp(argv[3],"input",5))s=gfx_shader_load_input(iid,strstr(argv[3],"translate")!=NULL);
         else {s=disk_load_from(key,iid,packed,0);owned=s!=NULL;}
         summary(s,owned);if(owned)shader_free((GfxShader *)s);return 0;
     }
@@ -186,7 +227,7 @@ int main(int argc, char **argv) {
         if(argc!=3)return 2;int status=gfx_shader_prepare_seed(cache_dir,1,1);
         char keys[PATH_CAP+40];snprintf(keys,sizeof keys,"%s/pipeline-keys.bin",cache_dir);gfx_shader_record_at(keys);
         GfxWarmEnt *entries=NULL;size_t count=gfx_shader_warm_list(&entries);
-        printf("{\"accepted\":%s,\"entries\":[",status?"false":"true");
+        printf("{\"accepted\":%s,\"failures\":%lld,\"entries\":[",status?"false":"true",(long long)n_failures);
         for(size_t i=0;i<count;i++) {
             if(i)printf(",");printf("{\"iid\":\"");hex_bytes(entries[i].iid,32);
             printf("\",\"stage\":%u,\"priority\":%u}",entries[i].stage,entries[i].prio);
