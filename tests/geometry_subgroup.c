@@ -43,8 +43,12 @@ int main(int argc,char **argv) {
         GeometryInterface gi;CHECK(geometry_interface(&gs,1,1,&gi));
         CHECK(!gi.mask && gi.builtin_mask==1 && gi.components==4);
         if(i<5) {
-            subgroup_properties(0,all); // A builtin load is not a group operation.
-            CHECK(!geometry_validate(&s,&fixture_context.props.limits));
+            subgroup_properties(0,all);
+            if(i>=1 && i<=3) {
+                // Conservative system-input subset: global operation properties
+                // and an available size pin do not establish GS input support.
+                P.sg32_stages=VK_SHADER_STAGE_GEOMETRY_BIT;rejection(&s);P.sg32_stages=0;
+            } else CHECK(!geometry_validate(&s,&fixture_context.props.limits));
         } else {
             subgroup_properties(0,all);P.sg32_stages=VK_SHADER_STAGE_GEOMETRY_BIT;
             rejection(&s);P.sg32_stages=0;
@@ -57,12 +61,19 @@ int main(int argc,char **argv) {
         }
         free(gs.spirv);
     }
+    load_shader(&gs,argv[1],"ordinary_extension",GFX_STAGE_GS);s.gs=&gs;
+    subgroup_properties(0,0);CHECK(!geometry_validate(&s,&fixture_context.props.limits));free(gs.spirv);
     const char *negative[]={"signed","float","array","mask_scalar","output","duplicate","unknown",
         "flat","location","component","invariant","unsupported","scope","extension","missing_cap",
         "uint16","uint64","short_mask"};
     for(unsigned i=0;i<sizeof negative/sizeof *negative;i++) {
         load_shader(&gs,argv[1],negative[i],GFX_STAGE_GS);s.gs=&gs;
         subgroup_properties(VK_SHADER_STAGE_GEOMETRY_BIT,all|VK_SUBGROUP_FEATURE_ARITHMETIC_BIT);
+        rejection(&s);free(gs.spirv);
+    }
+    for(unsigned i=0;i<sizeof extension_controls/sizeof *extension_controls;i++) {
+        load_shader(&gs,argv[1],extension_controls[i],GFX_STAGE_GS);s.gs=&gs;
+        subgroup_properties(VK_SHADER_STAGE_GEOMETRY_BIT,all);
         rejection(&s);free(gs.spirv);
     }
     CHECK(!made && !pipeline_calls);

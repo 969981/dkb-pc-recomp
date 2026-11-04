@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 
@@ -17,12 +18,19 @@ import spirv_interface_test as interface
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def module(stage, system=(), operation=None, caps=(), decorate=None, scope=3):
+def module(stage, system=(), operation=None, caps=(), decorate=None, scope=3,
+           extensions=(), injected_op=None, extension_words=None):
     words = [0x07230203, 0x00010300, 0, 128, 0]
     def op(code, *args):
         words.extend([(len(args) + 1) << 16 | code, *args])
     for cap in dict.fromkeys((1,) + ((2,) if stage == 3 else ()) + tuple(caps)):
         op(17, cap)
+    for extension in extensions:
+        data = extension.encode('ascii') + b'\0'
+        data += bytes(-len(data) % 4)
+        op(10, *struct.unpack('<%dI' % (len(data) // 4), data))
+    if extension_words is not None:
+        op(10, *extension_words)
     op(14, 0, 1)
     variables = ([20] if stage == 3 else []) + [21] + [30+i for i in range(len(system))]
     op(15, stage, 100, 0x6e69616d, 0, *variables)
@@ -57,6 +65,8 @@ def module(stage, system=(), operation=None, caps=(), decorate=None, scope=3):
     for i, (_, kind, storage) in enumerate(system):
         op(32, 40+i, storage, types[kind]); op(59, 40+i, 30+i, storage)
     op(54, 1, 100, 0, 2); op(248, 101)
+    if injected_op is not None:
+        op(injected_op)  # Deliberately unsupported parser control, never a Vulkan module.
     for i, (_, kind, storage) in enumerate(system):
         if storage == 1:
             op(61, types[kind], 60+i, 30+i)
@@ -106,6 +116,38 @@ def main():
              'uint64': module(3, [(41, 'uint64', 1)]),
              'short_mask': module(3, [(4420, 'short_mask', 1)], caps=[61, 64])}
     positive = set(cases) - {'unsupported', 'scope', 'extension', 'missing_cap', 'uint16', 'uint64', 'short_mask'}
+    cases['ordinary_extension'] = module(3, extensions=['SPV_KHR_storage_buffer_storage_class'])
+    positive.add('ordinary_extension')
+    # The pinned enum is a coverage inventory, not a claim that these OpenCL or
+    # vendor instructions are valid in Vulkan GS. Test each known family without
+    # its capability too, so rejection is not accidentally provided only by caps.
+    enum = (ROOT / 'tools/vendor/ryujinx/src/Spv.Generator/spirv.cs').read_text()
+    def values(kind):
+        body = enum.split('public enum ' + kind + '\n', 1)[1].split('}', 1)[0]
+        return [(name, int(value)) for name, value in re.findall(r'(\w+)\s*=\s*(\d+)\s*,', body)]
+    unsupported_caps = sorted({value for name, value in values('Capability')
+                               if (name.startswith('Subgroup') or name.startswith('GroupNonUniform')) and not 61 <= value <= 68})
+    unsupported_ops = sorted({value for name, value in values('Op')
+                              if (name.startswith('OpSubgroup') or 'NonUniformAMD' in name or
+                                  name == 'OpGroupNonUniformPartitionNV')})
+    extension_controls = []
+    for value in unsupported_caps:
+        name = f'unsupported-cap-{value}'
+        cases[name] = module(3, caps=[value]); extension_controls.append(name)
+    for value in unsupported_ops:
+        name = f'unsupported-op-{value}'
+        cases[name] = module(3, caps=[61], injected_op=value); extension_controls.append(name)
+    for index, name in enumerate(('SPV_KHR_subgroup_vote', 'SPV_KHR_subgroup_ballot',
+            'SPV_INTEL_subgroups', 'SPV_INTEL_subgroup_buffer_block_io', 'SPV_AMD_shader_ballot',
+            'SPV_NV_shader_subgroup_partitioned', 'SPV_TEST_subgroup_future',
+            'SPV_TEST_sub_group_future', 'SPV_TEST_group_non_uniform_future',
+            'SPV_TEST_SubGroup_future', 'SPV_TEST_sub_GROUP_future')):
+        key = f'unsupported-extension-{index}'
+        cases[key] = module(3, extensions=[name]); extension_controls.append(key)
+    for key, words in (('extension-unterminated', [0x41414141]),
+                       ('extension-padding', [0x00414243, 1]), ('extension-empty', [0]),
+                       ('extension-no-words', [])):
+        cases[key] = module(3, extension_words=words); extension_controls.append(key)
     for name, system, decor in (
         ('signed', [(41, 'signed', 1)], None), ('float', [(41, 'float', 1)], None),
         ('array', [(41, 'array', 1)], None), ('mask_scalar', [(4420, 'uint', 1)], None),
@@ -131,9 +173,10 @@ def main():
     feature = ('#define HAS_SUBGROUP_GUARD 1\n' if 'subgroup_operations;' in source else
                '#define GEOMETRY_SUBGROUP_BASELINE 1\n')
     body = (ROOT / 'tests/geometry_pipeline.c').read_text()
+    inventory = 'static const char *extension_controls[]={' + ','.join(json.dumps(name) for name in extension_controls) + '};\n'
     generated = (feature + pipeline.pipeline_source() + '\n' + pipeline.shader_adapter() +
                  '\nstatic void fixture_resources(GfxShader*s,const char*n){(void)s;(void)n;}\n' +
-                 '#define main unexecuted_legacy_main\n' + body + '\n#undef main\n' +
+                 '#define main unexecuted_legacy_main\n' + body + '\n#undef main\n' + inventory +
                  (ROOT / 'tests/geometry_subgroup.c').read_text() + '\n' +
                  interface.function(source, 'static Pipe *pipe_miss('))
     path = args.out / 'fixture.c'
@@ -147,6 +190,7 @@ def main():
     manifest = {'result': result.stdout.strip(), 'exit_code': result.returncode, 'opt': args.opt,
                 'pipeline_source_sha256': hashlib.sha256((args.pipeline_source or ROOT / 'runtime/vk_pipeline.c').read_bytes()).hexdigest(),
                 'validated_modules': len(positive) if args.validate else 0,
+                'unsupported_pinned_capabilities': unsupported_caps, 'unsupported_pinned_opcodes': unsupported_ops,
                 'providers': ['existing pipeline CPU module/pipeline spies and fixed device limits',
                               'real pipe_miss; unexpected layout requests are counted and fail with NULL; workers abort',
                               'pipe_add records the real rejection without a Vulkan object',

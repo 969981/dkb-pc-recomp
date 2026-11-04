@@ -1030,6 +1030,31 @@ static int geometry_system_input(const GeometryId *id, uint32_t bound, const Geo
     return 1;
 }
 
+// Reject known subgroup extension families without rejecting unrelated shader
+// extensions. The literal must terminate within its instruction, with zero pad.
+static int geometry_subgroup_extension(const uint32_t *words, uint32_t count) {
+    if (!count) return 0;
+    const char *name = (const char *)words;
+    size_t bytes = (size_t)count * 4;
+    const char *end = memchr(name, 0, bytes);
+    if (!end || end == name) return 0;
+    for (const char *p = end + 1; p < name + bytes; p++) if (*p) return 0;
+    static const char *tokens[] = {"subgroup", "sub_group", "group_non_uniform", "shader_ballot"};
+    for (unsigned t = 0; t < sizeof tokens / sizeof *tokens; t++) {
+        size_t length = strlen(tokens[t]);
+        for (const char *p = name; (size_t)(end - p) >= length; p++) {
+            size_t i;
+            for (i = 0; i < length; i++) {
+                unsigned char c = (unsigned char)p[i];
+                if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+                if (c != (unsigned char)tokens[t][i]) break;
+            }
+            if (i == length) return 0;
+        }
+    }
+    return 1;
+}
+
 // Capability support applies even without an instruction; stage support is a
 // separate requirement for actual subgroup-scoped group operations (Vulkan
 // SPIR-V appendix, VUID-RuntimeSpirv-None-06343). The required-size pin is not
@@ -1049,7 +1074,11 @@ static int geometry_subgroups(const GfxShader *s, uint8_t system_inputs) {
         if (op == 17) {
             if (n != 2) goto done;
             if (a[0] >= 61 && a[0] <= 68) declared |= 1u << (a[0] - 61);
-            else if (a[0] == 4423 || a[0] == 4431 || a[0] == 5297) goto done;
+            else if (a[0] == 58 || a[0] == 4423 || a[0] == 4431 || a[0] == 5297 ||
+                     (a[0] >= 5568 && a[0] <= 5570) || a[0] == 5579 ||
+                     (a[0] >= 5696 && a[0] <= 5698)) goto done;
+        } else if (op == 10) {
+            if (!geometry_subgroup_extension(a, n - 1)) goto done;
         } else if (op == 21 && n == 4 && a[0] < bound) {
             id[a[0]].op = op; id[a[0]].x = a[1]; id[a[0]].y = a[2];
         } else if (op == 43 && n == 4 && a[1] < bound) {
@@ -1064,7 +1093,10 @@ static int geometry_subgroups(const GfxShader *s, uint8_t system_inputs) {
             operations |= op <= 336 ? VK_SUBGROUP_FEATURE_VOTE_BIT :
                 op <= 344 ? VK_SUBGROUP_FEATURE_BALLOT_BIT : op <= 346 ? VK_SUBGROUP_FEATURE_SHUFFLE_BIT :
                 VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT;
-        } else if ((op >= 259 && op <= 271) || op == 5296 || op == 224) goto done;
+        } else if ((op >= 259 && op <= 271) || op == 5296 || op == 224 ||
+                   (op >= 4421 && op <= 4422) || (op >= 4428 && op <= 4430) || op == 4432 ||
+                   (op >= 5000 && op <= 5007) || (op >= 5571 && op <= 5578) ||
+                   (op >= 5580 && op <= 5581) || (op >= 5713 && op <= 5816)) goto done;
         i += n;
     }
     // The specialized GroupNonUniform capabilities imply GroupNonUniform;
@@ -1073,7 +1105,11 @@ static int geometry_subgroups(const GfxShader *s, uint8_t system_inputs) {
     uint32_t required = (system_inputs & 1 ? VK_SUBGROUP_FEATURE_BASIC_BIT : 0) |
                         (system_inputs & 2 ? VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT : 0);
     if ((required | operations) & ~declared) goto done;
-    if ((declared & ~P.subgroup_operations) || (operations && !(P.subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT))) goto done;
+    // The selected system-input subset also requires reported GS support.
+    // This is a conservative admission policy, not a claim that a builtin load
+    // itself is a group operation covered by VUID 06343.
+    if ((declared & ~P.subgroup_operations) ||
+        ((system_inputs || operations) && !(P.subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT))) goto done;
     ok = 1;
 done:
     free(id);
