@@ -6,7 +6,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <sys/stat.h>
-#include "nvn2_c0.h"
+#include "gfx.h"
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -19,19 +19,21 @@
 #define CODE_SKIP 0x30
 #define LINE_MAX_LEN 4096
 #define COUNT(a) (sizeof(a)/sizeof((a)[0]))
-enum {GFX_STAGE_FS=4,GFX_STAGE_CS=5};
 enum {PLAT_FS_OK,PLAT_FS_NOT_FOUND,PLAT_FS_EXISTS,PLAT_FS_NOT_EMPTY,PLAT_FS_BUSY,PLAT_FS_ERROR};
 @TYPES@
-typedef struct GfxShader { uint8_t key[32],iid[32]; } GfxShader;
+@SHADER@
 static GfxShader result;
 static char cache_dir[PATH_CAP];
 static int cache_lock,host_f64=0;
 static uint32_t host_sbuf=16,host_sg[3]={32,64,32},host_gather=8;
+#ifdef FIXTURE_GEOMETRY_CONTRACT
+static uint32_t host_gs_sg;   // this failure-capture fixture requests FS/CS only
+#endif
 static volatile int64_t n_hits,n_xlated;
 static int service_mode,submitted,atomic_calls,writer,require_c0_expected,disk_load_calls;
 static char sent[32768];
 static void check(int good,const char* message) {if(!good){fprintf(stderr,"FAIL: %s\n",message);exit(20);}}
-static void rt_log(const char* format,...) {(void)format;}
+void rt_log(const char* format,...) {(void)format;}
 static int file_exists(const char* path) {FILE* f=fopen(path,"rb");if(!f)return 0;fclose(f);return 1;}
 static int write_file(const char* path,const void* data,size_t n) {
     FILE* f=fopen(path,"wb");if(!f)return 0;
@@ -74,6 +76,14 @@ static GfxShader* disk_load(const uint8_t* key,const uint8_t* iid,int require_c0
     disk_load_calls++;
     return submitted && service_mode==1?&result:NULL;
 }
+#ifdef FIXTURE_GEOMETRY_CONTRACT
+// The capture test supplies a bounded cache/service result, not a second implementation of cache validation.
+// Full cache/geometry validation is covered by the separate production-TU cache test.
+static GfxShader* request_disk_load(const Req* req,const uint8_t* key,const uint8_t* iid) {
+    check(req->stage==GFX_STAGE_FS || req->stage==GFX_STAGE_CS,"capture fixture requests a legacy stage");
+    return disk_load(key,iid,req->require_c0);
+}
+#endif
 static GfxShader* mem_insert(GfxShader* s) {return s;}
 static int use_find(const uint8_t* hash,UseMask* mask) {(void)hash;(void)mask;return 0;}
 static UseMask use_of(GfxShader* s) {(void)s;check(0,"final key has no rename");return (UseMask){0};}
@@ -101,6 +111,10 @@ int main(int argc,char** argv) {
     require_c0_expected=stage==GFX_STAGE_CS;
     Req req={.stage_name=stage==GFX_STAGE_CS?"cs":"ps",.length=(uint32_t)(skip+sizeof bad),.c1_len=sizeof c1,.c1=c1,
              .final=1,.require_c0=require_c0_expected};
+#ifdef FIXTURE_GEOMETRY_CONTRACT
+    req.stage=stage;
+#endif
+    result.stage=stage;
     memset(req.key,0xab,sizeof req.key);GfxShaderAnswers answers={0};answers.tex_type[3]=4;answers.attr_type[2]=2;
     if(writer)host_gather=(uint32_t)writer;
     answers.img_type[1]=4;answers.img_format[1]=1;answers.frag_out_type[0]=1;answers.shared_bytes=128;

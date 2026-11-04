@@ -30,12 +30,17 @@ enum { GFX_STAGE_VS, GFX_STAGE_TCS, GFX_STAGE_TES, GFX_STAGE_GS, GFX_STAGE_FS, G
 enum { GFX_TEX_1D = 1, GFX_TEX_1D_ARRAY, GFX_TEX_BUFFER, GFX_TEX_2D, GFX_TEX_2D_ARRAY, GFX_TEX_2D_MS,
        GFX_TEX_2D_MS_ARRAY, GFX_TEX_3D, GFX_TEX_CUBE, GFX_TEX_CUBE_ARRAY };   // gfx_shader.c tex_names order
 enum { GFX_TYPE_FLOAT, GFX_TYPE_SINT, GFX_TYPE_UINT };
+enum { GFX_GEOMETRY_NONE, GFX_GEOMETRY_POINTS, GFX_GEOMETRY_LINES, GFX_GEOMETRY_LINES_ADJACENCY,
+       GFX_GEOMETRY_TRIANGLES, GFX_GEOMETRY_TRIANGLES_ADJACENCY };
+enum { GFX_GEOMETRY_OUTPUT_POINTS = 1, GFX_GEOMETRY_OUTPUT_LINE_STRIP, GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP };
+#define GFX_GEOMETRY_VERSION 1
 typedef struct {                                           // the translator's answers (Program.cs Accessor)
     uint8_t tex_type[32], img_type[32], img_format[32];    // per c2 slot; 0 = not asked; types are GFX_TEX_*,
                                                            // img_format is Ryujinx TextureFormat
     uint8_t attr_type[32], frag_out_type[8];               // GFX_TYPE_*
     uint16_t local[3]; uint32_t shared_bytes;
     uint8_t depth_minus_w;
+    uint8_t geometry_input;                              // GFX_GEOMETRY_*; required for GS, zero for other stages
 } GfxShaderAnswers;
 typedef struct GfxShader GfxShader;                        // SPIR-V words + parsed reflection; owned by the cache
 void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code);   // DKB_SHADER_DUMP (gfx_shader.c)
@@ -58,6 +63,8 @@ uint64_t gfx_shader_async_done(void);                      // translations finis
 void gfx_shader_counts(uint64_t *keys, uint64_t *translated);   // distinct keys in memory, translations done (TOTK_TRACE=perf)
 // Translator answers for this device (vk_caps.c): shaderFloat64, storage offset rounding, subgroup size per vs/fs/cs.
 void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits);
+// Both host setters precede shader requests. GS has no subgroup default; repeated identical setup is harmless.
+void gfx_shader_set_geometry_host(uint32_t subgroup);
 const uint8_t *gfx_shader_key(const GfxShader *s);          // the 32-byte cache key (stable while the translator is)
 const uint8_t *gfx_shader_input_id(const GfxShader *s);     // the 32-byte input id (stable across translators)
 // By input id from memory or disk; xlate 1 also translates it from its stored inputs. NULL if absent.
@@ -97,7 +104,12 @@ typedef struct {
     uint8_t separate;           // TEX: texture and sampler handles are separate
 } GfxShaderRes;
 typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, components, 1 with a Component decoration
-int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_FS or GFX_STAGE_CS
+int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_GS, GFX_STAGE_FS or GFX_STAGE_CS
+typedef struct {
+    uint32_t version, input, input_vertices, output, invocations, max_output_vertices, passthrough;
+} GfxShaderGeometry;
+// Ordinary GS contract; NULL for another stage. Translation support does not imply replay/pipeline support.
+const GfxShaderGeometry *gfx_shader_geometry(const GfxShader *s);
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res
 // NVN 2 compute parameter-block layout, including the declared root-table word counts, or NULL.
 const Nvn2C0Layout *gfx_shader_c0_layout(const GfxShader *s);

@@ -5,7 +5,8 @@
 // is translated once per machine and translator.
 //
 // Keys. The code hash is sha256 over stage (u32), the 0x880-byte control section, code_size (u64), the code, the c1
-// length (u32) and bytes. Per code hash and translator the cache holds a use mask (<sha256("TKSU", xlate id, code
+// length (u32) and bytes. GS additionally hashes its versioned input-topology suffix. Per code hash and translator
+// the cache holds a use mask (<sha256("TKSU", xlate id, code
 // hash)>.use): the texture/image slots the translator queried (.res.json tex_queried, img_queried), the vertex
 // attributes a VS declares and the colour targets an FS declares (SPIR-V Locations). The input id is sha256 over "TKSI",
 // IN_VERSION, the code hash and the answers with everything outside the mask zeroed (fixed little-endian layout), so
@@ -62,11 +63,14 @@ static uint32_t nvn2_shared(const uint8_t *control) {
 #define KEY_VERSION 4                                      // in every cache key; bump when the key layout or the use of the
                                                            // output changes here (4: translator identity, input ids);
                                                            // translator changes are covered by its identity
-#define IN_VERSION 1                                       // in every input id and .in file: bump when the answers layout
-                                                           // or the program hash changes (drops every stored input)
+#define IN_VERSION 1                                       // legacy input-ID schema and non-GS .in storage version
 #define USE_MAGIC 0x4d554b54u                              // "TKUM", .use files
 #define USE_VERSION 2                                      // 2: include every array location in VS-input / FS-output masks
 #define IN_MAGIC 0x49534b54u                               // "TKSI", .in files
+#define GS_IN_VERSION 2                                   // GS only: explicit packed answers plus input topology
+#define ANSWERS_PACKED 147                                // legacy hash/record codec, independent of C struct padding
+#define GS_ANS_PACKED (ANSWERS_PACKED + 1)
+#define LEGACY_ANS_SIZE 152                               // version-1 .in ABI; do not replace with a new sizeof
 #define MAX_SVC 32                                         // translator processes
 
 typedef struct {                                           // which answers a shader's translation depends on
@@ -97,6 +101,7 @@ struct GfxShader {
     uint32_t in_mask, out_mask;                            // user Locations of Input / Output variables
     GfxShaderIo in[32], out[32];
     uint32_t local[3];
+    GfxShaderGeometry geometry;
     Nvn2C0Layout c0;                                       // NVN 2 compute parameter-block layout, when has_c0
     int has_c0;
 };
@@ -133,6 +138,7 @@ static char xlate_exe[PATH_CAP];
 static uint8_t xlate_id[32];                               // translator identity (see the keys at the top)
 static int host_f64 = 1, host_set;                         // gfx_shader_set_host
 static uint32_t host_sbuf, host_sg[3] = {32, 32, 32}, host_gather;
+static uint32_t host_gs_sg;                               // must be supplied explicitly by the host
 static PlatOnce paths_once = PLAT_ONCE_INIT;
 
 // ---- small helpers
@@ -340,6 +346,20 @@ void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgro
     memcpy(buf, xlate_id, 32);
     rt_sha256(buf, 32 + (size_t)n, xlate_id);
     rt_log("gfx_shader: host options %s: own shader cache keys", (char *)buf + 37);
+}
+
+void gfx_shader_set_geometry_host(uint32_t subgroup) {
+    if (!subgroup || (subgroup & (subgroup - 1))) rt_fatal("gfx_shader: invalid geometry subgroup size %u", subgroup);
+    if (host_gs_sg == subgroup) return;
+    if (host_gs_sg || n_requests || n_keys) rt_fatal("gfx_shader: geometry host answers changed after initialization");
+    paths();
+    host_gs_sg = subgroup;
+    if (subgroup == 32) return;                           // the managed service's default; preserve legacy output keys
+    // A separate capability tag preserves the existing three-stage host API. Like other host options this changes
+    // output keys and use-mask namespaces, not code hashes or input IDs with the same learned dependencies.
+    uint8_t buf[40];
+    memcpy(buf, xlate_id, 32), memcpy(buf + 32, "TKHG", 4), memcpy(buf + 36, &subgroup, 4);
+    rt_sha256(buf, sizeof buf, xlate_id);
 }
 
 // ---- the translator children
@@ -555,7 +575,8 @@ static int reflection_valid(const char *res, uint64_t size) {
     const char *st = strstr(b, "\"stage\"");
     if (!st) return 0;
     st = strchr(st + 7, '"');
-    return st && (!strncmp(st, "\"vs\"", 4) || !strncmp(st, "\"ps\"", 4) || !strncmp(st, "\"cs\"", 4));
+    return st && (!strncmp(st, "\"vs\"", 4) || !strncmp(st, "\"ps\"", 4) || !strncmp(st, "\"cs\"", 4) ||
+                  !strncmp(st, "\"gs\"", 4));
 }
 
 // Every instruction after the header has a word count and the last one ends at the module's end: a module with
@@ -656,6 +677,136 @@ static void json_str(const char *o, const char *e, const char *name, char *buf, 
     buf[k] = 0;
 }
 
+static const char *json_space(const char *p, const char *end) {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+    return p;
+}
+
+// Bounded JSON token traversal for the versioned geometry contract. The older resource reader below is intentionally
+// unchanged; strtol alone cannot distinguish integer fields from floats, strings or truncated values.
+static const char *json_token_end(const char *p, const char *end, unsigned depth) {
+    p = json_space(p, end);
+    if (p == end || depth > 64) return NULL;
+    if (*p == '"') {
+        for (p++; p < end; p++) {
+            if (*p == '"') return p + 1;
+            if ((unsigned char)*p < 32) return NULL;
+            if (*p != '\\') continue;
+            if (++p == end) return NULL;
+            if (*p == 'u') {
+                for (int i = 0; i < 4; i++) if (++p == end || !isxdigit((unsigned char)*p)) return NULL;
+            } else if (!strchr("\"\\/bfnrt", *p)) return NULL;
+        }
+        return NULL;
+    }
+    if (*p == '{' || *p == '[') {
+        int object = *p == '{';
+        char close = object ? '}' : ']';
+        p = json_space(p + 1, end);
+        if (p < end && *p == close) return p + 1;
+        for (;;) {
+            if (object) {
+                if (p == end || *p != '"' || !(p = json_token_end(p, end, depth + 1))) return NULL;
+                p = json_space(p, end);
+                if (p == end || *p != ':') return NULL;
+                p++;
+            }
+            if (!(p = json_token_end(p, end, depth + 1))) return NULL;
+            p = json_space(p, end);
+            if (p == end) return NULL;
+            if (*p == close) return p + 1;
+            if (*p != ',') return NULL;
+            p = json_space(p + 1, end);
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        const char *literal = i == 0 ? "true" : i == 1 ? "false" : "null";
+        size_t n = strlen(literal);
+        if ((size_t)(end - p) >= n && !memcmp(p, literal, n)) return p + n;
+    }
+    if (*p == '-') p++;
+    if (p == end || !isdigit((unsigned char)*p)) return NULL;
+    if (*p == '0') p++;
+    else while (p < end && isdigit((unsigned char)*p)) p++;
+    if (p < end && *p == '.') {
+        if (++p == end || !isdigit((unsigned char)*p)) return NULL;
+        while (p < end && isdigit((unsigned char)*p)) p++;
+    }
+    if (p < end && (*p == 'e' || *p == 'E')) {
+        p++;
+        if (p < end && (*p == '+' || *p == '-')) p++;
+        if (p == end || !isdigit((unsigned char)*p)) return NULL;
+        while (p < end && isdigit((unsigned char)*p)) p++;
+    }
+    return p;
+}
+
+// NULL: absent; end: malformed object or duplicate/escaped keys. Object keys emitted by our service are plain ASCII.
+static const char *json_member(const char *o, const char *end, const char *name) {
+    const char *p = json_space(o, end), *found = NULL;
+    size_t size = strlen(name);
+    if (p == end || *p++ != '{') return end;
+    for (;;) {
+        p = json_space(p, end);
+        if (p < end && *p == '}') return found;
+        const char *key = p, *ke = json_token_end(p, end, 0);
+        if (!ke || *p != '"' || memchr(p, '\\', (size_t)(ke - p))) return end;
+        p = json_space(ke, end);
+        if (p == end || *p++ != ':') return end;
+        p = json_space(p, end);
+        if ((size_t)(ke - key) == size + 2 && !memcmp(key + 1, name, size)) {
+            if (found) return end;
+            found = p;
+        }
+        if (!(p = json_token_end(p, end, 0))) return end;
+        p = json_space(p, end);
+        if (p < end && *p == '}') return found;
+        if (p == end || *p++ != ',') return end;
+    }
+}
+
+static int json_string_is(const char *p, const char *end, const char *value) {
+    size_t n = strlen(value);
+    return p && p < end && (size_t)(end - p) >= n + 2 && *p == '"' && !memcmp(p + 1, value, n) && p[n + 1] == '"';
+}
+
+static int json_uint(const char *o, const char *end, const char *name, uint32_t *out) {
+    const char *p = json_member(o, end, name), *q;
+    if (!p || p == end || !isdigit((unsigned char)*p) || !(q = json_token_end(p, end, 0))) return 0;
+    uint32_t v = 0;
+    for (; p < q; p++) {
+        if (!isdigit((unsigned char)*p) || v > (UINT32_MAX - (uint32_t)(*p - '0')) / 10) return 0;
+        v = v * 10 + (uint32_t)(*p - '0');
+    }
+    *out = v;
+    return 1;
+}
+
+static const char *const geometry_names[] = {NULL, "points", "lines", "lines_adjacency", "triangles", "triangles_adjacency"};
+static const uint32_t geometry_vertices[] = {0, 1, 2, 4, 3, 6};
+static const char *const geometry_outputs[] = {NULL, "points", "line_strip", "triangle_strip"};
+
+static int geometry_json(const char *js, const char *end, GfxShaderGeometry *g) {
+    memset(g, 0, sizeof *g);
+    if (!json_uint(js, end, "geometry_version", &g->version) || g->version != GFX_GEOMETRY_VERSION) return 0;
+    const char *input = json_member(js, end, "gs_input"), *o = json_member(js, end, "geometry");
+    for (unsigned i = 1; i < COUNT(geometry_names); i++)
+        if (json_string_is(input, end, geometry_names[i])) g->input = i;
+    if (!g->input || !o || o == end || *o != '{') return 0;
+    const char *oe = json_token_end(o, end, 0);
+    if (!oe) return 0;
+    const char *pass = json_member(o, oe, "passthrough");
+    if (!pass || pass == oe || oe - pass < 5 || memcmp(pass, "false", 5)) return 0;
+    if (!json_uint(o, oe, "input_vertices", &g->input_vertices) || g->input_vertices != geometry_vertices[g->input] ||
+        !json_uint(o, oe, "invocations", &g->invocations) || !g->invocations || g->invocations > 255 ||
+        !json_uint(o, oe, "max_output_vertices", &g->max_output_vertices) || !g->max_output_vertices || g->max_output_vertices > 4095)
+        return 0;
+    const char *output = json_member(o, oe, "output_topology");
+    for (unsigned i = 1; i < COUNT(geometry_outputs); i++)
+        if (json_string_is(output, oe, geometry_outputs[i])) g->output = i;
+    return g->output != 0;
+}
+
 // The objects of the flat array `"name": [ {...}, ... ]`: calls fn for each object's [start, end). Returns the count.
 static int json_objects(const char *js, const char *name, void (*fn)(GfxShader *, int, const char *, const char *),
                         GfxShader *s, int kind) {
@@ -733,6 +884,57 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
 enum { OP_ENTRY_POINT = 15, OP_EXECUTION_MODE = 16, OP_TYPE_INT = 21, OP_TYPE_FLOAT = 22, OP_TYPE_VECTOR = 23,
        OP_TYPE_ARRAY = 28, OP_TYPE_POINTER = 32, OP_CONSTANT = 43, OP_VARIABLE = 59, OP_DECORATE = 71,
        DEC_BUILTIN = 11, DEC_LOCATION = 30, DEC_COMPONENT = 31, SC_INPUT = 1, SC_OUTPUT = 3, EM_LOCAL_SIZE = 17 };
+
+// The service emits one ordinary GS main with four execution modes. Validate those against JSON on every disk
+// load, including private/by-IID loads which have no original request. This is protocol validation, not spirv-val.
+static int geometry_spirv(const GfxShader *s) {
+    const uint32_t *w = s->spirv;
+    uint32_t entry = 0, modes = 0, capability = 0;
+    int gs = s->stage == GFX_STAGE_GS;
+    if (s->words < 5) return !gs;
+    for (uint64_t i = 5; i < s->words;) {
+        uint32_t len = w[i] >> 16, op = w[i] & 0xffff;
+        if (!len || len > s->words - i) return 0;
+        const uint32_t *a = w + i + 1;
+        if (op == 17 && len >= 2) {                      // OpCapability
+            if (a[0] == 5251) return 0;                  // GeometryShaderPassthroughNV
+            if (a[0] == 2) capability = 1;               // Geometry
+        } else if (op == 10 && len >= 2) {               // OpExtension
+            static const char pass[] = "SPV_NV_geometry_shader_passthrough";
+            if ((len - 1) * 4 >= sizeof pass && !memcmp(a, pass, sizeof pass)) return 0;
+        } else if ((op == 71 && len >= 3 && a[1] == 5250) ||
+                   (op == 72 && len >= 4 && a[2] == 5250)) return 0;   // PassthroughNV decoration/member decoration
+        else if (op == OP_ENTRY_POINT) {
+            if (len < 4 || (!gs && a[0] == 3)) return 0;
+            if (gs) {
+                const char *name = (const char *)(a + 2);
+                if (entry || a[0] != 3 || !a[1] || a[1] >= w[3] ||
+                    (len - 3) * 4 < 5 || memcmp(name, "main", 5)) return 0;
+                entry = a[1];
+            }
+        } else if (gs && op == OP_EXECUTION_MODE) {
+            if (len < 3 || !entry || a[0] != entry) return 0;
+            uint32_t bit = 0;
+            if (a[1] >= 19 && a[1] <= 23) {
+                bit = 1;
+                if (len != 3 || a[1] != 18 + s->geometry.input) return 0;
+            } else if (a[1] == 0) {                       // Invocations
+                bit = 2;
+                if (len != 4 || a[2] != s->geometry.invocations) return 0;
+            } else if (a[1] == 26) {                      // OutputVertices
+                bit = 4;
+                if (len != 4 || a[2] != s->geometry.max_output_vertices) return 0;
+            } else if (a[1] >= 27 && a[1] <= 29) {
+                bit = 8;
+                if (len != 3 || a[1] != 26 + s->geometry.output) return 0;
+            } else return 0;
+            if (modes & bit) return 0;
+            modes |= bit;
+        }
+        i += len;
+    }
+    return !gs || (entry && capability && modes == 15);
+}
 
 // Interface Locations and the compute workgroup size from the module. Ids beyond 2^20 are ignored (Ryujinx modules stay
 // far below).
@@ -814,11 +1016,20 @@ out:
 static int reflect(GfxShader *s, int require_c0) {
     static const char *const kinds[GFX_RES_KINDS] = {"cbufs", "sbufs", "textures", "images"};
     const char *js = s->reflection;
-    char stage[8];
-    json_str(js, js + strlen(js), "stage", stage, sizeof stage);
-    s->stage = !strcmp(stage, "cs") ? GFX_STAGE_CS : !strcmp(stage, "ps") ? GFX_STAGE_FS : GFX_STAGE_VS;
     const char *end = js + strlen(js);
+    const char *whole = json_token_end(js, end, 0), *stage = json_member(js, end, "stage");
+    if (!whole || json_space(whole, end) != end) return 0;
+    s->stage = json_string_is(stage, end, "vs") ? GFX_STAGE_VS : json_string_is(stage, end, "ps") ? GFX_STAGE_FS :
+               json_string_is(stage, end, "cs") ? GFX_STAGE_CS : json_string_is(stage, end, "gs") ? GFX_STAGE_GS : -1;
+    if (s->stage < 0) return 0;
+    if (s->stage == GFX_STAGE_GS) {
+        if (!host_gs_sg || !geometry_json(js, end, &s->geometry)) return 0;
+    } else if (json_member(js, end, "geometry_version") || json_member(js, end, "gs_input") ||
+               json_member(js, end, "geometry")) return 0;
+    if (!geometry_spirv(s)) return 0;
     const char *c0 = json_key(js, end, "c0");
+    if (s->stage == GFX_STAGE_GS && (require_c0 || json_member(js, end, "c0") ||
+        json_member(js, end, "c0_version") || json_member(js, end, "c0_roots"))) return 0;
     if (c0 && *c0 == '[') {
         const char *roots = json_key(js, end, "c0_roots");
         if (json_int(js, end, "c0_version", 0) != 2 || !roots || *roots != '[') {
@@ -1061,9 +1272,40 @@ static size_t pack_answers(uint8_t *o, const GfxShaderAnswers *a) {
     return (size_t)(p - o);
 }
 
+static void unpack_answers(const uint8_t *p, GfxShaderAnswers *a);
+
+// Versioned GS storage/record codec. Hashing deliberately retains the exact legacy 147-byte sequence.
+static size_t pack_geometry_answers(uint8_t *o, const GfxShaderAnswers *a) {
+    size_t n = pack_answers(o, a);
+    o[n++] = a ? a->geometry_input : 0;
+    return n;
+}
+
+static void unpack_geometry_answers(const uint8_t *p, GfxShaderAnswers *a) {
+    unpack_answers(p, a);
+    a->geometry_input = p[ANSWERS_PACKED];
+}
+
+// The original .in format stores a 152-byte little-endian C ABI: two padding bytes before shared_bytes and three
+// after depth_minus_w. Name neither padding as a new answer nor depend on the current struct's sizeof/offsets.
+static void pack_legacy_input_answers(uint8_t out[LEGACY_ANS_SIZE], const GfxShaderAnswers *a) {
+    uint8_t packed[ANSWERS_PACKED];
+    pack_answers(packed, a);
+    memset(out, 0, LEGACY_ANS_SIZE);
+    memcpy(out, packed, 142), memcpy(out + 144, packed + 142, 4), out[148] = packed[146];
+}
+
+static void unpack_legacy_input_answers(const uint8_t in[LEGACY_ANS_SIZE], GfxShaderAnswers *a) {
+    uint8_t packed[ANSWERS_PACKED];
+    memcpy(packed, in, 142), memcpy(packed + 142, in + 144, 4), packed[146] = in[148];
+    unpack_answers(packed, a);
+}
+
 static int build_code_hash(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
-                           const uint8_t *c1, uint32_t c1_len, uint8_t hash[32]) {
-    size_t total = 4 + CONTROL_SIZE + 8 + (size_t)code_size + 4 + c1_len;
+                           const uint8_t *c1, uint32_t c1_len, uint8_t geometry_input, uint8_t hash[32]) {
+    if ((stage == GFX_STAGE_GS && (!geometry_input || geometry_input >= COUNT(geometry_names))) ||
+        (stage != GFX_STAGE_GS && geometry_input)) return 0;
+    size_t total = 4 + CONTROL_SIZE + 8 + (size_t)code_size + 4 + c1_len + (stage == GFX_STAGE_GS ? 12 : 0);
     uint8_t *buf = malloc(total), *p = buf;
     if (!buf) return 0;
     put_u32(&p, (uint32_t)stage);
@@ -1072,6 +1314,11 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
     memcpy(p, code, (size_t)code_size), p += code_size;
     put_u32(&p, c1_len);
     if (c1_len) memcpy(p, c1, c1_len);
+    p += c1_len;
+    if (stage == GFX_STAGE_GS) {
+        memcpy(p, "TKGS", 4), p += 4;
+        put_u32(&p, GFX_GEOMETRY_VERSION), put_u32(&p, geometry_input);
+    }
     rt_sha256(buf, total, hash);
     free(buf);
     return 1;
@@ -1134,6 +1381,8 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     o += sprintf(o, "\",\"c1\":\"");
     for (uint32_t i = 0; i < c1_len; i++) o += sprintf(o, "%02x", c1[i]);
     o += sprintf(o, "\"");
+    if (!strcmp(stage, "gs"))
+        o += sprintf(o, ",\"geometry_version\":%u,\"gs_input\":\"%s\"", GFX_GEOMETRY_VERSION, geometry_names[a->geometry_input]);
     if (a) {
         const char *sep = "";
         o += sprintf(o, ",\"tex\":{");
@@ -1173,10 +1422,11 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
        ae8f4f4). Without it a shader that stores to memory is depth-tested late, and the G-buffer draws' EQUAL test
        after the depth prepass fails along contour lines. Already part of the code hash (the whole control section). */
     if (!strcmp(stage, "ps") && (control[0x718] & 1)) o += sprintf(o, ",\"early_fragment_tests\":true");
-    int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
+    int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // legacy gfx_shader_set_host answers
+    uint32_t subgroup = !strcmp(stage, "gs") ? host_gs_sg : host_sg[si];
     if (!host_f64) o += sprintf(o, ",\"softfloat64\":true");
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
-    if (host_sg[si] != 32) o += sprintf(o, ",\"subgroup\":%u", host_sg[si]);
+    if (subgroup != 32) o += sprintf(o, ",\"subgroup\":%u", subgroup);
     if (host_gather) o += sprintf(o, ",\"gather_bias\":%u", host_gather);
     o += sprintf(o, "},\"out\":\"");
     json_esc(&o, cache_dir);
@@ -1232,6 +1482,9 @@ static const GfxShader *fail(const char *why, const char *hex) {
 // A validated request: the program's code length, its c1 constants and the cache key. 0 (failure counted) when invalid.
 typedef struct {
     const char *stage_name;
+    int stage;
+    uint8_t geometry_input;
+    GfxShaderGeometry geometry;
     uint32_t length, c1_len;
     const uint8_t *c1;
     uint8_t code_hash[32];
@@ -1295,27 +1548,62 @@ void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code) {
 
 static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size, const uint8_t *c1,
                     const GfxShaderAnswers *a) {
+    memset(r, 0, sizeof *r);
+    if (!control) return fail("missing control section", NULL), 0;
     // Reading an NVN 2 control block at the NVN 1 offsets (+0x700, +0x704) runs off its end and yields a bogus code
     // length, which once crashed the Vulkan path.
     if (control && gfx_shader_is_nvn2(control)) return fail("NVN 2 program (Ampere code): no translator yet", NULL), 0;
     if (control && stage == GFX_STAGE_CS && !memcmp(control + NVN2_C0_LAYOUT, "DKC0", 4))
         return fail("old NVN 2 compute control: regenerate shader inputs with root layout version 2", NULL), 0;
     r->require_c0 = stage == GFX_STAGE_CS && !memcmp(control + NVN2_C0_LAYOUT, "DKC1", 4);
-    r->stage_name = stage == GFX_STAGE_VS ? "vs" : stage == GFX_STAGE_FS ? "ps" : stage == GFX_STAGE_CS ? "cs" : NULL;
+    r->stage = stage;
+    r->geometry_input = a ? a->geometry_input : 0;
+    r->stage_name = stage == GFX_STAGE_VS ? "vs" : stage == GFX_STAGE_FS ? "ps" : stage == GFX_STAGE_CS ? "cs" :
+                    stage == GFX_STAGE_GS ? "gs" : NULL;
     if (!r->stage_name) return fail("stage is not translated", NULL), 0;
     uint32_t c1_off;
     memcpy(&c1_off, control + 0x700, 4), memcpy(&r->length, control + 0x704, 4);
     uint64_t skip = stage == GFX_STAGE_CS ? 0 : CODE_SKIP;
     if (!code || r->length > code_size || c1_off > r->length || skip >= r->length) return fail("bad control section", NULL), 0;
+    if (stage == GFX_STAGE_GS) {
+        uint32_t sph[5];
+        if (!host_gs_sg) return fail("geometry host answers are not initialized", NULL), 0;
+        if (!r->geometry_input || r->geometry_input >= COUNT(geometry_names) ||
+            c1_off < CODE_SKIP + 0x60 || (c1_off - CODE_SKIP) % 8 || (r->length - CODE_SKIP) % 8)
+            return fail("incomplete geometry request", NULL), 0;
+        memcpy(sph, code + CODE_SKIP, sizeof sph);
+        uint32_t output = sph[3] >> 24 & 15;
+        if ((sph[0] >> 10 & 15) != 4 || (sph[0] & (1u << 24)) || !(sph[2] >> 24) || !(sph[4] & 0xfff) ||
+            (output != 1 && output != 6 && output != 7)) return fail("unsupported geometry SPH", NULL), 0;
+        if (!memcmp(control + NVN2_C0_LAYOUT, "DKC1", 4) || !memcmp(control + NVN2_C0_LAYOUT, "DKC0", 4))
+            return fail("compute root layout supplied for geometry", NULL), 0;
+        r->geometry = (GfxShaderGeometry){.version = GFX_GEOMETRY_VERSION, .input = r->geometry_input,
+            .input_vertices = geometry_vertices[r->geometry_input], .output = output == 1 ? 1 : output == 6 ? 2 : 3,
+            .invocations = sph[2] >> 24, .max_output_vertices = sph[4] & 0xfff};
+    } else if (r->geometry_input) return fail("geometry input supplied for another stage", NULL), 0;
     r->c1_len = r->length - c1_off;
     r->c1 = c1 ? c1 : code + c1_off;
-    if (!build_code_hash(stage, control, code, r->length, r->c1, r->c1_len, r->code_hash))
+    if (!build_code_hash(stage, control, code, r->length, r->c1, r->c1_len, r->geometry_input, r->code_hash))
         return fail("out of memory", NULL), 0;
     paths();
     UseMask m;
     r->final = use_find(r->code_hash, &m);
     build_key(r->code_hash, a, r->final ? &m : NULL, r->key, r->iid);
     return 1;
+}
+
+static int shader_matches_request(const GfxShader *s, const Req *r) {
+    return s->stage == r->stage && (r->stage != GFX_STAGE_GS || !memcmp(&s->geometry, &r->geometry, sizeof r->geometry));
+}
+
+static GfxShader *request_disk_load(const Req *r, const uint8_t key[32], const uint8_t *iid) {
+    for (int packed = pack_n ? 1 : 0; packed >= 0; packed--) {
+        GfxShader *s = disk_load_from(key, iid, packed, r->require_c0);
+        if (!s) continue;
+        if (shader_matches_request(s, r)) return s;
+        shader_free(s);
+    }
+    return NULL;
 }
 
 static const GfxShader *translate(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
@@ -1334,11 +1622,11 @@ static void note_failed(const uint8_t key[32]);
 static const GfxShader *get_one(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
                                 const GfxShaderAnswers *a) {
     GfxShader *s = mem_find(r->key);
-    if (s) return plat_inc64(&n_hits), s;
+    if (s) return shader_matches_request(s, r) ? (plat_inc64(&n_hits), s) : fail("cached stage contract differs from request", NULL);
     if (known_failed(r->key)) return NULL;
     paths();
     if (!cache_dir[0]) return fail("no cache directory", NULL);
-    if (r->final && (s = disk_load(r->key, r->iid, r->require_c0))) return plat_inc64(&n_hits), mem_insert(s);
+    if (r->final && (s = request_disk_load(r, r->key, r->iid))) return plat_inc64(&n_hits), mem_insert(s);
     const GfxShader *t = translate(r, stage, control, code, a);
     if (!t) note_failed(r->key);
     return t;
@@ -1379,13 +1667,16 @@ static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, c
     char p[PATH_CAP + 80], tmp[PATH_CAP + 120];
     in_path(iid, p);
     if (pack_find(PACK_IN, iid) || file_exists(p)) return;
-    GfxShaderAnswers zero = {0};
-    InHeader h = {IN_MAGIC, IN_VERSION, (uint32_t)stage, r->length, r->c1_len, sizeof(GfxShaderAnswers)};
-    size_t n = sizeof h + sizeof zero + CONTROL_SIZE + r->length + r->c1_len;
+    int gs = stage == GFX_STAGE_GS;
+    InHeader h = {IN_MAGIC, gs ? GS_IN_VERSION : IN_VERSION, (uint32_t)stage, r->length, r->c1_len,
+                  gs ? GS_ANS_PACKED : LEGACY_ANS_SIZE};
+    size_t n = sizeof h + h.answers_size + CONTROL_SIZE + r->length + r->c1_len;
     uint8_t *buf = malloc(n), *o = buf;
     if (!buf) return;
     memcpy(o, &h, sizeof h), o += sizeof h;
-    memcpy(o, a ? a : &zero, sizeof zero), o += sizeof zero;
+    if (gs) pack_geometry_answers(o, a);
+    else pack_legacy_input_answers(o, a);
+    o += h.answers_size;
     memcpy(o, control, CONTROL_SIZE), o += CONTROL_SIZE;
     memcpy(o, code, r->length), o += r->length;
     if (r->c1_len) memcpy(o, r->c1, r->c1_len);
@@ -1405,12 +1696,21 @@ static int in_load(const uint8_t iid[32], Inputs *in) {
     InHeader h;
     if (!f || n < sizeof h) return free(f), 0;
     memcpy(&h, f, sizeof h);
-    if (h.magic != IN_MAGIC || h.version != IN_VERSION || h.answers_size != sizeof(GfxShaderAnswers) ||
-        n != sizeof h + sizeof(GfxShaderAnswers) + CONTROL_SIZE + (uint64_t)h.length + h.c1_len)
+    int gs = h.stage == GFX_STAGE_GS;
+    if (h.magic != IN_MAGIC || (gs ? h.version != GS_IN_VERSION || h.answers_size != GS_ANS_PACKED
+                                 : h.version != IN_VERSION || h.answers_size != LEGACY_ANS_SIZE) ||
+        (h.stage != GFX_STAGE_VS && h.stage != GFX_STAGE_FS && h.stage != GFX_STAGE_CS && !gs) ||
+        h.c1_len > h.length || n != sizeof h + h.answers_size + CONTROL_SIZE + (uint64_t)h.length + h.c1_len)
         return free(f), 0;
     const uint8_t *o = f + sizeof h;
-    memcpy(&in->a, o, sizeof in->a), o += sizeof in->a;
+    if (gs) unpack_geometry_answers(o, &in->a);
+    else unpack_legacy_input_answers(o, &in->a);
+    if (gs && (!in->a.geometry_input || in->a.geometry_input >= COUNT(geometry_names))) return free(f), 0;
+    o += h.answers_size;
     in->control = o, o += CONTROL_SIZE;
+    uint32_t length, c1_at;
+    memcpy(&length, in->control + 0x704, 4), memcpy(&c1_at, in->control + 0x700, 4);
+    if (length != h.length || c1_at > length || length - c1_at != h.c1_len) return free(f), 0;
     in->code = o, o += h.length;
     in->c1 = o;
     in->buf = f, in->stage = (int)h.stage, in->length = h.length, in->c1_len = h.c1_len;
@@ -1467,8 +1767,9 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     // Another thread may have translated it while this one waited in flight_enter.
     const uint8_t *look = r->final ? key : NULL, *look_iid = r->iid;
     if (!r->final && use_find(r->code_hash, &m)) build_key(r->code_hash, a, &m, mk, miid), look = mk, look_iid = miid;
-    if (look && (s = mem_find(look))) return plat_inc64(&n_hits), s;
-    if (look && (s = disk_load(look, look_iid, r->require_c0))) return plat_inc64(&n_hits), mem_insert(s);
+    if (look && (s = mem_find(look)))
+        return shader_matches_request(s, r) ? (plat_inc64(&n_hits), s) : fail("cached stage contract differs from request", NULL);
+    if (look && (s = request_disk_load(r, look, look_iid))) return plat_inc64(&n_hits), mem_insert(s);
 
     uint64_t skip = stage == GFX_STAGE_CS ? 0 : CODE_SKIP;
     char hex[65], code_path[PATH_CAP + 80], spv_path[PATH_CAP + 80], res_path[PATH_CAP + 80];
@@ -1492,7 +1793,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         return fail(reply, hex);
     }
     plat_file_flush(spv_path), plat_file_flush(res_path);   // the translator wrote them; on disk before use or rename
-    if (!(s = disk_load(key, r->iid, r->require_c0))) return fail("translator output missing or malformed", hex);
+    if (!(s = request_disk_load(r, key, r->iid))) return fail("translator output missing or malformed", hex);
     if (!r->final) {                                       // name the files after the cache key, remember the mask
         m = use_of(s);
         build_key(r->code_hash, a, &m, mk, miid);
@@ -1614,7 +1915,7 @@ const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const u
 static const GfxShader *get_async_one(Req r, int stage, const uint8_t *control, const uint8_t *code,
                                       const GfxShaderAnswers *a, int *pending) {
     GfxShader *s = mem_find(r.key);
-    if (s) return plat_inc64(&n_hits), s;
+    if (s) return shader_matches_request(s, &r) ? (plat_inc64(&n_hits), s) : fail("cached stage contract differs from request", NULL);
     plat_mutex_lock_shared(&X.lock);
     XWait *w = *wait_slot(r.key);
     int failed = w && w->failed;
@@ -1622,7 +1923,7 @@ static const GfxShader *get_async_one(Req r, int stage, const uint8_t *control, 
     if (w) return *pending = !failed, NULL;
     paths();
     if (!cache_dir[0]) return fail("no cache directory", NULL);
-    if (r.final && (s = disk_load(r.key, r.iid, r.require_c0))) return plat_inc64(&n_hits), mem_insert(s);
+    if (r.final && (s = request_disk_load(&r, r.key, r.iid))) return plat_inc64(&n_hits), mem_insert(s);
 
     XJob *j = calloc(1, sizeof *j);
     XWait *e = calloc(1, sizeof *e);
@@ -1840,6 +2141,7 @@ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
 }
 
 int gfx_shader_stage(const GfxShader *s) { return s->stage; }
+const GfxShaderGeometry *gfx_shader_geometry(const GfxShader *s) { return s->stage == GFX_STAGE_GS ? &s->geometry : NULL; }
 
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res) {
     if (kind < 0 || kind >= GFX_RES_KINDS) return 0;
@@ -1870,8 +2172,8 @@ void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]) { memcpy(local
 // census) does not match the keys play asks for. Every (program, answers) that a gfx_shader_get* call resolves is
 // recorded next to pipeline-keys.bin, so the first-start preparation (Task 2.6, here the TOTK_TEST_PREPARE_SHADERS hook)
 // translates exactly the variants play needs, from these files alone:
-//   shader-answers.bin  "TOTKSANS", version, record size; records: stage (u32), code hash, input id, pack_answers bytes
-//                       of the full answers, zero padding. One record per input id: answers outside the shader's use
+//   shader-answers.bin  "TOTKSANS", version, record size; records: stage (u32), code hash, input id, packed full answers,
+//                       GS input selector (v2), priority. One record per input id: answers outside the shader's use
 //                       mask do not change its SPIR-V, are out of its input id and cache key (mask_answers) and so do
 //                       not make records of their own (a fight run meets 4126 full pairs, 1238 input ids). The full
 //                       answers are kept so a translator with a wider mask still gets them. Under a new translator
@@ -1880,9 +2182,10 @@ void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]) { memcpy(local
 //                       code[length], c1. One per code hash; written before the answers that name it. Game content:
 //                       it stays in the ignored pipeline cache directory.
 // A file with another header is rewritten; a torn tail (killed process) is cut off at open.
-#define ANS_VERSION 1
-#define ANS_PACKED 147                                     // pack_answers' size
+#define ANS_VERSION 2                                     // independent GS input selector; readers retain version 1
+#define ANS_PACKED GS_ANS_PACKED
 #define ANS_REC (4 + 32 + 32 + ANS_PACKED + 1)
+#define ANS_REC_V1 (4 + 32 + 32 + ANSWERS_PACKED + 1)
 #define PRG_VERSION 1
 #define PRG_HEAD (12 + 32 + CONTROL_SIZE)
 typedef struct { char magic[8]; uint32_t version, rec_size; } RecHeader;
@@ -1950,6 +2253,68 @@ static void unpack_answers(const uint8_t *p, GfxShaderAnswers *a) {
     a->depth_minus_w = *p;
 }
 
+// Normalize both answer record versions to v2 in memory. The final byte is seed priority, never spare padding.
+// Whole legacy records retain every byte and gain a zero selector. A torn final record is the only discarded data.
+static int answers_decode(const uint8_t *file, size_t size, uint8_t **body, size_t *n, int *rewrite) {
+    *body = NULL, *n = 0, *rewrite = 0;
+    if (!size) { *rewrite = 1; return 1; }
+    RecHeader h;
+    if (size < sizeof h) return 0;
+    memcpy(&h, file, sizeof h);
+    int legacy = h.version == 1 && h.rec_size == ANS_REC_V1;
+    if (memcmp(h.magic, "TOTKSANS", 8) || (!legacy && (h.version != ANS_VERSION || h.rec_size != ANS_REC))) return 0;
+    size_t bytes = size - sizeof h, count = bytes / h.rec_size;
+    if (count > SIZE_MAX / ANS_REC) return 0;
+    uint8_t *out = calloc(count ? count : 1, ANS_REC);
+    if (!out) return 0;
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t *from = file + sizeof h + i * h.rec_size;
+        uint8_t *to = out + i * ANS_REC;
+        if (legacy) {
+            memcpy(to, from, ANS_REC_V1 - 1);
+            to[ANS_REC - 1] = from[ANS_REC_V1 - 1];
+        } else memcpy(to, from, ANS_REC);
+        uint32_t stage;
+        memcpy(&stage, to, 4);
+        uint8_t input = to[68 + ANSWERS_PACKED];
+        if (stage == GFX_STAGE_GS ? (!input || input >= COUNT(geometry_names)) :
+            (input || (stage != GFX_STAGE_VS && stage != GFX_STAGE_FS && stage != GFX_STAGE_CS))) {
+            free(out);
+            return 0;
+        }
+    }
+    *body = out, *n = count * ANS_REC;
+    *rewrite = legacy || bytes % h.rec_size;
+    return 1;
+}
+
+// Read-only users normalize without modifying disk. Recording upgrades atomically before it can append a v2 record;
+// an allocation/write/format failure leaves the old file intact and prevents recording into a mixed-version file.
+static int answers_read(const char *path, uint8_t **body, size_t *n, int migrate) {
+    *body = NULL, *n = 0;
+    uint64_t size = 0;
+    uint8_t *file = read_file(path, &size);
+    if (!file) return 0;
+    int rewrite = 0, ok = size <= SIZE_MAX && answers_decode(file, (size_t)size, body, n, &rewrite);
+    free(file);
+    if (ok && migrate && rewrite) {
+        RecHeader h = {{'T','O','T','K','S','A','N','S'}, ANS_VERSION, ANS_REC};
+        if (*n > SIZE_MAX - sizeof h) ok = 0;
+        uint8_t *out = ok ? malloc(sizeof h + *n) : NULL;
+        if (out) {
+            memcpy(out, &h, sizeof h);
+            if (*n) memcpy(out + sizeof h, *body, *n);
+            ok = plat_file_write_atomic(path, out, sizeof h + *n);
+            free(out);
+        } else ok = 0;
+    }
+    if (!ok) {
+        free(*body), *body = NULL, *n = 0;
+        rt_log("gfx_shader: cannot read or upgrade %s; existing answers were retained", path);
+    }
+    return ok;
+}
+
 // Reads a record file's body (after its header) into *body; 0 when absent, and a file with another header is removed.
 static int rec_read(const char *path, const char *magic, uint32_t version, uint32_t rec_size, uint8_t **body, size_t *n) {
     *body = NULL, *n = 0;
@@ -2004,9 +2369,11 @@ void gfx_shader_record_at(const char *keys_path) {
     snprintf(RC.prg_path, sizeof RC.prg_path, "%.*sshader-programs.bin", dir, keys_path);
     uint8_t *b;
     size_t n;
-    if (rec_read(RC.ans_path, "TOTKSANS", ANS_VERSION, ANS_REC, &b, &n)) {
+    if (answers_read(RC.ans_path, &b, &n, 1)) {
         for (size_t o = 0; o + ANS_REC <= n; o += ANS_REC) set_add(&RC.pairs, hash8(b + o + 36));
-        if (n % ANS_REC) truncate_to(RC.ans_path, sizeof(RecHeader) + n / ANS_REC * ANS_REC);
+    } else if (file_exists(RC.ans_path)) {
+        plat_mutex_unlock(&RC.lock);
+        return;                                          // do not append a different format after a failed migration
     }
     free(b);
     if (rec_read(RC.prg_path, "TOTKSPRG", PRG_VERSION, 0, &b, &n)) {
@@ -2030,7 +2397,7 @@ static void ans_note(const Req *r, int stage, const uint8_t *control, const uint
     if (set_add(&RC.pairs, hash8(s->iid))) {
         uint8_t rec[ANS_REC] = {0};
         memcpy(rec, &st, 4), memcpy(rec + 4, r->code_hash, 32), memcpy(rec + 36, s->iid, 32);
-        pack_answers(rec + 68, a);
+        pack_geometry_answers(rec + 68, a);
         if (set_add(&RC.progs, hash8(r->code_hash))) {
             uint32_t head[3] = {st, r->length, r->c1_len};
             bytes_put(&RC.prg, head, 12), bytes_put(&RC.prg, r->code_hash, 32);
@@ -2117,7 +2484,13 @@ static void prep_worker(void *arg) {
         memcpy(&st, e->rec, 4), memcpy(&len, e->rec + 4, 4);
         const uint8_t *control = e->rec + 44, *code = control + CONTROL_SIZE, *c1 = code + len;
         GfxShaderAnswers a;
-        unpack_answers(r + 68, &a);
+        unpack_geometry_answers(r + 68, &a);
+        uint32_t answer_stage;
+        memcpy(&answer_stage, r, 4);
+        if (answer_stage != st) {
+            plat_inc64(&p->failed), plat_inc64(&p->done);
+            continue;
+        }
         const GfxShader *s = gfx_shader_get((int)st, control, code, len, c1, &a);
         if (!s) plat_inc64(&p->failed);
         else if (p->iid) memcpy(p->iid[i], s->iid, 32);
@@ -2134,7 +2507,7 @@ static long long prepare_files(const char *ans_path, const char *prg_path, int t
     double t0 = (double)plat_now_ms();
     uint8_t *ab = NULL, *pb = NULL;
     size_t an = 0, pn = 0;
-    if (!rec_read(ans_path, "TOTKSANS", ANS_VERSION, ANS_REC, &ab, &an) ||
+    if (!answers_read(ans_path, &ab, &an, 0) ||
         !rec_read(prg_path, "TOTKSPRG", PRG_VERSION, 0, &pb, &pn)) {
         rt_log("gfx_shader: prepare: no %s (%s)", what, ans_path);
         free(ab), free(pb);
@@ -2235,7 +2608,7 @@ size_t gfx_shader_warm_list(GfxWarmEnt **out) {
     uint8_t *ab = NULL, *pb = NULL;
     size_t an = 0, pn = 0;
     plat_mutex_lock(&rec_io);                      // no append meanwhile
-    rec_read(RC.ans_path, "TOTKSANS", ANS_VERSION, ANS_REC, &ab, &an);
+    answers_read(RC.ans_path, &ab, &an, 0);
     plat_mutex_unlock(&rec_io);
     rec_read(prp, "TOTKSPRP", PRP_VERSION, PRP_REC, &pb, &pn);
     size_t na = an / ANS_REC, np = pn / PRP_REC, n = 0;
