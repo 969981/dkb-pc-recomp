@@ -3,6 +3,38 @@
 Milestones of DKB Recomp, newest first. The plan they follow is [bananza-plan.md](bananza-plan.md); open work is in
 the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
+## 4 November 2026
+
+- **No more clip and cull validation errors** (5ffe6ad). The translator declares `CullDistance[1]` next to
+  `ClipDistance[8]`, which together exceed the device's limit of 8, and the runtime drops the member when nothing
+  uses it. The check read the instruction number of `OpExtInst` as an id, and `Fma` (50) matched the `gl_PerVertex`
+  variable in 90 cached vertex shaders, so those kept it. A 150 s tutorial with the validation layer now reports no
+  error, against 10 before.
+- **Portable geometry replays with owned controls** (#55 and #56 by monsterlag, c053676,
+  [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)). The passthrough geometry stages replay under
+  `TOTK_EXPERIMENTAL_GEOMETRY=1`, with cache entries checked against their source and program controls each draw
+  owns. Their writes and the indirect reads that follow them run in one submission, with the barrier between them
+  tested on the GPU by `geometry_ordering_probe`.
+- **Geometry stages read their subgroup inputs** (#60 by monsterlag), and **`tools/extract_nup.py` creates its
+  temporary files exclusively** (#59 by dwk001).
+- **A crash after the Baboomtown loading screen** (e87cd32,
+  [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). When a draw's fragment stage had no resources,
+  its descriptor set 1 had no bindings, and set 0 was pushed with a byte count of 0. The driver then read the
+  descriptors from whatever followed in the command recording. Set 0 is now pushed whole. The crash doesn't happen
+  on our machine, so the fix waits for a retest.
+
+- **Geometry stages replay behind a flag** (#51, #52, #53, #54, #57, #58 by monsterlag, 5ff620b,
+  [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)). With `TOTK_EXPERIMENTAL_GEOMETRY=1`, draws with
+  an ordinary geometry stage replay through it, and `--probe-vkgeometry` checks a points-to-triangle stage and the
+  indirect record it writes on the GPU. The translator accepts a portable passthrough subset when the request names
+  which varyings pass through (patch 0016). Shader-cache contracts are read only from root fields. Ampere program
+  capture no longer stops at an EXIT whose second predicate can fall through, a check Eglantine's copy has too. Two
+  opt-in tools help with the terrain: `DKB_GEOMETRY_CONTEXT=1` logs the first geometry draws and their buffers, and
+  `tools/geometry_body_footprint.py` reports which attributes a geometry stage reads and writes. The terrain is
+  still black, because its passthrough stage is rejected by the replay until #55. With the flag off, the mining
+  tunnel replays in 4.91 ms, as before. With it on, the replay takes about 0.95 ms more even though no geometry
+  stage runs there.
+
 ## 3 November 2026
 
 - **The terrain record reset costs half as much** (9b12091). The reset used a full barrier before each of its

@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -111,7 +112,7 @@ def source(root):
 #endif
 enum { GFX_TYPE_FLOAT, GFX_TYPE_SINT, GFX_TYPE_UINT };
 @STAGE_ENUM@
-typedef struct { uint8_t type, comps, packed; } GfxShaderIo;
+@IO_DECL@
 typedef struct {
     const uint32_t *spirv; uint64_t words; uint32_t local[3], in_mask, out_mask;
     GfxShaderIo in[32]; uint32_t in_guard; GfxShaderIo out[32]; uint32_t out_guard;
@@ -127,6 +128,8 @@ static void plat_mutex_unlock(int *lock) { (void)lock; }
 #define LOG_ONCE(...) ((void)0)
 '''
     prelude = prelude.replace('@STAGE_ENUM@', stages)
+    prelude = prelude.replace('@IO_DECL@', re.search(r'typedef struct \{[^{}\n]*\} GfxShaderIo;', gfx).group(0))
+    prelude += '\n#define IO_SCALAR_BITS ' + str(int('scalar_bits' in gfx)) + '\n'
     extracted = [opcodes, function(shader, 'static void reflect_spirv('),
                  function(shader, 'uint32_t gfx_shader_inputs('),
                  function(shader, 'uint32_t gfx_shader_outputs('),
@@ -245,6 +248,9 @@ static void check_io(const GfxShader *s,unsigned first,unsigned count,unsigned t
     const GfxShaderIo *io=output?s->out:s->in;
     for (unsigned i=first;i<first+count;i++) {
         CHECK(io[i].type==type && io[i].comps==comps && io[i].packed==packed,"per-slot type/components/Component");
+#if IO_SCALAR_BITS
+        CHECK(io[i].scalar_bits==32,"known 32-bit interface scalar width");
+#endif
     }
     CHECK(s->in_guard==0x12345678 && s->out_guard==0x87654321,"reflection array bounds");
 }
@@ -366,6 +372,16 @@ int main(int argc,char **argv) {
         CHECK(fs.in_mask==0x20,"existing scalar/vector location");
         check_io(&fs,5,1,type,comps,1,0);
     }
+#if IO_SCALAR_BITS
+    // Actual numeric declarations retain their width; strict GS linkage can reject unsupported widths explicitly.
+    for (unsigned type=0;type<3;type++) for (unsigned width=16;width<=64;width*=2) {
+        fm=begin(); emit(&fm,71,3,7u,30u,5u);
+        if (!type) emit(&fm,22,2,1u,width); else emit(&fm,21,3,1u,width,type==GFX_TYPE_SINT);
+        emit(&fm,23,3,2u,1u,2u); emit(&fm,32,3,6u,1u,2u); emit(&fm,59,3,6u,7u,1u);
+        fs=reflect(&fm);
+        CHECK(fs.in_mask==0x20 && fs.in[5].scalar_bits==width,"actual scalar width survives vector and pointer reflection");
+    }
+#endif
     fm=begin(); emit(&fm,71,3,7u,30u,5u); emit(&fm,71,3,7u,31u,2u);
     emit(&fm,21,3,1u,32u,1u); emit(&fm,23,3,2u,1u,2u); emit(&fm,21,3,3u,32u,0u);
     emit(&fm,43,3,3u,4u,3u); emit(&fm,28,3,5u,2u,4u); emit(&fm,32,3,6u,1u,5u); emit(&fm,59,3,6u,7u,1u); fs=reflect(&fm);

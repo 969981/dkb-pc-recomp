@@ -34,6 +34,7 @@ enum { GFX_GEOMETRY_NONE, GFX_GEOMETRY_POINTS, GFX_GEOMETRY_LINES, GFX_GEOMETRY_
        GFX_GEOMETRY_TRIANGLES, GFX_GEOMETRY_TRIANGLES_ADJACENCY };
 enum { GFX_GEOMETRY_OUTPUT_POINTS = 1, GFX_GEOMETRY_OUTPUT_LINE_STRIP, GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP };
 #define GFX_GEOMETRY_VERSION 1
+#define GFX_GEOMETRY_PASSTHROUGH_VERSION 2
 typedef struct {                                           // the translator's answers (Program.cs Accessor)
     uint8_t tex_type[32], img_type[32], img_format[32];    // per c2 slot; 0 = not asked; types are GFX_TEX_*,
                                                            // img_format is Ryujinx TextureFormat
@@ -105,7 +106,7 @@ typedef struct {
     uint16_t count;             // descriptors (array length)
     uint8_t separate;           // TEX: texture and sampler handles are separate
 } GfxShaderRes;
-typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, components, 1 with a Component decoration
+typedef struct { uint8_t type, comps, packed, scalar_bits; } GfxShaderIo;   // scalar_bits: actual numeric SPIR-V width, 0 unknown
 int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_GS, GFX_STAGE_FS or GFX_STAGE_CS
 typedef struct {
     uint32_t version, input, input_vertices, output, invocations, max_output_vertices, passthrough;

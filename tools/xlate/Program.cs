@@ -11,7 +11,9 @@
 //          "local": [x, y, z], "shared": bytes, "debug": bool, "reduced": bool, "softfloat64": bool,
 //          "sbuf_align": int, "subgroup": int }
 //   GS additionally requires "geometry_version": 1 and "gs_input": "points|lines|lines_adjacency|triangles|triangles_adjacency".
-//   These fields are rejected on other stages. Passthrough GS requires downstream varying linkage and is unsupported.
+//   Portable passthrough GS requires geometry_version 2 and gs_passthrough_skip: eight uint32 hardware skip words.
+//   Its initial subset is one triangle invocation, Position and whole user vec4 attributes, without explicit output writes.
+//   Geometry fields are rejected on other stages; ordinary GS retains geometry_version 1.
 //   Output: <out>/<key>.spv and <out>/<key>.res.json (bindings, queried slots, notes).
 using Ryujinx.Common.Memory;
 using Ryujinx.Graphics.Shader;
@@ -39,6 +41,8 @@ static class SwshXlate
         public InputTopology GeometryInput { get; } = InputTopology.Triangles;
         public int GeometryInputVertices { get; }
         public string GeometryOutputName { get; }
+        public uint[] GeometryPassthroughSkip { get; }
+        public int GeometryPassthroughAttributes { get; }
         public Accessor(byte[] code, JsonObject job)
         {
             _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>();
@@ -52,8 +56,8 @@ static class SwshXlate
                 throw new InvalidDataException("storage candidates v1 requires NVN 2 compute root layout version 2");
             if ((string)job["stage"] == "gs")
             {
-                if (job["geometry_version"] is not JsonValue version || !version.TryGetValue<int>(out int v) || v != 1)
-                    throw new InvalidDataException("GS requires geometry_version integer 1");
+                if (job["geometry_version"] is not JsonValue version || !version.TryGetValue<int>(out int v) || v is not (1 or 2))
+                    throw new InvalidDataException("GS requires geometry_version integer 1 or 2");
                 if (job["gs_input"] is not JsonValue input || !input.TryGetValue<string>(out string name))
                     throw new InvalidDataException("GS requires a supported gs_input topology");
                 (GeometryInput, GeometryInputVertices) = name switch
@@ -70,10 +74,13 @@ static class SwshXlate
                 uint word0 = BitConverter.ToUInt32(code, 0);
                 if (((word0 >> 10) & 15) != (uint)ShaderStage.Geometry)
                     throw new InvalidDataException("GS request requires a geometry SPH stage");
-                // The standalone service does not receive the next stage's varying requirements. Letting Ryujinx
-                // emulate passthrough here would silently omit those varyings; the NV extension is not contracted either.
-                if ((word0 & (1u << 24)) != 0)
+                bool passthrough = (word0 & (1u << 24)) != 0;
+                if (v == 1 && passthrough)
                     throw new NotSupportedException("Passthrough GS requires explicit downstream varying linkage");
+                if (v == 1 && job.ContainsKey("gs_passthrough_skip"))
+                    throw new InvalidDataException("Passthrough skip words require geometry_version 2");
+                if (v == 2 && !passthrough)
+                    throw new InvalidDataException("geometry_version 2 requires a passthrough GS SPH");
                 if ((BitConverter.ToUInt32(code, 8) >> 24) == 0 || (BitConverter.ToUInt32(code, 16) & 0xfff) == 0)
                     throw new InvalidDataException("GS requires nonzero invocation and output vertex counts");
                 GeometryOutputName = ((BitConverter.ToUInt32(code, 12) >> 24) & 15) switch
@@ -83,10 +90,43 @@ static class SwshXlate
                 };
                 GeometryVersion = v;
                 GeometryInputName = name;
+                if (v == 2)
+                {
+                    if ((word0 & 31) != 1 || ((word0 >> 5) & 31) != 3)
+                        throw new InvalidDataException("Portable passthrough requires a Maxwell kind-1 version-3 SPH");
+                    if (name != "triangles" || GeometryOutputName != "triangle_strip" ||
+                        (BitConverter.ToUInt32(code, 8) >> 24) != 1 || (BitConverter.ToUInt32(code, 16) & 0xfff) != 1)
+                        throw new NotSupportedException("Portable passthrough requires triangles, triangle strip, one invocation and raw maximum vertex count 1");
+                    if (job.ContainsKey("c0") || job.ContainsKey("c0_version") || job.ContainsKey("c0_roots"))
+                        throw new InvalidDataException("Portable passthrough does not accept a compute driver layout");
+                    if (job["gs_passthrough_skip"] is not JsonArray skip || skip.Count != 8)
+                        throw new InvalidDataException("Portable passthrough requires exactly eight uint32 skip words");
+                    GeometryPassthroughSkip = new uint[8];
+                    for (int i = 0; i < 8; i++)
+                    {
+                        if (skip[i] is not JsonValue value || !value.TryGetValue<uint>(out uint word))
+                            throw new InvalidDataException("Passthrough skip words must be uint32 integers");
+                        GeometryPassthroughSkip[i] = word;
+                    }
+                    // Attribute components are hardware word bits: Position is 28..31 and user vec4s are 32..159.
+                    // Other builtins and partial user vectors need a wider lowering contract.
+                    if (GeometryPassthroughSkip[0] != 0x0fffffffu || GeometryPassthroughSkip[5] != uint.MaxValue ||
+                        GeometryPassthroughSkip[6] != uint.MaxValue || GeometryPassthroughSkip[7] != uint.MaxValue)
+                        throw new NotSupportedException("Portable passthrough requires full Position and no other builtin components");
+                    int attributes = 0;
+                    for (int location = 0; location < 32; location++)
+                    {
+                        uint components = (GeometryPassthroughSkip[1 + location / 8] >> ((location % 8) * 4)) & 15;
+                        if (components is not (0 or 15))
+                            throw new NotSupportedException("Portable passthrough requires whole user vec4 attributes");
+                        if (components == 0) attributes |= 1 << location;
+                    }
+                    GeometryPassthroughAttributes = attributes;
+                }
             }
             else
             {
-                if (job.ContainsKey("geometry_version") || job.ContainsKey("gs_input"))
+                if (job.ContainsKey("geometry_version") || job.ContainsKey("gs_input") || job.ContainsKey("gs_passthrough_skip"))
                     throw new InvalidDataException("Geometry fields require the GS stage");
                 if ((string)job["stage"] != "cs" && code.Length >= 0x50 &&
                     ((BitConverter.ToUInt32(code, 0) >> 10) & 15) == (uint)ShaderStage.Geometry)
@@ -224,6 +264,8 @@ static class SwshXlate
                 // Job debug = false: turn off DebugMode (DebugMode skips the AST optimizer and the output is full of temporaries; semantics unchanged)
                 var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0);
                 var ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
+                if (acc.GeometryVersion == 2)
+                    ctx.SetGeometryPassthroughAttributes(acc.GeometryPassthroughAttributes);
                 ShaderProgram p = ctx.Translate();
                 if (acc.GeometryVersion != 0 && p.Info.Stage != ShaderStage.Geometry)
                     throw new InvalidDataException("Geometry translation produced a different stage");
@@ -246,6 +288,11 @@ static class SwshXlate
                         ["invocations"] = p.Info.ThreadsPerInputPrimitive, ["max_output_vertices"] = p.Info.GeometryMaxOutputVertices,
                         ["passthrough"] = false,
                     };
+                    if (acc.GeometryVersion == 2)
+                    {
+                        res["gs_passthrough_skip"] = new JsonArray(acc.GeometryPassthroughSkip.Select(x => (JsonNode)x).ToArray());
+                        res["geometry"]["source_passthrough"] = true;
+                    }
                 }
                 foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
                 foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });

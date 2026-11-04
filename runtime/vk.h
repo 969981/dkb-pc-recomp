@@ -156,6 +156,21 @@ typedef struct {
     void *pool;   // the imported pool record behind the span (NULL for device memory), for VK_MEM_BOUND
 } VkMemSpan;
 
+// Passive snapshot only, called on the serialized replay thread (mirror state belongs to that thread). Lookup holds
+// the shared pool lock but does not resolve/use/pick a span, create/sync mirrors, touch shadows or mark pools used.
+// Selects the normal one-byte lookup candidate, then requires the whole request to fit that pool/contiguous backing.
+// avail is capped by that original registered pool and contiguous backing. No handles/pointers or storage bytes escape.
+// Success describes a currently present normal backing buffer, not later descriptor/content/write/visibility validity.
+enum { VK_MEM_INSPECT_POOL_IMPORT = 1, VK_MEM_INSPECT_POOL_PHYSICAL, VK_MEM_INSPECT_POOL_VIRTUAL };
+enum { VK_MEM_INSPECT_MIRROR_NONE, VK_MEM_INSPECT_MIRROR_ON, VK_MEM_INSPECT_MIRROR_REFUSED };
+typedef struct {
+    uint64_t offset, avail;
+    uint32_t pool_kind, pool_flags;
+    int32_t cls;                        // VK_MCLS_* before optional mirror picking
+    uint8_t mirror_state, mirror_present, shadow_storage, buffer_present;
+} VkMemInspect;
+int vk_mem_inspect(uint64_t addr, uint64_t size, VkMemInspect *out);   // nonnull out: zeroed on any failure
+
 // Canonical descriptor bytes: imported storage uses its host address (storage 0); device storage a unique physical
 // lifetime and byte offset. A virtual alias resolves to the same key as its physical storage. No GPU-use side effects.
 typedef struct { uint64_t storage, offset; } VkDescKey;
@@ -444,6 +459,8 @@ typedef struct VkPipeState {
     ds_st ds;
     uint32_t vattr[16];                    // OP_BIND_VATTR: va_st words; attribute i feeds vertex shader Location i
     vs_st vstream[16];                     // OP_BIND_VSTREAM
+    // Keep the legacy fields above byte-for-byte stable for pipeline-key records.
+    const GfxShader *gs;                   // experimental ordinary GS; NULL keeps the existing VS/FS paths
 } VkPipeState;
 void vk_pipe_state_defaults(VkPipeState *s);   // NVN defaults of every state object (shaders and formats left 0)
 enum { VK_PIPE_SUPPORT = GFX_RES_KINDS };      // VkPipeBinding.kind of the support buffer
@@ -511,6 +528,7 @@ int vk_pipeline_tex_type(int nvn_target);      // NVN_TEXTURE_TARGET_* -> GFX_TE
 uint32_t vk_pipeline_target_wmask(const VkPipeState *s, int i);   // colour write mask of target i the pipeline uses
 VkPrimitiveTopology vk_pipeline_topology(int nvn_prim);   // quads -> triangle list, line loop -> strip: the replay
                                                           // rewrites those draws; polygon -> fan
+uint8_t vk_geometry_input(uint32_t nvn_primitive);    // GFX_GEOMETRY_*; 0 for unsupported/emulated input primitives
 VkFormat vk_vertex_format(int nvn_format, int *type);     // attribute format (supported fallback), GFX_TYPE_* in *type
 PFN_vkCmdPushDescriptorSetKHR vk_pipeline_push_fn(void);  // after the first vk_pipeline_* call
 // Descriptor update templates (after the first vk_pipeline_* call): NULL when templates are off (TOTK_DESC_TEMPLATE=0,

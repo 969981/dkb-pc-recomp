@@ -57,6 +57,7 @@ def source():
 #include <stdlib.h>
 #include <string.h>
 #include "gfx.h"
+#include "nvn_geometry_control.h"
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -64,6 +65,7 @@ def source():
 #include <unistd.h>
 #endif
 #define NVN2_C0_LAYOUT 0x860
+#define CONTROL_SIZE 0x880
 #define CODE_SKIP 0x30
 #define COUNT(a) (sizeof(a)/sizeof(*(a)))
 static int host_f64=1;
@@ -266,7 +268,15 @@ int main(void) {
     pieces.append(function(production[production.rindex('static int reflect('):], 'static int reflect('))
     pieces += [function(production,name) for name in (
         'static void shader_free(', 'static void key_hex(', 'static int reflection_valid(',
-        'static int spirv_complete(', 'static GfxShader *disk_load_from(', 'static GfxShader *disk_load(',
+        'static int spirv_complete(', 'static GfxShader *disk_load_from(', 'static GfxShader *disk_load(')]
+    if 'static GfxShader *input_disk_load(' in production:
+        # This compute-control fixture has no stored GS inputs. Fail loudly if
+        # it ever reaches the separately tested v2 provenance branch; retain
+        # the real private -> packed/loose loading chain for every old control.
+        pieces.append('static int input_matches_cached(const GfxShader *s,const uint8_t iid[32]) {'
+                      '(void)iid;if(s->stage==GFX_STAGE_GS&&s->geometry.version==2)abort();return 1;}')
+        pieces.append(function(production, 'static GfxShader *input_disk_load('))
+    pieces += [function(production,name) for name in (
         'const GfxShader *gfx_shader_load_private(', 'void gfx_shader_release_private(')]
     return before + '\n'.join(pieces) + after
 

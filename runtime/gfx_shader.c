@@ -43,6 +43,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "nvn_geometry_control.h"
 #include "platform/platform.h"
 
 #define CONTROL_SIZE 0x880
@@ -102,6 +103,9 @@ struct GfxShader {
     GfxShaderIo in[32], out[32];
     uint32_t local[3];
     GfxShaderGeometry geometry;
+    uint32_t geometry_skip[8];                           // source mask, independent of queried draw answers
+    int geometry_source_passthrough;
+    unsigned geometry_position;                         // v2: Position input/output, malformed interface bit 4
     Nvn2C0Layout c0;                                       // NVN 2 compute parameter-block layout, when has_c0
     int has_c0;
 };
@@ -786,9 +790,31 @@ static const char *const geometry_names[] = {NULL, "points", "lines", "lines_adj
 static const uint32_t geometry_vertices[] = {0, 1, 2, 4, 3, 6};
 static const char *const geometry_outputs[] = {NULL, "points", "line_strip", "triangle_strip"};
 
-static int geometry_json(const char *js, const char *end, GfxShaderGeometry *g) {
+static int geometry_skip_json(const char *js, const char *end, uint32_t skip[8]) {
+    const char *p = json_member(js, end, "gs_passthrough_skip");
+    if (!p || p == end || *p++ != '[') return 0;
+    for (unsigned i = 0; i < 8; i++) {
+        p = json_space(p, end);
+        const char *q = json_token_end(p, end, 0);
+        if (!q || p == q || !isdigit((unsigned char)*p)) return 0;
+        uint32_t v = 0;
+        for (; p < q; p++) {
+            if (!isdigit((unsigned char)*p) || v > (UINT32_MAX - (uint32_t)(*p - '0')) / 10) return 0;
+            v = v * 10 + (uint32_t)(*p - '0');
+        }
+        skip[i] = v;
+        p = json_space(p, end);
+        if (p == end || *p++ != (i == 7 ? ']' : ',')) return 0;
+    }
+    return nvn_geometry_control_mask_valid(skip);
+}
+
+static int geometry_json(const char *js, const char *end, GfxShaderGeometry *g, uint32_t skip[8], int *source) {
     memset(g, 0, sizeof *g);
-    if (!json_uint(js, end, "geometry_version", &g->version) || g->version != GFX_GEOMETRY_VERSION) return 0;
+    memset(skip, 0, 32);
+    *source = 0;
+    if (!json_uint(js, end, "geometry_version", &g->version) ||
+        (g->version != GFX_GEOMETRY_VERSION && g->version != GFX_GEOMETRY_PASSTHROUGH_VERSION)) return 0;
     const char *input = json_member(js, end, "gs_input"), *o = json_member(js, end, "geometry");
     for (unsigned i = 1; i < COUNT(geometry_names); i++)
         if (json_string_is(input, end, geometry_names[i])) g->input = i;
@@ -804,6 +830,13 @@ static int geometry_json(const char *js, const char *end, GfxShaderGeometry *g) 
     const char *output = json_member(o, oe, "output_topology");
     for (unsigned i = 1; i < COUNT(geometry_outputs); i++)
         if (json_string_is(output, oe, geometry_outputs[i])) g->output = i;
+    const char *src = json_member(o, oe, "source_passthrough");
+    if (g->version == GFX_GEOMETRY_PASSTHROUGH_VERSION) {
+        if (!src || src == oe || oe - src < 4 || memcmp(src, "true", 4) || !geometry_skip_json(js, end, skip) ||
+            g->input != GFX_GEOMETRY_TRIANGLES || g->input_vertices != 3 || g->invocations != 1 ||
+            g->max_output_vertices != 3 || g->output != GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP) return 0;
+        *source = 1;
+    } else if (src || json_member(js, end, "gs_passthrough_skip")) return 0;
     return g->output != 0;
 }
 
@@ -883,7 +916,8 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
 
 // SPIR-V opcodes and enumerants used below (SPIR-V 1.6 specification, section 3).
 enum { OP_ENTRY_POINT = 15, OP_EXECUTION_MODE = 16, OP_TYPE_INT = 21, OP_TYPE_FLOAT = 22, OP_TYPE_VECTOR = 23,
-       OP_TYPE_ARRAY = 28, OP_TYPE_POINTER = 32, OP_CONSTANT = 43, OP_VARIABLE = 59, OP_DECORATE = 71,
+       OP_TYPE_ARRAY = 28, OP_TYPE_STRUCT = 30, OP_TYPE_POINTER = 32, OP_CONSTANT = 43, OP_VARIABLE = 59, OP_DECORATE = 71,
+       OP_MEMBER_DECORATE = 72,
        DEC_BUILTIN = 11, DEC_LOCATION = 30, DEC_COMPONENT = 31, SC_INPUT = 1, SC_OUTPUT = 3, EM_LOCAL_SIZE = 17 };
 
 // The service emits one ordinary GS main with four execution modes. Validate those against JSON on every disk
@@ -951,7 +985,13 @@ static void reflect_spirv(GfxShader *s) {
     uint8_t *width = calloc(bound, 1), *span = calloc(bound, 1), *length = calloc(bound, 1);
     uint8_t *array_element_span = calloc(bound, 1);
     uint32_t *pointee = calloc(bound, sizeof *pointee);
+    int portable = s->geometry_source_passthrough;
+    uint8_t *posdesc = portable ? calloc(bound, 1) : NULL, *poshas = portable ? calloc(bound, 1) : NULL;
+    uint8_t *posvar = portable ? calloc(bound, 1) : NULL;
+    uint32_t *posmember = portable ? calloc(bound, sizeof *posmember) : NULL;
+    s->geometry_position = 0;
     if (!loc || !packed || !ttype || !tcomps || !width || !span || !length || !array_element_span || !pointee) goto out;
+    if (portable && (!posdesc || !poshas || !posvar || !posmember)) goto out;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
         if (!len || i + len > n) break;
@@ -962,15 +1002,24 @@ static void reflect_spirv(GfxShader *s) {
         } else if (op == OP_DECORATE && len >= 4 && id < bound) {
             if (a[1] == DEC_LOCATION) loc[id] = a[2] < 32 ? (int32_t)a[2] + 1 : 0;
             else if (a[1] == DEC_COMPONENT) packed[id] = 1;
+            else if (portable && a[1] == DEC_BUILTIN && a[2] == 0) posvar[id] = 1;
+            if (portable && a[1] == DEC_LOCATION && a[2] >= 32) s->geometry_position |= 4;
+        } else if (portable && op == OP_MEMBER_DECORATE && len >= 5 && id < bound && a[2] == DEC_BUILTIN && a[3] == 0) {
+            posmember[id] = !posmember[id] && a[1] < bound - 1 ? a[1] + 1 : UINT32_MAX;
         } else if (op == OP_TYPE_INT && len >= 4 && id < bound) {
             ttype[id] = a[2] ? GFX_TYPE_SINT : GFX_TYPE_UINT, tcomps[id] = 1;
-            width[id] = a[1] == 32 || a[1] == 64 ? (uint8_t)a[1] : 0, span[id] = 1;
+            width[id] = a[1] <= UINT8_MAX ? (uint8_t)a[1] : 0, span[id] = 1;
         } else if (op == OP_TYPE_FLOAT && len >= 3 && id < bound) {
             ttype[id] = GFX_TYPE_FLOAT, tcomps[id] = 1;
-            width[id] = a[1] == 32 || a[1] == 64 ? (uint8_t)a[1] : 0, span[id] = 1;
+            width[id] = a[1] <= UINT8_MAX ? (uint8_t)a[1] : 0, span[id] = 1;
         } else if (op == OP_TYPE_VECTOR && len >= 4 && id < bound && a[1] < bound) {
             ttype[id] = ttype[a[1]], tcomps[id] = (uint8_t)a[2];
             width[id] = width[a[1]], span[id] = span[a[1]] && a[2] >= 2 && a[2] <= 4;
+            if (portable && ttype[id] == GFX_TYPE_FLOAT && width[id] == 32 && a[2] == 4) posdesc[id] = 1;
+        } else if (portable && op == OP_TYPE_STRUCT && id < bound && posmember[id]) {
+            poshas[id] = 1;
+            uint32_t member = posmember[id];
+            if (member < len - 1 && a[member] < bound && posdesc[a[member]] == 1) posdesc[id] = 2;
         } else if (op == OP_CONSTANT && len >= 4 && a[0] < bound && a[1] < bound) {
             uint32_t type = a[0], value = a[2];
             if (ttype[type] != GFX_TYPE_FLOAT && tcomps[type] == 1 &&
@@ -989,15 +1038,32 @@ static void reflect_spirv(GfxShader *s) {
                 uint32_t slots = (uint32_t)span[a[1]] * length[a[2]];
                 span[id] = slots > 32 ? 32 : (uint8_t)slots;
             }
+            if (portable) {
+                poshas[id] = poshas[a[1]];
+                if (a[2] < bound && length[a[2]] == 3 && (posdesc[a[1]] == 1 || posdesc[a[1]] == 2))
+                    posdesc[id] = (uint8_t)(posdesc[a[1]] * 4);
+            }
         } else if (op == OP_TYPE_POINTER && len >= 4 && id < bound) {
             pointee[id] = a[2];
         } else if (op == OP_VARIABLE && len >= 4) {
             uint32_t type = a[0], var = a[1], sc = a[2];
+            if (portable && (sc == SC_INPUT || sc == SC_OUTPUT) && var < bound && type < bound) {
+                uint32_t t = pointee[type] < bound ? pointee[type] : 0;
+                if (posvar[var] || poshas[t]) {
+                    unsigned bit = sc == SC_INPUT ? 1 : 2;
+                    unsigned expected = posvar[var] ? (sc == SC_INPUT ? 4 : 1) : (sc == SC_INPUT ? 8 : 2);
+                    if (posdesc[t] != expected || (s->geometry_position & bit)) s->geometry_position |= 4;
+                    else s->geometry_position |= bit;
+                }
+            }
             if ((sc == SC_INPUT || sc == SC_OUTPUT) && var < bound && type < bound && loc[var] > 0 && loc[var] <= 32) {
                 int l = loc[var] - 1;
                 uint32_t t = pointee[type] < bound ? pointee[type] : 0;
-                GfxShaderIo io = {ttype[t], tcomps[t] ? tcomps[t] : 4, packed[var]};
+                GfxShaderIo io = {ttype[t], tcomps[t] ? tcomps[t] : 4, packed[var], width[t]};
                 uint32_t slots = span[t];
+                if (portable && ((sc == SC_INPUT ? (slots != 3 || array_element_span[t] != 1) :
+                                                  (slots != 1 || array_element_span[t] != 0)) ||
+                    ((sc == SC_INPUT ? s->in_mask : s->out_mask) >> l & 1))) s->geometry_position |= 4;
                 // A GS input's outer fixed array indexes vertices, not Locations. Keep its element span rather
                 // than divide the saturated total: inner arrays still consume Locations. Unsupported arrays stay so.
                 if (sc == SC_INPUT && s->stage == GFX_STAGE_GS && slots && array_element_span[t])
@@ -1012,16 +1078,15 @@ static void reflect_spirv(GfxShader *s) {
     }
 out:
     free(loc), free(packed), free(ttype), free(tcomps), free(width), free(span), free(length), free(array_element_span), free(pointee);
+    free(posdesc), free(poshas), free(posvar), free(posmember);
 }
 
 // This ABI field is an exact JSON integer, not a numeric prefix such as 1.5 or 1e1. Missing means legacy version 0.
 static int storage_contract_version(const char *js, const char *end) {
-    const char *p = json_key(js, end, "storage_candidates_version");
+    const char *p = json_member(js, end, "storage_candidates_version");
     if (!p) return 0;
-    if (*p != '0' && *p != '1') return -1;
-    int v = *p++ - '0';
-    while (p < end && isspace((unsigned char)*p)) p++;
-    return p < end && (*p == ',' || *p == '}') ? v : -1;
+    uint32_t version;
+    return json_uint(js, end, "storage_candidates_version", &version) && version <= 1 ? (int)version : -1;
 }
 
 static int reflect(GfxShader *s, int require_c0) {
@@ -1034,16 +1099,19 @@ static int reflect(GfxShader *s, int require_c0) {
                json_string_is(stage, end, "cs") ? GFX_STAGE_CS : json_string_is(stage, end, "gs") ? GFX_STAGE_GS : -1;
     if (s->stage < 0) return 0;
     if (s->stage == GFX_STAGE_GS) {
-        if (!host_gs_sg || !geometry_json(js, end, &s->geometry)) return 0;
+        if (!host_gs_sg || !geometry_json(js, end, &s->geometry, s->geometry_skip, &s->geometry_source_passthrough)) return 0;
     } else if (json_member(js, end, "geometry_version") || json_member(js, end, "gs_input") ||
-               json_member(js, end, "geometry")) return 0;
+               json_member(js, end, "geometry") || json_member(js, end, "gs_passthrough_skip")) return 0;
     if (!geometry_spirv(s)) return 0;
-    const char *c0 = json_key(js, end, "c0");
-    if (s->stage == GFX_STAGE_GS && (require_c0 || json_member(js, end, "c0") ||
-        json_member(js, end, "c0_version") || json_member(js, end, "c0_roots"))) return 0;
-    if (c0 && *c0 == '[') {
-        const char *roots = json_key(js, end, "c0_roots");
-        if (json_int(js, end, "c0_version", 0) != 2 || !roots || *roots != '[') {
+    // Driver contracts are unique root fields. Extra nested properties are metadata, not alternate layouts.
+    const char *c0 = json_member(js, end, "c0"), *roots = json_member(js, end, "c0_roots"),
+               *c0_version = json_member(js, end, "c0_version");
+    if (c0 == end || roots == end || c0_version == end) return 0;
+    if (s->stage == GFX_STAGE_GS && (require_c0 || c0 || roots || c0_version)) return 0;
+    if (!c0 && (roots || c0_version)) return 0;
+    if (c0) {
+        uint32_t version;
+        if (*c0 != '[' || !json_uint(js, end, "c0_version", &version) || version != 2 || !roots || *roots != '[') {
             rt_log("gfx_shader: NVN 2 reflection lacks root layout version 2; rebuild the shader translator");
             return 0;   // an old translator must not silently use image counts as root-table sizes
         }
@@ -1087,6 +1155,18 @@ static int reflect(GfxShader *s, int require_c0) {
             return 0;
         }
     reflect_spirv(s);
+    if (s->geometry_source_passthrough) {
+        if (s->geometry_position != 3) return 0;
+        uint32_t locations = 0;
+        for (unsigned i = 0; i < 32; i++)
+            if (!(s->geometry_skip[1 + i / 8] >> ((i % 8) * 4) & 15)) locations |= 1u << i;
+        if (s->in_mask != locations || s->out_mask != locations) return 0;
+        for (unsigned i = 0; i < 32; i++) if (locations >> i & 1) {
+            const GfxShaderIo *a = &s->in[i], *b = &s->out[i];
+            if (a->scalar_bits != 32 || b->scalar_bits != 32 || a->comps != 4 || b->comps != 4 ||
+                a->packed || b->packed || a->type > GFX_TYPE_UINT || a->type != b->type) return 0;
+        }
+    }
     return 1;
 }
 
@@ -1341,7 +1421,9 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
     p += c1_len;
     if (stage == GFX_STAGE_GS) {
         memcpy(p, "TKGS", 4), p += 4;
-        put_u32(&p, GFX_GEOMETRY_VERSION), put_u32(&p, geometry_input);
+        int metadata = nvn_geometry_control_get(control, CONTROL_SIZE, code, code_size, NULL);
+        if (metadata < 0) return free(buf), 0;
+        put_u32(&p, metadata ? GFX_GEOMETRY_PASSTHROUGH_VERSION : GFX_GEOMETRY_VERSION), put_u32(&p, geometry_input);
     }
     rt_sha256(buf, total, hash);
     free(buf);
@@ -1405,8 +1487,21 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     o += sprintf(o, "\",\"c1\":\"");
     for (uint32_t i = 0; i < c1_len; i++) o += sprintf(o, "%02x", c1[i]);
     o += sprintf(o, "\"");
-    if (!strcmp(stage, "gs"))
-        o += sprintf(o, ",\"geometry_version\":%u,\"gs_input\":\"%s\"", GFX_GEOMETRY_VERSION, geometry_names[a->geometry_input]);
+    if (!strcmp(stage, "gs")) {
+        uint32_t skip[8];
+        // req_init already validated the envelope/code. Decode the canonical payload here without guest code.
+        int pass = !memcmp(control + NVN_GEOMETRY_CONTROL_OFFSET, "TKGSMETA", 8);
+        o += sprintf(o, ",\"geometry_version\":%u,\"gs_input\":\"%s\"",
+                     pass ? GFX_GEOMETRY_PASSTHROUGH_VERSION : GFX_GEOMETRY_VERSION, geometry_names[a->geometry_input]);
+        if (pass) {
+            o += sprintf(o, ",\"gs_passthrough_skip\":[");
+            for (unsigned i = 0; i < 8; i++) {
+                skip[i] = nvn_geometry_control_u32(control + NVN_GEOMETRY_CONTROL_OFFSET + 24 + 4 * i);
+                o += sprintf(o, "%s%u", i ? "," : "", skip[i]);
+            }
+            o += sprintf(o, "]");
+        }
+    }
     if (a) {
         const char *sep = "";
         o += sprintf(o, ",\"tex\":{");
@@ -1510,6 +1605,8 @@ typedef struct {
     int stage;
     uint8_t geometry_input;
     GfxShaderGeometry geometry;
+    uint32_t geometry_skip[8];
+    int geometry_source_passthrough;
     uint32_t length, c1_len;
     const uint8_t *c1;
     uint8_t code_hash[32];
@@ -1598,14 +1695,24 @@ static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *co
             return fail("incomplete geometry request", NULL), 0;
         memcpy(sph, code + CODE_SKIP, sizeof sph);
         uint32_t output = sph[3] >> 24 & 15;
-        if ((sph[0] >> 10 & 15) != 4 || (sph[0] & (1u << 24)) || !(sph[2] >> 24) || !(sph[4] & 0xfff) ||
+        if ((sph[0] >> 10 & 15) != 4 || !(sph[2] >> 24) || !(sph[4] & 0xfff) ||
             (output != 1 && output != 6 && output != 7)) return fail("unsupported geometry SPH", NULL), 0;
+        int metadata = nvn_geometry_control_get(control, CONTROL_SIZE, code, r->length, r->geometry_skip);
+        int pass = (sph[0] & (1u << 24)) != 0;
+        if (metadata < 0 || pass != metadata || (pass && r->geometry_input != GFX_GEOMETRY_TRIANGLES))
+            return fail("unsupported geometry source metadata", NULL), 0;
         if (!memcmp(control + NVN2_C0_LAYOUT, "DKC1", 4) || !memcmp(control + NVN2_C0_LAYOUT, "DKC0", 4))
             return fail("compute root layout supplied for geometry", NULL), 0;
         r->geometry = (GfxShaderGeometry){.version = GFX_GEOMETRY_VERSION, .input = r->geometry_input,
             .input_vertices = geometry_vertices[r->geometry_input], .output = output == 1 ? 1 : output == 6 ? 2 : 3,
             .invocations = sph[2] >> 24, .max_output_vertices = sph[4] & 0xfff};
-    } else if (r->geometry_input) return fail("geometry input supplied for another stage", NULL), 0;
+        if (pass) {
+            r->geometry.version = GFX_GEOMETRY_PASSTHROUGH_VERSION;
+            r->geometry.max_output_vertices = 3;
+            r->geometry_source_passthrough = 1;
+        }
+    } else if (r->geometry_input || !memcmp(control + NVN_GEOMETRY_CONTROL_OFFSET, "TKGSMETA", 8))
+        return fail("geometry input supplied for another stage", NULL), 0;
     r->c1_len = r->length - c1_off;
     r->c1 = c1 ? c1 : code + c1_off;
     if (!build_code_hash(stage, control, code, r->length, r->c1, r->c1_len, r->geometry_input, r->code_hash))
@@ -1618,7 +1725,10 @@ static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *co
 }
 
 static int shader_matches_request(const GfxShader *s, const Req *r) {
-    return s->stage == r->stage && (r->stage != GFX_STAGE_GS || !memcmp(&s->geometry, &r->geometry, sizeof r->geometry));
+    return s->stage == r->stage && (r->stage != GFX_STAGE_GS ||
+        (!memcmp(&s->geometry, &r->geometry, sizeof r->geometry) &&
+         s->geometry_source_passthrough == r->geometry_source_passthrough &&
+         !memcmp(s->geometry_skip, r->geometry_skip, sizeof r->geometry_skip)));
 }
 
 static GfxShader *request_disk_load(const Req *r, const uint8_t key[32], const uint8_t *iid) {
@@ -1689,6 +1799,7 @@ static void in_path(const uint8_t iid[32], char *p) {
 // Stores the inputs of a translation unless they are stored already; the file appears whole (written, then renamed).
 static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, const uint8_t *code, const Req *r,
                      const GfxShaderAnswers *a) {
+    if (nvn_geometry_control_get(control, CONTROL_SIZE, code, r->length, NULL) < 0) return;
     char p[PATH_CAP + 80], tmp[PATH_CAP + 120];
     in_path(iid, p);
     if (pack_find(PACK_IN, iid) || file_exists(p)) return;
@@ -1712,12 +1823,11 @@ static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, c
 }
 
 // Reads stored inputs into *in (free in->buf); 0 when absent or malformed.
-static int in_load(const uint8_t iid[32], Inputs *in) {
+static int in_load_from(const uint8_t iid[32], Inputs *in, int packed) {
     char p[PATH_CAP + 80];
     in_path(iid, p);
     uint64_t n = 0;
-    uint8_t *f = pack_read(PACK_IN, iid, &n);
-    if (!f) f = read_file(p, &n);
+    uint8_t *f = packed ? pack_read(PACK_IN, iid, &n) : read_file(p, &n);
     InHeader h;
     if (!f || n < sizeof h) return free(f), 0;
     memcpy(&h, f, sizeof h);
@@ -1740,6 +1850,51 @@ static int in_load(const uint8_t iid[32], Inputs *in) {
     in->c1 = o;
     in->buf = f, in->stage = (int)h.stage, in->length = h.length, in->c1_len = h.c1_len;
     return 1;
+}
+
+static int in_load(const uint8_t iid[32], Inputs *in) {
+    return (pack_n && in_load_from(iid, in, 1)) || in_load_from(iid, in, 0);
+}
+
+// Portable v2 caches must retain their original inputs, even on the memory fast
+// path. Reflection declares a result; it cannot establish the source's provenance.
+static int input_matches_cached(const GfxShader *s, const uint8_t iid[32]) {
+    int portable = s->stage == GFX_STAGE_GS && s->geometry.version == GFX_GEOMETRY_PASSTHROUGH_VERSION;
+    int requires_provenance = portable;
+    for (int packed = pack_n ? 1 : 0; packed >= 0; packed--) {
+        Inputs in;
+        if (!in_load_from(iid, &in, packed)) continue;
+        // Classify the source as well as the output: a wrong-stage/v1 cached
+        // result must not hide a portable or native passthrough input.
+        int tagged = !memcmp(in.control + NVN_GEOMETRY_CONTROL_OFFSET, "TKGSMETA", 8) ||
+                     (in.stage == GFX_STAGE_GS && in.length >= CODE_SKIP + 4 &&
+                      (nvn_geometry_control_u32(in.code + CODE_SKIP) & (1u << 24)));
+        requires_provenance |= tagged;
+        if (!portable || !tagged) { free(in.buf); continue; }
+        Req r;
+        int ok = req_init(&r, in.stage, in.control, in.code, in.length, in.c1, &in.a) &&
+                 shader_matches_request(s, &r);
+        if (ok) {
+            UseMask m = use_of(s);
+            uint8_t key[32], rebuilt[32];
+            build_key(r.code_hash, &in.a, &m, key, rebuilt);
+            ok = !memcmp(iid, rebuilt, 32) && !memcmp(s->key, key, 32);
+        }
+        free(in.buf);
+        if (ok) return 1;
+    }
+    return !requires_provenance;
+}
+
+static GfxShader *input_disk_load(const uint8_t key[32], const uint8_t iid[32]) {
+    GfxShader *s = disk_load(key, iid, 0);
+    if (!s || input_matches_cached(s, iid)) return s;
+    shader_free(s);
+    // A valid JSON/SPIR-V pair in the pack may still describe different inputs.
+    // Preserve loose replacement fallback after the stronger v2 admission check.
+    s = pack_n ? disk_load_from(key, iid, 0, 0) : NULL;
+    if (s && !input_matches_cached(s, iid)) { shader_free(s); s = NULL; }
+    return s;
 }
 
 // ---- translation
@@ -2026,13 +2181,15 @@ const GfxShader *gfx_shader_load_input(const uint8_t iid[32], int xlate) {
     uint8_t key[32];
     key_of_input(iid, key);
     GfxShader *s = mem_find(key);
-    if (s) return s;
-    if ((s = disk_load(key, iid, 0))) return mem_insert(s);
+    if (s) return input_matches_cached(s, iid) ? s : NULL;
+    if ((s = input_disk_load(key, iid))) return mem_insert(s);
     Inputs in;
     if (!xlate || !in_load(iid, &in)) return NULL;
     const GfxShader *t = gfx_shader_get(in.stage, in.control, in.code, in.length, in.c1, &in.a);
     free(in.buf);
-    return t;
+    // A changed stored input may resolve successfully under a different name.
+    // This lookup promises the requested input, not another cached translation.
+    return t && !memcmp(t->iid, iid, 32) ? t : NULL;
 }
 
 // From the disk cache only, as a shader the caller owns and releases with gfx_shader_release_private (the boot library
@@ -2045,8 +2202,8 @@ const GfxShader *gfx_shader_load_private(const uint8_t iid[32], int *owned) {
     uint8_t key[32];
     key_of_input(iid, key);
     GfxShader *s = mem_find(key);
-    if (s) return s;
-    if ((s = disk_load(key, iid, 0))) *owned = 1;
+    if (s) return input_matches_cached(s, iid) ? s : NULL;
+    if ((s = input_disk_load(key, iid))) *owned = 1;
     return s;
 }
 
@@ -2417,6 +2574,7 @@ void gfx_shader_record_at(const char *keys_path) {
 static void ans_note(const Req *r, int stage, const uint8_t *control, const uint8_t *code, const GfxShaderAnswers *a,
                      const GfxShader *s) {
     if (!RC.on) return;
+    if (nvn_geometry_control_get(control, CONTROL_SIZE, code, r->length, NULL) < 0) return;
     uint32_t st = (uint32_t)stage;
     plat_mutex_lock(&RC.lock);
     if (set_add(&RC.pairs, hash8(s->iid))) {
@@ -2515,6 +2673,14 @@ static void prep_worker(void *arg) {
         if (answer_stage != st) {
             plat_inc64(&p->failed), plat_inc64(&p->done);
             continue;
+        }
+        if (!memcmp(control + NVN_GEOMETRY_CONTROL_OFFSET, "TKGSMETA", 8)) {
+            Req rebuilt;
+            if (!req_init(&rebuilt, (int)st, control, code, len, c1, &a) ||
+                memcmp(rebuilt.code_hash, e->rec + 12, 32)) {
+                plat_inc64(&p->failed), plat_inc64(&p->done);
+                continue;
+            }
         }
         const GfxShader *s = gfx_shader_get((int)st, control, code, len, c1, &a);
         if (!s) plat_inc64(&p->failed);

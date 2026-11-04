@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "gfx.h"
+#include "nvn_geometry_control.h"
 #ifdef _WIN32
 #include <windows.h>
 #else

@@ -37,7 +37,10 @@ public:
         }
         if (opcode == 0x949 || opcode == 0x958) computed_branch = true;
         if (computed_branch) return Result::Continue;
-        if (opcode == 0x94d && instruction.Bits(12, 4) == 7 && index >= last_forward_target) {
+        // Both predicates guard EXIT (lower_to_maxwell.h::LowerToMaxwell).
+        // A secondary conditional/negated predicate leaves a live fallthrough.
+        if (opcode == 0x94d && instruction.Bits(12, 4) == 7 && instruction.Bits(87, 4) == 7 &&
+            index >= last_forward_target) {
             if (!last_call_target) return Result::Complete;
             main_exited = true;
         }

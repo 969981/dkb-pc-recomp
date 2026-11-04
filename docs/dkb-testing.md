@@ -12,6 +12,10 @@ executable, not the generated code, not the shader cache.
 - About 15 GB free for the build (the packed RomFS is about 9 GB), besides the space your dump takes.
 - *Donkey Kong Bananza* base version 1.0.0, dumped from your own Switch 2: the ExeFS (`main`, `sdk`, `main.npdm`) and
   the RomFS as a folder. Update 458752 is not supported yet. This project does not explain how to dump the game.
+  If your dump is a single `.nup` file (the container Eglantine and Eden load), `tools/extract_nup.py` writes both
+  folders from its base package: `python tools\extract_nup.py <game>.nup --list` shows the packages, and
+  `python tools\extract_nup.py <game>.nup --out build\extracted\dkb100-dump` writes `exefs` and `romfs` there, checking
+  every file's SHA-256. Pass those two folders to the commands in the README.
 
 ## Build
 
@@ -43,6 +47,8 @@ Useful settings, as environment variables (`set NAME=value` in the same Command 
 | `TOTK_TRACE=perf` | Log the frame time, what holds frames back and the GPU time every 60 frames. For stalls and low frame rates. |
 | `TOTK_PERF_SLOW_GPU_MS=<ms>` | With `TOTK_TRACE=perf`, a replay part that runs this long on the GPU (default 100) gets a line with its draw and dispatch counts and the NVN 2 names of its stages, a second line with the arguments of its indirect draws as read back afterwards, and a third saying whether a shader in that part wrote the largest one's arguments, and which. |
 | `TOTK_FIX_INDIRECT_RESET=0` | Draws the terrain's indirect-record reset program as a shader instead of the host doing its stores (#48). The shader's stores are lost, so the records keep zero or stale contents; for comparisons only. |
+| `TOTK_EXPERIMENTAL_GEOMETRY=1` | Replays draws with an ordinary geometry stage through it (#52). Off by default; other geometry draws are rejected once in the log. |
+| `DKB_GEOMETRY_CONTEXT=1` | Logs the first 12 draws with a geometry stage and their buffers (#58). `DKB_GEOMETRY_CONTEXT_ORIGIN=<hex>` keeps only draws with that stage origin. |
 | `TOTK_TRACE=codec` | Log each call of the video decoder that moves a buffer or a picture. For guide movies that stop or show a flat colour. |
 
 The settings keep TotK Recomp's `TOTK_` names, so its fixes apply without a rename. Each one can also be written with

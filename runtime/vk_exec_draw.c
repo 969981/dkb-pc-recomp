@@ -25,6 +25,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
+#include "nvn_geometry_control.h"
 #include "nvn_indirect_reset.h"
 #include "vk.h"
 #include "vk_exec.h"
@@ -41,7 +42,9 @@ static const uint32_t (*c0_push)[NVN2_ROOT_WORDS];
 #define SUPPORT_BYTES 1408u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
+#define NVN_STAGE_GS 2
 #define NVN_STAGE_CS 5
+static uint8_t geometry_input;                              // normalized actual draw primitive; zero outside opt-in GS
 #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
 
 static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
@@ -49,7 +52,7 @@ static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
     c0_push = ex->push[1];
 }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_RESET, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_RESET, W_GEOMETRY, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -554,6 +557,7 @@ static nvn_hmap views_by_image;          // VkImage -> its first ViewNode
 // An image view of a registered texture for a shader resource of type `rtype` (GfxShaderRes.type); VK_NULL_HANDLE when
 // the image cannot serve it (the caller binds a stand-in). Texture lock held.
 static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage) {
+    (void)ex;
     VkImageViewType vt = res_view_type(rtype);
     int ms = (rtype & 0x200) != 0;
     if ((img->samples > 1) != ms || (storage && ms)) return VK_NULL_HANDLE;
@@ -740,7 +744,7 @@ static int slot_still(const VkExec *ex, uint32_t *egen, uint64_t etok, uint64_t 
 }
 static int shader_memo_on(void);
 
-// The slots of (program, stage) whose types its translation reads (gfx_shader_slot_mask), learned from its first
+// The slots of (program, stage, GS input topology) whose types its translation reads (gfx_shader_slot_mask), learned from its first
 // shader; ~0u while unknown. The types of other slots select the same shader, so answers_for leaves them zero instead
 // of looking up all 64 handles. Direct-mapped by serial and stage; a collision only relearns.
 #define SLOTM_N 4096
@@ -748,13 +752,17 @@ static struct { uint64_t serial; int st; uint32_t m; } slotm[SLOTM_N];
 
 static uint32_t slotm_idx(uint64_t serial, int st) { return (uint32_t)((serial * 8 + (uint64_t)st) * 0x9E3779B97F4A7C15ull >> 52); }
 
+static int slot_mask_stage(int st) { return st == NVN_STAGE_GS ? st + 8 * geometry_input : st; }
+
 static uint32_t slot_mask_of(uint64_t serial, int st) {
+    st = slot_mask_stage(st);                           // GS topology can change which texture queries survive translation
     const typeof(slotm[0]) *e = &slotm[slotm_idx(serial, st)];
     return serial && e->serial == serial && e->st == st ? e->m : ~0u;
 }
 
 static void slot_mask_learn(uint64_t serial, int st, const GfxShader *s) {
     if (!serial || slot_mask_of(serial, st) != ~0u) return;
+    st = slot_mask_stage(st);
     slotm[slotm_idx(serial, st)] = (typeof(slotm[0])){serial, st, gfx_shader_slot_mask(s)};
 }
 
@@ -771,7 +779,8 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
     memset(a, 0, sizeof *a);
     if (st == NVN_STAGE_VS) vk_pipeline_answers(&ex->pipe, a, NULL);
     else if (st == NVN_STAGE_FS) vk_pipeline_answers(&ex->pipe, NULL, a);
-    else
+    else if (st == NVN_STAGE_GS) a->geometry_input = geometry_input;
+    else if (st == NVN_STAGE_CS)
         for (int k = 0; k < 3; k++) {
             uint32_t l;
             memcpy(&l, ctl + 0x748 + 4 * k, 4);
@@ -831,7 +840,9 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
             return set[0].s;
         }
     }
-    int gs = st == NVN_STAGE_VS ? GFX_STAGE_VS : st == NVN_STAGE_FS ? GFX_STAGE_FS : GFX_STAGE_CS;
+    int gs = st == NVN_STAGE_VS ? GFX_STAGE_VS : st == NVN_STAGE_FS ? GFX_STAGE_FS :
+             st == NVN_STAGE_GS ? GFX_STAGE_GS : st == NVN_STAGE_CS ? GFX_STAGE_CS : -1;
+    if (gs < 0) return NULL;
     const GfxShader *s = await ? gfx_shader_await(gs, ctl, code, len, &a)
                        : pending && vk_pipeline_async_on() ? gfx_shader_get_async(gs, ctl, code, len, &a, pending)
                                                            : gfx_shader_get(gs, ctl, code, len, NULL, &a);
@@ -849,7 +860,8 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
 // ---- descriptors
 
 static int nvn_stage_of(int gfx_stage) {
-    return gfx_stage == GFX_STAGE_VS ? NVN_STAGE_VS : gfx_stage == GFX_STAGE_FS ? NVN_STAGE_FS : NVN_STAGE_CS;
+    return gfx_stage == GFX_STAGE_VS ? NVN_STAGE_VS : gfx_stage == GFX_STAGE_FS ? NVN_STAGE_FS :
+           gfx_stage == GFX_STAGE_GS ? NVN_STAGE_GS : gfx_stage == GFX_STAGE_CS ? NVN_STAGE_CS : -1;
 }
 
 static VkDescriptorBufferInfo zero_info(uint64_t max) {
@@ -945,6 +957,8 @@ static int c0_on(void) {   // TOTK_FIX_C0=0: c0 reads zeros instead of the drive
 
 // c0 from replay scratch; a bank equal to the stage's previous one reuses its range, so it costs no copy.
 static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
+    if (st != NVN_STAGE_VS && st != NVN_STAGE_FS && st != NVN_STAGE_CS)
+        rt_fatal("vk_exec: synthetic c0 is unavailable for stage %d", st);
     int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : 2;
     // vk_c0_fill reads buffer bindings, compute root words and dispatch size, or the graphics base instance:
     // equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
@@ -1001,7 +1015,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
                 return (VkDescriptorBufferInfo){b, o, len - c1};
             }
         }
-    } else if (slot == 17) {
+    } else if (slot == 17 && st != NVN_STAGE_GS) {
         // Switch 2 full-screen blits read a parameter block the console supplies from bank 24, which the lowering moves
         // to bank 17 (never bound by games). For a blit over the whole render area (Eglantine, ir_opt/position_pass.cpp
         // BlitConstantsPass): texel size at 0x0/0x4 and 0x10/0x14, size at 0x8/0xc, UV scale 1 at 0x18/0x1c, UV clamp
@@ -1041,7 +1055,11 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
 static int ssbo_slot(const GfxShaderRes *r, int st, int *ubo) {
     *ubo = 0;
     if (r->cbuf_slot != 0) return -1;
-    int off = r->handle * 4, base = st == NVN_STAGE_VS ? 0x110 : st == NVN_STAGE_FS ? 0x510 : st == NVN_STAGE_CS ? 0x310 : -1;
+    // Eglantine shader_recompiler/frontend/maxwell/translate_program.cpp::AddNVNStorageBuffers uses a distinct
+    // ordinary geometry table at c0+0x410. This only maps declared
+    // bindings; it does not synthesize that driver bank or establish the native NVN2 geometry ABI.
+    int off = r->handle * 4, base = st == NVN_STAGE_VS ? 0x110 : st == NVN_STAGE_FS ? 0x510 :
+                                  st == NVN_STAGE_GS ? 0x410 : st == NVN_STAGE_CS ? 0x310 : -1;
     if (st == NVN_STAGE_CS && off >= 0x210 && off < 0x310 && (off - 0x210) % 16 == 0) {
         *ubo = 1;
         return (off - 0x210) / 16;
@@ -1247,12 +1265,14 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
     if (ex->fb_fs == fs && ex->fb_serial == ex->tex_serial && ex->fb_pass == ex->pass_serial) return ex->fb_sampled;
     const GfxShaderRes *res;
     int n = gfx_shader_resources(fs, GFX_RES_TEX, &res);
+    int st = nvn_stage_of(gfx_shader_stage(fs));
+    if (st < 0) return 0;
     uint32_t m = 0, gen = vk_texture_slots_gen();   // before any lookup
     int memo = td_mode(), locked = 0;
     for (int r = 0; r < n; r++)
         for (int k = 0; k < (res[r].count ? res[r].count : 1); k++) {
             int slot = res[r].slot + k;
-            uint64_t h = slot >= 0 && slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0;
+            uint64_t h = slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0;
             if (!h) continue;
             typeof(FM[0]) *f = &FM[(h * 0x9E3779B97F4A7C15ull) >> 51];
             if (memo && f->context == descriptor_serial && f->h == h && slot_still(ex, &f->gen, f->tok, h, gen)) {
@@ -1275,6 +1295,16 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
     if (locked) vk_texture_unlock();
     ex->fb_fs = fs, ex->fb_serial = ex->tex_serial, ex->fb_pass = ex->pass_serial, ex->fb_sampled = m;
     return m;
+}
+
+static int geometry_feedback_safe(VkExec *ex, const GfxShader *vs, const GfxShader *gs) {
+    // The existing in-pass feedback dependency is fragment-only. Pre-raster reads of an attachment need a different
+    // synchronization contract; reject them rather than reuse that by-region fragment barrier.
+    if (gs && (feedback_scan(ex, vs) || feedback_scan(ex, gs))) {
+        warn_once(W_GEOMETRY, "experimental geometry draw samples an attachment before rasterization: skipped");
+        return 0;
+    }
+    return 1;
 }
 
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
@@ -1741,6 +1771,7 @@ static const RsList *rs_list(const VkExec *ex, const VkPipeInfo *info) {
             uint32_t cnt = b->count ? b->count : 1;
             if ((nd += cnt) > MAX_DESC) { ok = 0; break; }   // the build stops on it
             int st = nvn_stage_of(b->stage);
+            if (st < 0) rt_fatal("vk_exec: unsupported descriptor stage %u", b->stage);
             if (b->kind == VK_PIPE_SUPPORT) {
                 sup = 1;
             } else if (b->kind == GFX_RES_UBO) {
@@ -1889,6 +1920,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         if (n_sets == 2 && i == lo[1]) d0[1] = nd;
         VkDescSlot *o = &d[nd];
         int st = nvn_stage_of(b->stage), kind = 0;   // kind: 0 buffer, 1 image, 2 texel buffer view
+        if (st < 0) rt_fatal("vk_exec: unsupported descriptor stage %u", b->stage);
         if (b->kind == VK_PIPE_SUPPORT) {
             float in[3];
             support_in(ex, in);
@@ -1943,6 +1975,11 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         }
         nd += cnt;
     }
+    // Set 1's first descriptor is noted when the loop reaches its first binding. A set 1 without bindings (a fragment
+    // stage with no resources) starts at the end instead, so set 0's byte count (d0[1] - d0[0]) covers its descriptors.
+    // Left at 0, it pushed set 0's template with 0 bytes copied into the recording, and the driver read the
+    // descriptors from whatever followed in the recording.
+    if (n_sets == 2 && lo[1] == info->n_bindings) d0[1] = nd;
     // Under the validation layer, a new graphics layout binds set 1 before set 0 is pushed or bound. The layer (SDK
     // 1.4.363, PipelineLayoutCompatDef::operator==) takes any two INDEPENDENT_SETS layouts as compatible, so
     // vkCmdPushDescriptorSetKHR keeps the push set it made for an earlier layout and drops writes to bindings that
@@ -2153,7 +2190,8 @@ typedef struct {
     const prog_t *prog;
     uint64_t serial;
     uint32_t gen, tex_serial;
-    uint64_t tex[2][32], img[2][32];
+    uint64_t tex[3][32], img[3][32];
+    uint8_t geometry_input;
     VkPipeState pipe;
 } MemoKey;
 
@@ -2192,7 +2230,7 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     return 1;
 }
 
-static struct { int on, valid, has_fs; MemoKey k; const GfxShader *vs, *fs; } SM = {-1};
+static struct { int on, valid, has_fs, has_gs; MemoKey k; const GfxShader *vs, *fs, *gs; } SM = {-1};
 
 // Numeric handles are relative to the active descriptor tables. Keep the per-handle memos only while those tables
 // and their address mappings stay unchanged. A sampler table switch also changes combined image descriptors.
@@ -2215,14 +2253,22 @@ static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
     k->prog = ex->prog, k->serial = ex->prog->serial, k->gen = gen, k->tex_serial = ex->tex_serial;
     memcpy(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]), memcpy(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]);
     memcpy(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]), memcpy(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]);
+    k->geometry_input = geometry_input;
+    if (geometry_input) {
+        memcpy(k->tex[2], ex->tex[NVN_STAGE_GS], sizeof k->tex[2]);
+        memcpy(k->img[2], ex->img[NVN_STAGE_GS], sizeof k->img[2]);
+    }
     memcpy(&k->pipe, &ex->pipe, sizeof k->pipe);
 }
 
 static int memo_match(VkExec *ex, uint32_t gen, MemoKey *k) {
     descriptor_state(ex);
     if (!SM.valid) return 0;
-    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen || memcmp(&k->pipe, &ex->pipe, sizeof k->pipe))
+    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen || k->geometry_input != geometry_input ||
+        memcmp(&k->pipe, &ex->pipe, sizeof k->pipe))
         return 0;
+    if (geometry_input && (memcmp(k->tex[2], ex->tex[NVN_STAGE_GS], sizeof k->tex[2]) ||
+                           memcmp(k->img[2], ex->img[NVN_STAGE_GS], sizeof k->img[2]))) return 0;
     if (k->tex_serial == ex->tex_serial) return 1;
     if (memcmp(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]) || memcmp(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]) ||
         memcmp(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]) || memcmp(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]))
@@ -2246,12 +2292,67 @@ static int pipe_memo_on(void) {
     return PM.on;
 }
 
+static int experimental_geometry_on(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_bool("TOTK_EXPERIMENTAL_GEOMETRY");
+    return on;
+}
+
+// 1: an opted-in ordinary GS is required; 0: preserve the existing VS/FS path; -1: this opted-in draw is unsupported.
+// Inspect raw NVN2 markers before any NVN1 control offsets. No native shader is admitted by this experiment.
+static int geometry_draw(VkExec *ex, uint32_t prim) {
+    geometry_input = 0;
+    if (!experimental_geometry_on() || !ex->prog) return 0;
+    int found = 0, portable = 0;
+    uint32_t stages = 0;
+    if (ex->prog->nstage > 6) goto unsupported;
+    for (uint32_t i = 0; i < ex->prog->nstage; i++) {
+        const uint8_t *ctl = ex->prog->sd[i].control;
+        const uint8_t *code = (const uint8_t *)(uintptr_t)ex->prog->sd[i].data;
+        if (!ctl || !code || gfx_shader_is_nvn2(ctl)) goto unsupported;
+        uint32_t stage, len;
+        memcpy(&stage, ctl + 0x714, 4);
+        if (stage == NVN_STAGE_VS || stage == NVN_STAGE_FS) { stages |= 1u << stage; continue; }
+        if (stage == NVN_STAGE_CS) continue;
+        if (stage != NVN_STAGE_GS || found++) goto unsupported;   // no tessellation, duplicate or unknown stage
+        stages |= 1u << stage;
+        memcpy(&len, ctl + 0x704, 4);
+        if (len < 0x30 + 0x60 || nvn2_origin(code) || c0_on()) goto unsupported;
+        uint32_t sph;
+        memcpy(&sph, code + 0x30, 4);
+        if ((sph >> 10 & 15) != 4) goto unsupported;
+        if (sph & (1u << 24)) {
+            uint32_t skip[8];
+            if (nvn_geometry_control_get(ctl, 0x880, code, len, skip) != 1 ||
+                vk_geometry_input(prim) != GFX_GEOMETRY_TRIANGLES) goto unsupported;
+            portable = 1;
+        }
+    }
+    if (found) {
+        // Replay currently replaces a complete program, not individual stages. Partial GS binds need a separate
+        // merging contract; do not execute a GS which this bind did not request.
+        if (!(stages & (1u << NVN_STAGE_VS)) || ((uint32_t)ex->prog_stages & stages) != stages) goto unsupported;
+        // Portable metadata currently follows the verified whole-program SDK binding path.
+        if (portable && ((uint32_t)ex->prog_stages != NVN_SHADER_STAGE_ALL_GRAPHICS_BITS ||
+                         !(stages & (1u << NVN_STAGE_FS)))) goto unsupported;
+        geometry_input = vk_geometry_input(prim);
+        if (!geometry_input) goto unsupported;
+    }
+    return found;
+unsupported:
+    geometry_input = 0;
+    warn_once(W_GEOMETRY, "experimental geometry draw rejected: ordinary GS, complete stage mask, supported primitive and FIX_C0=0 are required");
+    return -1;
+}
+
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (ex->render_disabled) return 0;
     static int skip_all = -1;   // DKB_SKIP_DRAWS=1: drop every draw (bisecting GPU faults)
     if (skip_all < 0) skip_all = getenv("DKB_SKIP_DRAWS") != NULL;
     if (skip_all) return 0;
+    int want_gs = geometry_draw(ex, (uint32_t)prim);
+    if (want_gs < 0) return 0;
     cb_res(ex);
     dummies_init();
     if (ex->pass_noatt) {   // no attachment: the pass covers this draw's viewport or scissor, reopened when it needs more
@@ -2265,23 +2366,25 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     VkRect2D sc = vk_exec_scissor(ex);
     if (!sc.extent.width || !sc.extent.height) return 0;
     if (!ex->prog) return warn_once(W_PROGRAM, "a draw without a bound program is skipped"), 0;
-    int has_vs, has_fs, vs_wait = 0, fs_wait = 0, memo = shader_memo_on();
-    const GfxShader *vs, *fs;
+    int has_vs, has_fs, has_gs = 0, vs_wait = 0, fs_wait = 0, gs_wait = 0, memo = shader_memo_on();
+    const GfxShader *vs, *fs, *gs = NULL;
     uint32_t gen = memo ? vk_texture_slots_gen() : 0;   // before shader_for, whose lookups may bump it
     if (memo && SM.valid && memo_match(ex, gen, &SM.k)) {
-        vs = SM.vs, fs = SM.fs, has_vs = 1, has_fs = SM.has_fs;
+        vs = SM.vs, fs = SM.fs, gs = SM.gs, has_vs = 1, has_fs = SM.has_fs, has_gs = SM.has_gs;
         if (memo == 2) {
-            int hv, hf, wv, wf;
+            int hv, hf, hg = 0, wv, wf, wg = 0;
             const GfxShader *v2 = shader_for(ex, NVN_STAGE_VS, &hv, &wv, 0), *f2 = shader_for(ex, NVN_STAGE_FS, &hf, &wf, 0);
-            if (v2 != vs || f2 != fs || hf != has_fs || wv || wf)
+            const GfxShader *g2 = want_gs ? shader_for(ex, NVN_STAGE_GS, &hg, &wg, 0) : NULL;
+            if (v2 != vs || f2 != fs || g2 != gs || hf != has_fs || hg != has_gs || wv || wf || wg)
                 rt_fatal("vk_exec: shader memo of program %llu differs from the lookup", (unsigned long long)ex->prog->serial);
         }
     } else {
         SM.valid = 0;
         vs = shader_for(ex, NVN_STAGE_VS, &has_vs, &vs_wait, 0);
         fs = shader_for(ex, NVN_STAGE_FS, &has_fs, &fs_wait, 0);
-        if (memo && vs && !vs_wait && !fs_wait && (!has_fs || fs))
-            memo_key(ex, gen, &SM.k), SM.vs = vs, SM.fs = fs, SM.has_fs = has_fs, SM.valid = 1;
+        if (want_gs) gs = shader_for(ex, NVN_STAGE_GS, &has_gs, &gs_wait, 0);
+        if (memo && vs && !vs_wait && !fs_wait && !gs_wait && (!has_fs || fs) && (!want_gs || (has_gs && gs)))
+            memo_key(ex, gen, &SM.k), SM.vs = vs, SM.fs = fs, SM.gs = gs, SM.has_fs = has_fs, SM.has_gs = has_gs, SM.valid = 1;
     }
     if (!has_vs) return warn_once(W_NO_VS, "a draw with a program that has no vertex stage is skipped"), 0;
     static int bis_lo = -1, bis_hi = 255;   // DKB_DRAW_BISECT=lo-hi (hex): only draws whose program byte is in range
@@ -2313,17 +2416,19 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     // one-shot draws (volumes and LUTs generated once, later only sampled) would leave their target empty for the
     // session. A draw into per-frame targets is skipped until they are ready and comes back next frame.
     int oneshot = -1, skip = pipe_skip_mode();   // -1: not looked up
-    if (vs_wait || fs_wait) {
+    if (vs_wait || fs_wait || gs_wait) {
         if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) return perf_count(PERF_CNT_SHADER_SKIP), 0;   // skipped until ready
         perf_count(PERF_CNT_ONESHOT_WAIT);
         if (vs_wait) vs = shader_for(ex, NVN_STAGE_VS, &has_vs, NULL, 1);
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
+        if (gs_wait) gs = shader_for(ex, NVN_STAGE_GS, &has_gs, NULL, 1);
     }
     if (light_quad_fault_skip(ex, vs, fs)) return 0;
-    if (!vs || (has_fs && !fs)) return 0;
+    if (!vs || (has_fs && !fs) || (want_gs && (!has_gs || !gs))) return 0;
+    if (!geometry_feedback_safe(ex, vs, gs)) return 0;
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
-    s.vs = vs, s.fs = fs;
+    s.vs = vs, s.fs = fs, s.gs = gs;
     s.feedback = (uint8_t)((fbl & 0xff ? 1 : 0) | (fbl & 0x100 ? 2 : 0));
     s.prim = (uint8_t)prim;
     s.depth_minus_w = (uint8_t)(nvn_depth_minus_w() != 0);
@@ -2651,6 +2756,122 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
 
 // ---- bind ops
 
+static void geometry_context_buffer_log(unsigned record, const char *name, const p_bind_buf *binding) {
+    VkMemInspect view = {0};
+    int backed = binding->addr && binding->size && vk_mem_inspect(binding->addr, binding->size, &view);
+    rt_log("geometry_buffer_context: record=%u range=%s snapshot=passive requested=%llu full_range_backed_now=%d "
+           "pool_kind=%u pool_flags=%#x class_before_mirror_pick=%d offset=%llu available=%llu "
+           "mirror_state=%d mirror_present=%d shadow_storage=%d buffer_present=%d contents=unread descriptor=unobserved",
+           record, name, (unsigned long long)binding->size, backed, view.pool_kind, view.pool_flags, view.cls,
+           (unsigned long long)view.offset, (unsigned long long)view.avail,
+           view.mirror_state, view.mirror_present, view.shadow_storage, view.buffer_present);
+}
+
+// Opt-in draw-ingress metadata only. Replay is serialized; the cap is process-wide and later draws are unobserved.
+static void geometry_context_log(const VkExec *ex, uint32_t op, const void *payload) {
+    if (op != OP_DRAW && op != OP_DRAW_IDX && op != OP_DRAW_IDX_IND) return;
+    static int on = -1, filtered;
+    static uint64_t filter;
+    static unsigned records;
+    if (on < 0) {
+        const char *e = getenv("DKB_GEOMETRY_CONTEXT"), *f = getenv("DKB_GEOMETRY_CONTEXT_ORIGIN");
+        on = e && !strcmp(e, "1");
+        if (on && f) {
+            filtered = 1;
+            if (f[0] == '0' && (f[1] == 'x' || f[1] == 'X')) f += 2;
+            unsigned digits = 0;
+            for (; *f; f++) {
+                unsigned d = *f >= '0' && *f <= '9' ? (unsigned)(*f - '0') :
+                             *f >= 'a' && *f <= 'f' ? (unsigned)(*f - 'a' + 10) :
+                             *f >= 'A' && *f <= 'F' ? (unsigned)(*f - 'A' + 10) : 16;
+                if (d == 16 || digits == 16) { on = 0; break; }
+                filter = (filter << 4) | d;
+                digits++;
+            }
+            if (!digits) on = 0;
+            if (!on) rt_log("geometry_context: invalid origin filter; metadata logging disabled");
+        }
+    }
+    if (!on || records == 12 || !ex || !payload) return;
+
+    uint64_t origin[3] = {0};
+    unsigned present = 0;
+    int metadata = ex->prog && ex->prog->nstage <= 6;
+    // Failed native lowering can leave a compact control: do not send it to the legacy-shaped stage getter.
+    if (metadata)
+        for (uint32_t i = 0; i < ex->prog->nstage; i++) {
+            const uint8_t *ctl = ex->prog->sd[i].control;
+            if (ctl && gfx_shader_is_nvn2(ctl)) { metadata = 0; break; }
+        }
+    if (metadata)
+        for (int stage = 0; stage < 3; stage++) {
+            const uint8_t *ctl, *code;
+            uint32_t len;
+            if (find_stage(ex->prog, stage, &ctl, &code, &len)) {
+                present |= 1u << stage;
+                origin[stage] = nvn2_origin(code);   // pointer-to-origin lookup, no shader bytes read
+            }
+        }
+    if (filtered && !((present & 1) && origin[0] == filter) &&
+        !((present & 2) && origin[1] == filter) && !((present & 4) && origin[2] == filter)) return;
+
+    const char *kind;
+    int prim;
+    char draw[256], viewport[192], attachments[512], bindings[384];
+    if (op == OP_DRAW) {
+        const p_draw *d = payload;
+        kind = "direct", prim = d->prim;
+        snprintf(draw, sizeof draw, "first=%d count=%d instances_raw=%d base_instance=%d",
+                 d->first, d->count, d->instances, d->base_instance);
+    } else if (op == OP_DRAW_IDX) {
+        const p_draw_idx *d = payload;
+        kind = "indexed", prim = d->prim;
+        snprintf(draw, sizeof draw, "count=%d instances_raw=%d base_vertex=%d base_instance=%d index_type=%d index_addr=%#llx",
+                 d->count, d->instances, d->base_vertex, d->base_instance, d->itype, (unsigned long long)d->ibuf);
+    } else {
+        const p_draw_idx_ind *d = payload;
+        kind = "indexed_indirect", prim = d->prim;
+        snprintf(draw, sizeof draw, "index_type=%d index_addr=%#llx indirect_addr=%#llx count=unknown instances=unknown",
+                 d->itype, (unsigned long long)d->ibuf, (unsigned long long)d->ind);
+    }
+    if (ex->has_vp)
+        snprintf(viewport, sizeof viewport, "has_vp=1 viewport0_stored=[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g] depth_range=[%.9g,%.9g]",
+                 ex->vp[0][0], ex->vp[0][1], ex->vp[0][2], ex->vp[0][3], ex->vp[0][4], ex->vp[0][5],
+                 ex->depth_range[0], ex->depth_range[1]);
+    else
+        snprintf(viewport, sizeof viewport, "has_vp=0 viewport0_stored=unreported depth_range=[%.9g,%.9g]", ex->depth_range[0], ex->depth_range[1]);
+    if (ex->rt_resolved) {
+        size_t n = (size_t)snprintf(attachments, sizeof attachments, "attachments=resolved pass_noatt=%d pass_layers=%u layer_views=mip:base:count",
+                                  ex->pass_noatt, ex->pass_layers);
+        for (int i = 0; i < 8; i++)
+            if (ex->color[i].image && n < sizeof attachments) {
+                const VkExecTarget *t = &ex->color[i];
+                n += (size_t)snprintf(attachments + n, sizeof attachments - n, " color%d=%u:%u:%u", i, t->level, t->base_layer, t->layers);
+            }
+        if (ex->depth.image && n < sizeof attachments)
+            snprintf(attachments + n, sizeof attachments - n, " depth=%u:%u:%u", ex->depth.level, ex->depth.base_layer, ex->depth.layers);
+    } else {
+        snprintf(attachments, sizeof attachments, "attachments=unresolved pass_layers=unknown");
+    }
+    const p_bind_buf *s0 = &ex->ssbo[NVN_STAGE_GS][0], *s1 = &ex->ssbo[NVN_STAGE_GS][1], *u0 = &ex->ubo[NVN_STAGE_GS][0];
+    snprintf(bindings, sizeof bindings, "gs_ranges=recorded_pod_unresolved gs_ssbo0=%#llx:%llu:%s gs_ssbo1=%#llx:%llu:%s gs_ubo0=%#llx:%llu:%s",
+             (unsigned long long)s0->addr, (unsigned long long)s0->size, s0->addr && s0->size ? "range" : "empty_or_unset",
+             (unsigned long long)s1->addr, (unsigned long long)s1->size, s1->addr && s1->size ? "range" : "empty_or_unset",
+             (unsigned long long)u0->addr, (unsigned long long)u0->size, u0->addr && u0->size ? "range" : "empty_or_unset");
+    rt_log("geometry_context: record=%u limit=12 kind=%s op=%u prim=%d %s fence=%llu program=%llu "
+           "bound_stage_mask=%#x stage_metadata=%s present_stage_mask=%#x vs=%016llx gs=%016llx fs=%016llx "
+           "render_disabled=%d render_cond_present=%d raster_discard=%u pass_active=%d %s %s %s "
+           "clip_cull=untracked xfb=untracked guest_viewport_count=unknown guest_viewport_mask=unknown viewport0_update_provenance=untracked layer_routing=unknown",
+           ++records, kind, op, prim, draw, (unsigned long long)ex->fence,
+           ex->prog ? (unsigned long long)ex->prog->serial : 0ull, (unsigned)ex->prog_stages,
+           metadata ? "available" : "unavailable", present,
+           (unsigned long long)origin[0], (unsigned long long)origin[2], (unsigned long long)origin[1],
+           ex->render_disabled, ex->has_render_cond, (unsigned)ex->pipe.raster_discard, ex->in_pass, viewport, attachments, bindings);
+    geometry_context_buffer_log(records, "gs_ssbo0", s0);
+    geometry_context_buffer_log(records, "gs_ssbo1", s1);
+    geometry_context_buffer_log(records, "gs_ubo0", u0);
+}
+
 static void bind_handles(uint64_t *dst, int cap, const p_bind_handles *b) {
     if (b->stage < 0 || b->stage >= 6 || b->first < 0 || b->n < 0 || b->n > 32 || b->first + b->n > cap) {
         warn_once(W_BIND, "a bind of %d handles at %d of stage %d is out of range: ignored", b->n, b->first, b->stage);
@@ -2660,6 +2881,7 @@ static void bind_handles(uint64_t *dst, int cap, const p_bind_handles *b) {
 }
 
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
+    geometry_context_log(ex, op, payload);
     switch (op) {
     case OP_BIND_PROGRAM: {
         const p_bind_program *b = payload;

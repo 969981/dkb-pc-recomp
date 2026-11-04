@@ -23,21 +23,33 @@ import geometry_shader_fixture as original
 
 ROOT = Path(__file__).resolve().parents[1]
 NAMES = ('points', 'lines', 'lines_adjacency', 'triangles', 'triangles_adjacency')
-# Captured from the original fixture on unmodified 840ddb5, not game data, with the key and provisional
-# ids recomputed for KEY_VERSION 5 (the guarded storage candidates change). The independent
-# hashlib/wire oracle below additionally documents the vector bytes.
+# Captured from the original fixture on unmodified 840ddb5, not game data. The
+# independent hashlib/wire oracle below additionally documents the vector bytes.
 LEGACY = {
     0: ('6ac9e5e5fb6b7d12c61b1873795ec36dda86092d1bd1ee797a5f963b2a266dea',
         'bca70f36e6964422738eb8e833da0989d7ec888adeb77257bf7ceb6243ee3a82',
-        'ab75ed28a9981e15679a0f640b47e917418e286177fa2ce09603f4a4f19d6db6',
-        '48ec83659d4de92333074197855defc49dcf0535fbbbbb35c6424924b6c70ddf'),
+        'd7889500875d1e84f5383f7519d0f77c9205121361fe7c9506f912c967872150',
+        '7cf55aba4fd55d57cf55a36d791e8a65fe01892893122370ae154bb8fc63b6a1'),
     4: ('6d05e9686ee2f9e93df8c8c084c61d1ef5ab7fda70e088caaa65db87d02c8c74',
         '8ffc3071b3a58b5bc529475161b73621cb9675ff388fc565744ceba7ca038e4b',
-        'f497e7660d9376c1ad2782d78acbe37de2c84820effc838040831092c1be52c1',
-        'daa682de03417f197c87a4d773fa14a54e89de31bae827756799eae15d4fa61f'),
+        'a573e40c24c25fe0fed26380732074d23c90a02d30c5809ef44b476e7795c71e',
+        '9a1452bf3b5e266fe454de31b26785c2f535c7b6382440212d3898b0a3f87e57'),
     5: ('2faf37fb1a25c83c42263672b9d291a9b7be38ff4a4b68613127114884475d32',
         'bafb52d408a21ff8c3c511e42f7821b8a87e62fc45c42f71756ea04cb0e5880e',
-        '15ca93b36c99c0af313d54bdfa5fc4c9fa4710b22c933f6a4b700e651c899918',
+        '60808388abce834ba51f32ef2410f701ef7bf645ef9a30ae65cafbecbcd0744b',
+        'fbdd5e4d02c39f59572de9113890534a98eaec3392889255725be9a8354e4a19'),
+}
+
+# Upstream #42 intentionally moved output keys to namespace 5 for guarded storage.
+# Code hashes, input IDs and answer bytes above stay fixed. These namespace-5
+# keys are independently derived from the documented TKSK/TKSP wire protocol;
+# both upstream-only baselines are checked, rather than accepting arbitrary new versions.
+LEGACY_KEYS_V5 = {
+    0: ('ab75ed28a9981e15679a0f640b47e917418e286177fa2ce09603f4a4f19d6db6',
+        '48ec83659d4de92333074197855defc49dcf0535fbbbbb35c6424924b6c70ddf'),
+    4: ('f497e7660d9376c1ad2782d78acbe37de2c84820effc838040831092c1be52c1',
+        'daa682de03417f197c87a4d773fa14a54e89de31bae827756799eae15d4fa61f'),
+    5: ('15ca93b36c99c0af313d54bdfa5fc4c9fa4710b22c933f6a4b700e651c899918',
         '66529ec9f94c50e509e0fcd6a4dd2ce81c2565476c9d0ca5d42cf0fb86f5cefe'),
 }
 
@@ -53,6 +65,9 @@ class GeometryCache(unittest.TestCase):
             data = (subprocess.check_output(['git', 'show', args.source_revision + ':runtime/' + name], cwd=ROOT)
                     if args.source_revision else path.read_bytes())
             (cls.source_dir / name).write_bytes(data)
+        # The new pure writer is a baseline fixture adapter only: it authors the
+        # same original input bytes while --source-revision keeps the shader TU old.
+        (cls.source_dir / 'nvn_geometry_control.h').write_bytes((ROOT / 'runtime/nvn_geometry_control.h').read_bytes())
         production = (cls.source_dir / 'gfx_shader.c').read_text()
         header = (cls.source_dir / 'gfx.h').read_text()
         parameters = re.search(r'static int build_code_hash\(([^{};]+)\)\s*\{', production).group(1)
@@ -150,16 +165,19 @@ class GeometryCache(unittest.TestCase):
         for stage in (0, 4, 5):
             with self.subTest(stage=stage):
                 result = self.identity(stage)
+                version = result['key_version']
+                self.assertIn(version, (4, 5), 'an upstream namespace change needs explicit new golden vectors')
                 data = struct.pack('<I', stage) + self.control.read_bytes() + struct.pack('<Q', 64) + self.code.read_bytes()
                 data += struct.pack('<I', 8) + bytes.fromhex('123456789abcdef0')
                 code_hash = hashlib.sha256(data).digest()
                 iid = hashlib.sha256(b'TKSI' + struct.pack('<I', 1) + code_hash + masked).digest()
-                key = hashlib.sha256(b'TKSK' + struct.pack('<I', 5) + bytes(range(0x80, 0xa0)) + iid).hexdigest()
-                provisional = hashlib.sha256(b'TKSP' + struct.pack('<I', 5) + bytes(range(0x80, 0xa0)) + code_hash + answers).hexdigest()
+                key = hashlib.sha256(b'TKSK' + struct.pack('<I', version) + bytes(range(0x80, 0xa0)) + iid).hexdigest()
+                provisional = hashlib.sha256(b'TKSP' + struct.pack('<I', version) + bytes(range(0x80, 0xa0)) + code_hash + answers).hexdigest()
                 self.assertEqual(result['answers'], answers.hex())
                 self.assertEqual((result['hash'], result['iid'], result['key'], result['provisional']),
                                  (code_hash.hex(), iid.hex(), key, provisional))
-                self.assertEqual((result['hash'], result['iid'], result['key'], result['provisional']), LEGACY[stage])
+                frozen = LEGACY[stage] if version == 4 else LEGACY[stage][:2] + LEGACY_KEYS_V5[stage]
+                self.assertEqual((result['hash'], result['iid'], result['key'], result['provisional']), frozen)
 
     def request_packet(self, stage):
         suffix = original.framed([original.EXIT]) if stage == 5 else original.program(stage={0: 'vs', 3: 'gs', 4: 'ps'}[stage])
@@ -265,6 +283,96 @@ class GeometryCache(unittest.TestCase):
         self.put_pair(cache, key, *self.module('points'))
         self.assertTrue(self.run_fixture('load', 'private', key, iid, cache=cache)['accepted'])
         self.assertFalse(self.run_fixture('load', 'private', key, iid, cache=cache, subgroup=0)['accepted'])
+
+    def scope_load(self, name, topology, reflection, mode):
+        cache = args.out / ('scope-' + name + '-' + mode)
+        iid = hashlib.sha256(('original scoped metadata ' + name).encode()).hexdigest()
+        key = self.run_fixture('input-key', iid, cache=cache)['key']
+        self.put_pair(cache, key, self.module(topology)[0], reflection)
+        if 'packed' in mode:
+            self.packer.pack(cache, keep=True)
+        return self.run_fixture('load', mode, key, iid, cache=cache)
+
+    def test_nested_geometry_compute_layout_is_ignored_without_inheriting_c0(self):
+        for location in ('geometry', 'extra'):
+            _, reflection = self.module('points')
+            reflection.setdefault(location, {}).update(c0=[0, 0, 0, 0], c0_version=2, c0_roots=[0] * 8)
+            for mode in ('loose', 'private-packed', 'input'):
+                with self.subTest(location=location, mode=mode):
+                    result = self.scope_load('gs-nested-c0-' + location, 'points', reflection, mode)
+                    self.assertTrue(result['accepted'], 'extra nested metadata is ignored, not treated as a driver layout')
+                    self.assertEqual(result['stage'], 3)
+                    self.assertFalse(result['has_c0'], 'a nested compute layout must never become a GS layout')
+
+    def test_storage_contract_version_uses_a_unique_root_field(self):
+        for topology, root_version, nested_version, accepted in (
+                ('points', 1, 0, False), ('points', 0, 1, True), ('points', None, 1, True),
+                ('compute', 2, 1, False), ('compute', 1, 0, True)):
+            _, base = self.module(topology)
+            base.pop('storage_candidates_version', None)
+            # Deliberately place the nested key before the real root key.
+            reflection = dict(extra={'storage_candidates_version': nested_version}, **base)
+            if root_version is not None:
+                reflection['storage_candidates_version'] = root_version
+            if topology == 'compute':
+                reflection.update(c0=[0, 0, 0, 0], c0_version=2, c0_roots=[0] * 8)
+            name = topology + '-root-' + str(root_version) + '-nested-' + str(nested_version)
+            for mode in ('loose', 'private-packed', 'input'):
+                with self.subTest(case=name, mode=mode):
+                    result = self.scope_load(name, topology, reflection, mode)
+                    self.assertEqual(result['accepted'], accepted)
+                    if accepted:
+                        self.assertEqual(result['has_c0'], topology == 'compute')
+        _, compute = self.module('compute')
+        compute.update(c0=[0, 0, 0, 0], c0_version=2, c0_roots=[0] * 8)
+        for first, second in ((0, 1), (1, 0), (1, 1)):
+            compute['storage_candidates_version'] = first
+            text = json.dumps(compute)[:-1] + ',"storage_candidates_version":' + str(second) + '}'
+            for mode in ('loose', 'private-packed'):
+                with self.subTest(duplicate=(first, second), mode=mode):
+                    self.assertFalse(self.scope_load('duplicate-storage-' + str(first) + str(second), 'compute', text, mode)['accepted'])
+
+    def test_compute_layout_root_fields_are_unique_and_warm_compatible(self):
+        _, compute = self.module('compute')
+        compute.pop('storage_candidates_version', None)
+        nested = dict(c0=[0, 0, 7, 0], c0_version=2, c0_roots=[3] + [0] * 7)
+        valid = dict(extra=nested, **compute, storage_candidates_version=1,
+                     c0=[0, 0, 2, 0], c0_version=2, c0_roots=[1] + [0] * 7)
+        for mode in ('loose', 'private-packed', 'input'):
+            with self.subTest(valid_root_layout=mode):
+                result = self.scope_load('cs-root-layout', 'compute', valid, mode)
+                self.assertTrue(result['accepted'])
+                self.assertTrue(result['has_c0'])
+                self.assertEqual((result['c0_ssbos'], result['c0_root0']), (2, 1), 'root layout wins over nested metadata')
+        for field, value in (('c0', [0, 0, 0, 0]), ('c0_version', 2), ('c0_roots', [0] * 8)):
+            for mode in ('loose', 'private-packed'):
+                with self.subTest(duplicate=field, mode=mode):
+                    text = json.dumps(valid)[:-1] + ',' + json.dumps(field) + ':' + json.dumps(value) + '}'
+                    self.assertFalse(self.scope_load('duplicate-' + field, 'compute', text, mode)['accepted'])
+        for missing in ('c0', 'c0_version', 'c0_roots'):
+            reflection = dict(valid)
+            del reflection[missing]
+            with self.subTest(missing_root_field=missing):
+                self.assertFalse(self.scope_load('missing-root-' + missing, 'compute', reflection, 'private')['accepted'])
+        # The actual request-keyed warm path still requires a valid v1 compute contract.
+        code, control = self.request_packet(5)
+        data = bytearray(control.read_bytes())
+        data[0x860:0x868] = b'DKC1' + bytes((0, 0, 2, 0))
+        data[0x86c] = 1
+        control.write_bytes(data)
+        cache = args.out / 'scope-compute-request-warm'
+        request = self.run_fixture('request', 5, 0, code, control, cache=cache)
+        self.assertTrue(request['accepted'])
+        self.run_fixture('learn', request['hash'], cache=cache)
+        request = self.run_fixture('request', 5, 0, code, control, cache=cache)
+        warm = dict(valid, extra=dict(nested, storage_candidates_version=0))
+        self.put_pair(cache, request['key'], self.module('compute')[0], warm)
+        for mode in ('request-load', 'request-memory'):
+            with self.subTest(valid_compute_warm=mode):
+                result = self.run_fixture(mode, 5, 0, code, control, cache=cache)
+                self.assertTrue(result['accepted'])
+                self.assertTrue(result['has_c0'])
+                self.assertEqual((result['c0_ssbos'], result['c0_root0']), (2, 1))
 
     def malformed_reflections(self):
         _, good = self.module('points')
