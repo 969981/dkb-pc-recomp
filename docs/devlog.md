@@ -5,6 +5,61 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 3 November 2026
 
+- **Audio checked during gameplay.** With `TOTK_TRACE=audio`, a 90 s tutorial run shows sound from about 20 s in, an
+  RMS of 0.02 to 0.04 with peaks up to 0.41, and no underrun or overrun on the SDL3 device.
+- **Copies between decoded ASTC textures** (#43 by monsterlag, e90bc7c). A texture-to-texture copy of an ASTC
+  texture used to be skipped because the image holds decoded RGBA8 and not the guest's blocks. It now copies the
+  decoded texels between two images of the same format when the region is aligned to the blocks, which ASTC
+  requires, and skips any other case, as before. The copy probe passes 14 of 14 cases.
+- **The respawn stall draws garbage** ([#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). philneitz's
+  run with the new line reads back every indirect argument of the slow parts: the largest asks for 2,309,897,600
+  indices from index 55,377,280, and each part adds up to about 2.2 trillion indices x instances. No real draw
+  looks like that. The compute stage that gets a zero storage buffer from c1 is not the writer: it only reads that
+  buffer and is not among the slow parts' stages. The slow-part line now names the shader that last stored over the
+  largest draw's arguments in that part, or says none did (a38643c).
+- **Guide movies loop after a Continue** (15152da). At the end of a movie the player flushes and starts again with
+  the two buffers it still holds, and submits its third packet before it releases one. The decoder refused that
+  packet, nothing released a buffer after that, and the guide window kept the movie's first picture, a flat yellow
+  card, for the rest of the run. Packets now wait in a queue of eight, as in Eglantine's video session, until a
+  buffer is reserved. In a resumed run the movie looped 16 times, where it had stopped after 183 pictures.
+  `TOTK_TRACE=codec` logs the decoder calls.
+- **A slow GPU part reads back its indirect draws' arguments** (f876d9b,
+  [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). In philneitz's respawn stall, 2,755 of the
+  3,197 draws in an 18.5 s part were indirect, and the slow-part line did not show their counts. It now logs the
+  total and the largest indirect draw, read once the GPU is done with the part.
+- **Test fixtures fixed** (#41 by monsterlag, 41bb451). The profiling calls added for the slow-part line had broken
+  two CPU fixtures: the indirect dispatch test (no `note_work`) and the resource frontier test (the upload timing's
+  Vulkan calls). Both pass again.
+- **Saving and loading work.** During a 600 s run of the scripted test the game wrote `progress.sav`, `caption.sav`
+  and `config.sav` through three commits. A second run on a copy of that profile showed Continue and New Game on the
+  title screen, and Continue resumed in the mining tunnel of the tutorial, where the first run had saved.
+- **The 20 fps stretch is gone** (69d51d0, [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). The
+  present thread held each present until the pacer's display time. While it slept, the next present waited behind it,
+  and so did every drain of pending presents. That includes the reads Bananza's job workers make of GPU-written
+  storage in the middle of a frame: profiles put 13 to 19 % of their time there. The vsync wait counted as game work,
+  and the game's frame-rate controller asked for 3 vsyncs. Bananza now sends the present once its blit is submitted
+  and keeps only the pacing in `nvnWindowAcquireTexture`; `TOTK_PRESENT_HOLD=1` brings the hold back, and TotK keeps
+  it. In a 600 s run of the scripted test, every minute after the first ran at 59.4 to 60.0 fps (1 % low 40.8 to 57.1),
+  where minutes 2 and 3 ran at 20.0 and 26.6 fps before, and the game changed its present interval 28 times in all.
+  The run had no fault.
+- **A replay part that runs long on the GPU names its work** (d4c27e2,
+  [#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). philneitz's log of the respawn stall showed the
+  GPU itself busy for about 16.8 s per frame inside the replay, with uploads and the present near zero and no device
+  loss. With `TOTK_TRACE=perf`, a part that runs at least `TOTK_PERF_SLOW_GPU_MS` (default 100) on the GPU now logs
+  its draw and dispatch counts, its largest direct one and the NVN 2 names of its stages.
+- **ASTC chunk breadcrumbs are written by the recorder thread** (#40, by monsterlag). They used to go into the command
+  buffer from the submitting thread while the recorder thread owned it, which Khronos validation reported as two
+  threading errors. The PR's new `--probe-vkcopy-astc` passes 5 of 5 cases and 5,526 checks with 0 validation errors
+  on an RTX 5060 Ti as well.
+- **The #9 skip no longer slows every draw** ([#10](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10)). The
+  skip of the later GPU fault (6da41ba) looks up the NVN 2 name of each draw's vertex stage, and that lookup scanned
+  the whole lowering cache under a lock. A profile of the render thread put 72 % of its samples there. In heavy
+  scenes the replay took about 74 ms a frame, and Bananza's own frame-rate controller answered by asking for 20 fps. The
+  name now comes from an index of lowered code buffers. In one 420 s run of the scripted test, the game presented
+  19,817 frames where it had presented 12,297 before, asked for 60 fps on 86 % of them, and the replay averaged 5.6 ms a
+  frame instead of 29.3 ms (worst window 13 ms, down from 114 ms). The light quad is still skipped, and the run had no
+  fault. From about 43 s to 163 s of the test the game still asked for 20 fps while the render thread was busy only
+  about 8 ms a frame; the host's present hold caused that (fixed in 69d51d0, above).
 - **Every GPU submission is timed on the perf line** (eb542bc, 6a49228). Upload batches, which also carry the ASTC
   decoding of texture uploads, and the present (blit, colour adjustment, FSR, overlay) went to the queue without
   timestamps. With `TOTK_TRACE=perf` the perf line now gives their GPU time per frame, the batches and bytes staged,
@@ -20,8 +75,9 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
   In 9 runs of 600 s, every run where one more light quad (NVN 2 vertex stage cae0ef8e9fe9147f) drew faulted, with its
   draw in flight at the device loss, and the runs where it never drew did not. Its fragment stage does not read
   c0+0x530, so the first skip missed it. It is now skipped on NVIDIA as well, and 6 runs of 600 s since had no fault,
-  including one where it came up. Its nine per-instance streams match a quad that never faults except for the
-  instance count, and so do its SPIR-V features, so it is matched by name and the cause is still open.
+  including one where it came up. Three quads that draw in every run without a fault have the same vertex input (an
+  input at Location 9, every attribute per instance) and the same integer code, so it is matched by name and the cause
+  is still open. Skipping every quad of that shape left out ten vertex stages that never faulted.
 - **Small Switch 2 reads can skip the GPU wait, as an opt-in** (#24, by NotShinySource, with monsterlag's opt-in).
   Bananza invalidates 128 bytes of a pool every frame, and with the asynchronous replay that read waited about 15 ms
   for the frame's GPU work. With `nx2_read_nowait = 1` and `replay_async = 1`, a read of up to 4 KiB no longer waits

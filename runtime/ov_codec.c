@@ -25,9 +25,17 @@
 #include "platform/platform.h"
 
 enum { R_NOT_READY = 0x1c266f };   // (result & 0x3fffff) - 0x1c2000 == 0x66f: "try again" for the game's wrapper
-enum { SLOTS = 16, DECODERS = 4, WAITERS = 4 };
+// QUEUED: packets the decoder takes ahead of the buffers for their pictures, as Eglantine's video session does
+// (nx2_gsv.h, INx2VideoSession::MaxQueuedInputs); a submission past them answers "not ready".
+enum { SLOTS = 16, DECODERS = 4, WAITERS = 4, QUEUED = 8 };
 enum { S_FREE, S_WAIT, S_FILLED };   // registered; acquired with no picture yet; acquired holding a picture
 enum { FENCE_TAG = 0xc0de0000u };    // fence token: tag | decoder << 8 | buffer
+
+// TOTK_TRACE=codec: a line for each decoder call that moves a buffer or a picture, to follow a player that stops.
+#define TRACE(...)                                                                                                   \
+    do {                                                                                                             \
+        if (rt_trace & RT_TRACE_CODEC) rt_log("codec: " __VA_ARGS__);                                                \
+    } while (0)
 
 #define LOG_FIRST(...)                                                                                               \
     do {                                                                                                             \
@@ -46,6 +54,9 @@ typedef struct {
     uint8_t *nv12;     // w*h luma, then cw*ch interleaved UV pairs
 } Slot;
 
+// A packet submitted while no buffer was reserved for its picture, decoded once one is (ov_vp9_acquire).
+typedef struct { uint8_t *data; size_t size; int64_t pts; int end; } Packet;
+
 typedef struct {
     uint64_t key;      // guest Vp9DecoderType; 0: unused
     vpx_codec_ctx_t vpx;
@@ -53,6 +64,8 @@ typedef struct {
     uint32_t seq;
     Slot slot[SLOTS];
     Slot last;         // the newest picture, for packets that show none
+    Packet queue[QUEUED];
+    int qhead, qn;
 } Dec;
 
 static Dec decs[DECODERS];
@@ -96,6 +109,53 @@ static void copy_slot(Slot *to, const Slot *from) {
     memcpy(to->nv12, from->nv12, n);
 }
 
+static void queue_drop(Dec *d) {
+    for (int i = 0; i < d->qn; i++) free(d->queue[(d->qhead + i) % QUEUED].data);
+    d->qhead = d->qn = 0;
+}
+
+// The oldest reserved buffer still waiting for a picture: pictures fill buffers in acquisition order.
+static Slot *oldest_wait(Dec *d) {
+    Slot *s = NULL;
+    for (int i = 0; i < SLOTS; i++)
+        if (d->slot[i].state == S_WAIT && (!s || (int32_t)(d->slot[i].seq - s->seq) < 0)) s = &d->slot[i];
+    return s;
+}
+
+// Decodes one packet into the waiting buffer s (lock held). A packet that shows nothing leaves s waiting, except the
+// last one: the player then gets the previous picture (or black) marked as the end. Returns the number of events to
+// signal, stored in wake.
+static int decode_into(Dec *d, Slot *s, const uint8_t *data, size_t size, int64_t pts, int end, uint64_t wake[WAITERS]) {
+    const vpx_image_t *img = NULL, *f;
+    if (d->vpx_ok && data && size) {
+        if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK)
+            LOG_FIRST("codec: VP9 packet of %zu bytes failed: %s", size, vpx_codec_error_detail(&d->vpx));
+        vpx_codec_iter_t it = NULL;
+        while ((f = vpx_codec_get_frame(&d->vpx, &it))) img = f;   // a superframe shows at most one; keep the last
+    }
+    int filled = 1;
+    if (img) put_picture(s, img), copy_slot(&d->last, s);
+    else if (end && d->last.nv12) copy_slot(s, &d->last);
+    else if (end) {
+        vpx_image_t black = {.d_w = 16, .d_h = 16};
+        static uint8_t y[16 * 16], uv[8 * 8];
+        if (!uv[0]) memset(y, 16, sizeof y), memset(uv, 128, sizeof uv);
+        black.planes[0] = y, black.planes[1] = black.planes[2] = uv, black.stride[0] = 16, black.stride[1] = black.stride[2] = 8;
+        put_picture(s, &black);
+    } else filled = 0;
+    TRACE("decode %zu bytes pts %lld%s: buffer %d %s", size, (long long)pts, end ? " end" : "", (int)(s - d->slot),
+          filled ? "filled" : "still waiting (no picture shown)");
+    LOG_FIRST("codec: first VP9 packet: %zu bytes, picture %ux%u", size, s->w, s->h);
+    int n = 0;
+    if (filled) {
+        s->state = S_FILLED, s->pts = pts, s->eos = end;
+        for (int k = 0; k < WAITERS; k++)
+            if (s->waiter[k]) wake[n++] = s->waiter[k];
+        memset(s->waiter, 0, sizeof s->waiter);
+    }
+    return n;
+}
+
 // Result nn::codec::video::Initialize(), Finalize(): nothing to open on the host
 static void ov_video_init(Cpu *c) { ret_x(c, 0); }
 static void ov_video_fini(Cpu *c) { ret_x(c, 0); }
@@ -108,6 +168,7 @@ static void vp9_init(Cpu *c, uint64_t key, unsigned w, unsigned h) {
     if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
     for (int i = 0; i < SLOTS; i++) free(d->slot[i].nv12);
     free(d->last.nv12);
+    queue_drop(d);
     memset(d, 0, sizeof *d);
     d->key = key;
     vpx_codec_dec_cfg_t cfg = {.threads = 2, .w = w, .h = h};
@@ -130,6 +191,7 @@ static void ov_vp9_fini(Cpu *c) {
         if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
         for (int i = 0; i < SLOTS; i++) free(d->slot[i].nv12);
         free(d->last.nv12);
+        queue_drop(d);
         memset(d, 0, sizeof *d);
     }
     plat_mutex_unlock(&lock);
@@ -143,7 +205,9 @@ static void ov_vp9_flush(Cpu *c) {
     if (d)
         for (int i = 0; i < SLOTS; i++)
             if (d->slot[i].state == S_FILLED) d->slot[i].state = S_WAIT;   // still reserved; its picture is dropped
+    if (d) queue_drop(d);   // and so are the packets not decoded yet
     plat_mutex_unlock(&lock);
+    TRACE("flush");
     ret_x(c, 0);
 }
 
@@ -211,10 +275,15 @@ static void ov_vp9_ready_event(Cpu *c) {
     uint64_t ev = event_for(c, dec);
     kern_signal_system_event(ev);
     *out = ev;
+    TRACE("submission-ready event %#llx handed out (signalled)", (unsigned long long)ev);
     ret_x(c, 0);
 }
 
-// Result SubmitVp9DecoderInputBuffer(u64 *id, Vp9DecoderType *, const void *data, size_t size, TimeSpan pts, bool end)
+// Result SubmitVp9DecoderInputBuffer(u64 *id, Vp9DecoderType *, const void *data, size_t size, TimeSpan pts, bool end):
+// decoded at once into the oldest waiting buffer, else queued for the next one reserved; "not ready" once QUEUED
+// packets wait. After the end of a guide movie the player flushes and starts over with the buffers it still holds,
+// submitting its third packet before it releases one: without the queue that packet was refused, nothing released a
+// buffer again, and the window kept the movie's first picture, a flat yellow card.
 static void ov_vp9_submit(Cpu *c) {
     uint64_t *id = arg_p(c, 0);
     const uint8_t *data = arg_p(c, 2);
@@ -223,51 +292,39 @@ static void ov_vp9_submit(Cpu *c) {
     int end = (int)(arg_x(c, 5) & 1);
     plat_mutex_lock(&lock);
     Dec *d = dec_of(arg_x(c, 1));
-    Slot *s = NULL;   // the oldest reserved buffer still waiting for a picture
-    for (int i = 0; d && i < SLOTS; i++)
-        if (d->slot[i].state == S_WAIT && (!s || (int32_t)(d->slot[i].seq - s->seq) < 0)) s = &d->slot[i];
+    Slot *s = d && !d->qn ? oldest_wait(d) : NULL;
     if (!s) {
+        int queued = d && d->qn < QUEUED;
+        if (queued) {
+            Packet *q = &d->queue[(d->qhead + d->qn++) % QUEUED];
+            *q = (Packet){size ? malloc(size) : NULL, size, pts, end};
+            if (size && !q->data) rt_fatal("codec: out of memory for a %zu-byte packet", size);
+            if (size) memcpy(q->data, data, size);
+            if (id) *id = d->seq;
+        }
+        int waiting = d ? d->qn : 0;
         plat_mutex_unlock(&lock);
-        ret_x(c, R_NOT_READY);
+        TRACE("submit %zu bytes pts %lld%s: %s (%d queued)", size, (long long)pts, end ? " end" : "",
+              queued ? "queued for the next reserved buffer" : "not ready", waiting);
+        ret_x(c, queued ? 0 : R_NOT_READY);
         return;
     }
-    const vpx_image_t *img = NULL, *f;
-    if (d->vpx_ok && data && size) {
-        if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK)
-            LOG_FIRST("codec: VP9 packet of %zu bytes failed: %s", size, vpx_codec_error_detail(&d->vpx));
-        vpx_codec_iter_t it = NULL;
-        while ((f = vpx_codec_get_frame(&d->vpx, &it))) img = f;   // a superframe shows at most one; keep the last
-    }
-    // A packet that shows nothing leaves the buffer waiting, except the last one: the player then gets the previous
-    // picture (or black) marked as the end.
-    int filled = 1;
-    if (img) put_picture(s, img), copy_slot(&d->last, s);
-    else if (end && d->last.nv12) copy_slot(s, &d->last);
-    else if (end) {
-        vpx_image_t black = {.d_w = 16, .d_h = 16};
-        static uint8_t y[16 * 16], uv[8 * 8];
-        if (!uv[0]) memset(y, 16, sizeof y), memset(uv, 128, sizeof uv);
-        black.planes[0] = y, black.planes[1] = black.planes[2] = uv, black.stride[0] = 16, black.stride[1] = black.stride[2] = 8;
-        put_picture(s, &black);
-    } else filled = 0;
-    uint64_t wake[WAITERS] = {0};
-    if (filled) {
-        s->state = S_FILLED, s->pts = pts, s->eos = end;
-        memcpy(wake, s->waiter, sizeof wake), memset(s->waiter, 0, sizeof s->waiter);
-    }
+    uint64_t wake[WAITERS];
+    int n = decode_into(d, s, data, size, pts, end, wake);
     if (id) *id = d->seq;
     plat_mutex_unlock(&lock);
-    for (int k = 0; k < WAITERS; k++)
-        if (wake[k]) kern_signal_system_event(wake[k]);
-    LOG_FIRST("codec: first VP9 packet: %zu bytes, picture %ux%u", size, s->w, s->h);
+    for (int k = 0; k < n; k++) kern_signal_system_event(wake[k]);
     ret_x(c, 0);
 }
 
 // Result AcquireVp9DecoderOutputBuffer(u32 *index, NativeSyncHandle *fence, Vp9DecoderType *): reserves a free buffer
-// for the next picture; the fence carries the token RequestSyncPointEvent waits on
+// for the next picture, decodes queued packets into the waiting buffers; the fence carries the token
+// RequestSyncPointEvent waits on
 static void ov_vp9_acquire(Cpu *c) {
     uint32_t *index = arg_p(c, 0), *fence = arg_p(c, 1);
     uint64_t key = arg_x(c, 2);
+    uint64_t wake[SLOTS * WAITERS];
+    int n = 0;
     plat_mutex_lock(&lock);
     Dec *d = dec_of(key);
     int got = -1;
@@ -279,9 +336,18 @@ static void ov_vp9_acquire(Cpu *c) {
         memset(s->waiter, 0, sizeof s->waiter);
         *index = (uint32_t)got;
         if (fence) *fence = FENCE_TAG | (uint32_t)(d - decs) << 8 | (uint32_t)got;
+        Slot *w;
+        while (d->qn && (w = oldest_wait(d)) && n <= SLOTS * WAITERS - WAITERS) {
+            Packet q = d->queue[d->qhead];
+            d->qhead = (d->qhead + 1) % QUEUED, d->qn--;
+            n += decode_into(d, w, q.data, q.size, q.pts, q.end, wake + n);
+            free(q.data);
+        }
     }
     plat_mutex_unlock(&lock);
     if (got < 0) rt_log("codec: AcquireVp9DecoderOutputBuffer with every registered buffer reserved");
+    else TRACE("acquire: buffer %d", got);
+    for (int k = 0; k < n; k++) kern_signal_system_event(wake[k]);
     // A reserved buffer lets the next packet in: wake a player that waits for the submission-ready event after a not
     // ready submission. Without this, the tutorial's guide movies stopped at their second picture.
     if (got >= 0) kern_signal_system_event(event_for(c, key));
@@ -295,6 +361,7 @@ static void ov_vp9_release(Cpu *c) {
     Dec *d = dec_of(arg_x(c, 0));
     if (d && i < SLOTS && d->slot[i].state != S_FREE) d->slot[i].state = S_FREE;
     plat_mutex_unlock(&lock);
+    TRACE("release: buffer %u", i);
     ret_x(c, 0);
 }
 
@@ -341,8 +408,10 @@ static void ov_read_nv12(Cpu *c) {
         for (uint32_t r = 0; r < uh && luv && r * uvp + n <= uvs; r++)
             memcpy(luv + r * uvp, uv + (size_t)(uy + r) * 2 * cw(s->w) + ux, n);
     }
+    int64_t pts = s ? s->pts : -1;
     plat_mutex_unlock(&lock);
     LOG_FIRST("codec: first NV12 read %ux%u (%s)", w, h, s ? "a decoded picture" : "no picture for this pool");
+    TRACE("read pool %#llx: pts %lld", (unsigned long long)pool, (long long)pts);
     ret_x(c, 0);
 }
 
@@ -403,6 +472,7 @@ static void ov_sp_request(Cpu *c) {
                 }
         plat_mutex_unlock(&lock);
     }
+    TRACE("sync point request %#x: %s", tok, now ? "signalled at once" : "waits for its picture");
     if (now) kern_signal_system_event(ev);
 }
 // void CancelSyncPointEvent(SyncPointEventType *): the request is dropped and the event cleared

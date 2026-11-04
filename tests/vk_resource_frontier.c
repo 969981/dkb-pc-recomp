@@ -26,6 +26,9 @@
 #define vkDestroyFence synthetic_destroy_fence
 #define vkDestroyCommandPool synthetic_destroy_pool
 #define vmaDestroyPool synthetic_vma_destroy_pool
+#define vkGetPhysicalDeviceQueueFamilyProperties synthetic_queue_families
+#define vkCreateQueryPool synthetic_create_query_pool
+#define vkGetQueryPoolResults synthetic_query_results
 
 enum { ALIAS, SPLIT, EMPTY, SKIPPED, SHUTDOWN };
 static int scenario, referenced, image_dead, view_dead, old_image_dead, old_view_dead, premature;
@@ -49,6 +52,21 @@ uint64_t perf_begin(void) { return 0; }
 void perf_replay(uint64_t start) { (void)start; }
 int cfg_bool(const char *key) { check(!strcmp(key, "TOTK_TEX_ALIAS"), "default texture alias setting"); return 1; }
 VkCtx *vk_ctx(void) { return &context; }
+// Upload batch timing (vk_memory.c, inserted with the memory types): the synthetic device has no queue family with timestamps
+// and no query pool, so uploads stay untimed.
+static void synthetic_queue_families(VkPhysicalDevice phys, uint32_t *n, VkQueueFamilyProperties *props) {
+    (void)phys; (void)props; *n = 0;
+}
+static VkResult synthetic_create_query_pool(VkDevice device, const VkQueryPoolCreateInfo *info,
+                                            const VkAllocationCallbacks *alloc, VkQueryPool *pool) {
+    (void)device; (void)info; (void)alloc; *pool = VK_NULL_HANDLE; return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+static VkResult synthetic_query_results(VkDevice device, VkQueryPool pool, uint32_t first, uint32_t count, size_t size,
+                                        void *data, VkDeviceSize stride, VkQueryResultFlags flags) {
+    (void)device; (void)pool; (void)first; (void)count; (void)size; (void)data; (void)stride; (void)flags;
+    check(0, "an untimed upload batch never reads timestamps");
+    return VK_NOT_READY;
+}
 
 @TEXTURE_TYPES@
 @VIEW_TYPES@

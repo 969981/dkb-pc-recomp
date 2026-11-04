@@ -48,7 +48,11 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 
 ## F5 — Playable (in progress)
 
-- [x] Controller input in the menu and in gameplay (walking, punching).
+- [x] Controller input in the menu and in gameplay (walking, punching). Keyboard and mouse come from TotK Recomp's
+      input layer ([controls.md](controls.md)).
+- [x] Audio: the game's audio renderer (REV15) mixes on the host and plays through SDL3. In a 90 s tutorial run,
+      `TOTK_TRACE=audio` measured an RMS of 0.02 to 0.04 and peaks up to 0.41 once gameplay starts, with no underrun
+      or overrun.
 - [x] Tutorial guide movies: `nn::codec` VP9 decoding on the host with libvpx (`runtime/ov_codec.c`).
 - [ ] GPU fault (an invalid instruction pointer; the freeze was the same fault, 86fb7cc) right after the first guide
       movie frame. It is the first draw of one instanced light-quad vertex shader, and its fragment stage (one of the
@@ -69,8 +73,13 @@ Each phase ends in a milestone someone else can check. The order follows the cri
 - [ ] Some textures look blocky (checkerboard rocks) [#5]: the deswizzle now uses the Switch 2 GOB layout, which fixes the gold rock in the tutorial cave; the other rock surfaces still need a check.
 - [ ] Getting past the tutorial cave. [#7] A hand-played run reached the Ingot Isle Cave-In section; respawning
       there stalled the GPU.
-- [ ] Saves: the save is created; saving and loading are not tested yet.
-- [ ] Performance: so far the game presents every third vsync (20 fps). Nobody has profiled it yet.
+- [x] Saves: the game writes `progress.sav`, `caption.sav` and `config.sav` as it plays, and a later run on the same
+      profile offers Continue and resumes at the last checkpoint (the mining tunnel of the tutorial).
+- [x] Performance in the tutorial: the game picks its own present interval (1 to 3 vsyncs) from how long its frames
+  take. A profile of the render thread found the #9 skip's stage-name lookup taking 72 % of it (fixed in d5fd595), and
+  the host's hold of each present until its display time made the job workers' mid-frame GPU reads wait for vsync
+  (off for Bananza since 69d51d0). A 600 s run of the scripted test now runs at 59.4 to 60.0 fps in every minute after
+  the first. Other areas and other GPUs are not measured yet.
 - [ ] Testing on other GPUs. [#3]
 - [x] Installer on TotK Recomp's model (`docs/installer.md`, #19): from the user's base 1.0.0 ExeFS and RomFS folders
       it packs the RomFS, builds the shader translator, lifts with the patch table and builds `dkb100`, run from this

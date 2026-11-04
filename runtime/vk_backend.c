@@ -9,7 +9,8 @@
 //
 // Back-edge pacing: the present thread submits the blit at once, then holds the host present (vkQueuePresentKHR) until
 // the frame's display time from the pacer (nvn_api_obj.c), so present-to-present intervals stay even whatever the
-// replay took. The blit is already on the queue, so the wait blocks no submission.
+// replay took. The blit is already on the queue, so the wait blocks no submission, but the next present waits behind
+// it (TOTK_PRESENT_HOLD, off for Bananza: present_hold).
 //
 // Asynchronous replay (TOTK_REPLAY_ASYNC, default 0; 1 turns it on): nvnQueueSubmitCommands
 // and nvnQueuePresentTexture only queue. Each item gets its timeline value at enqueue (vk_sync_reserve), in queue
@@ -46,6 +47,24 @@ static void wait_until(uint64_t at) {
     while (kern_now_ns() < at) plat_yield();
 }
 
+// TOTK_PRESENT_HOLD: 1 holds the host present until the pacer's display time (back-edge pacing), 0 sends it once the
+// blit is submitted and leaves the pacing to nvnWindowAcquireTexture alone. Unset: 1 for TotK, 0 for Bananza. While
+// this thread holds frame N, the present of frame N+1 stays queued and every vk_present_drain waits for it. Bananza's
+// job workers drain on their reads of GPU-written storage (vk_be_guest_read), so the wait for the display landed in
+// the middle of the game's frame work; its frame-rate controller counted it as work and asked for 3 vsyncs (20 fps)
+// for about two minutes of the scripted test. Without the hold, a 200 s run of that test asked for 1 vsync on 5,770 of
+// its first 5,900 frames (29 at 3, against 2,558 with the hold) and averaged 58.8 fps.
+static int present_hold(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_PRESENT_HOLD");
+        on = e && *e ? strcmp(e, "0") != 0 : rt_game_version != 0;   // 0: Bananza
+        rt_log("vk: the host present %s (TOTK_PRESENT_HOLD=%d)",
+               on ? "waits for the pacer's display time" : "goes out once its blit is submitted", on);
+    }
+    return on;
+}
+
 static void present_main(void *arg) {
     (void)arg;
     uint64_t last = 0, last_queued = 0;
@@ -68,7 +87,7 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
-        wait_until(j.at);
+        if (present_hold()) wait_until(j.at);
         uint64_t t1 = kern_now_ns();
         vk_present_flip();
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
