@@ -963,10 +963,10 @@ static void reflect_spirv(GfxShader *s) {
             else if (a[1] == DEC_COMPONENT) packed[id] = 1;
         } else if (op == OP_TYPE_INT && len >= 4 && id < bound) {
             ttype[id] = a[2] ? GFX_TYPE_SINT : GFX_TYPE_UINT, tcomps[id] = 1;
-            width[id] = a[1] == 32 || a[1] == 64 ? (uint8_t)a[1] : 0, span[id] = 1;
+            width[id] = a[1] <= UINT8_MAX ? (uint8_t)a[1] : 0, span[id] = 1;
         } else if (op == OP_TYPE_FLOAT && len >= 3 && id < bound) {
             ttype[id] = GFX_TYPE_FLOAT, tcomps[id] = 1;
-            width[id] = a[1] == 32 || a[1] == 64 ? (uint8_t)a[1] : 0, span[id] = 1;
+            width[id] = a[1] <= UINT8_MAX ? (uint8_t)a[1] : 0, span[id] = 1;
         } else if (op == OP_TYPE_VECTOR && len >= 4 && id < bound && a[1] < bound) {
             ttype[id] = ttype[a[1]], tcomps[id] = (uint8_t)a[2];
             width[id] = width[a[1]], span[id] = span[a[1]] && a[2] >= 2 && a[2] <= 4;
@@ -995,7 +995,7 @@ static void reflect_spirv(GfxShader *s) {
             if ((sc == SC_INPUT || sc == SC_OUTPUT) && var < bound && type < bound && loc[var] > 0 && loc[var] <= 32) {
                 int l = loc[var] - 1;
                 uint32_t t = pointee[type] < bound ? pointee[type] : 0;
-                GfxShaderIo io = {ttype[t], tcomps[t] ? tcomps[t] : 4, packed[var]};
+                GfxShaderIo io = {ttype[t], tcomps[t] ? tcomps[t] : 4, packed[var], width[t]};
                 uint32_t slots = span[t];
                 // A GS input's outer fixed array indexes vertices, not Locations. Keep its element span rather
                 // than divide the saturated total: inner arrays still consume Locations. Unsupported arrays stay so.
