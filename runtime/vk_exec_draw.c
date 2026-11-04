@@ -41,6 +41,7 @@ static const uint32_t (*c0_push)[NVN2_ROOT_WORDS];
 #define SUPPORT_BYTES 1408u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
+#define NVN_STAGE_GS 2
 #define NVN_STAGE_CS 5
 #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
 
@@ -2662,7 +2663,7 @@ static void geometry_context_buffer_log(unsigned record, const char *name, const
            view.mirror_state, view.mirror_present, view.shadow_storage, view.buffer_present);
 }
 
-// Private draw-ingress metadata only. Replay is serialized; the cap is process-wide and later draws are unobserved.
+// Opt-in draw-ingress metadata only. Replay is serialized; the cap is process-wide and later draws are unobserved.
 static void geometry_context_log(const VkExec *ex, uint32_t op, const void *payload) {
     if (op != OP_DRAW && op != OP_DRAW_IDX && op != OP_DRAW_IDX_IND) return;
     static int on = -1, filtered;
