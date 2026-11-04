@@ -396,6 +396,70 @@ static int resolve_check_on(void) {
 
 static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out);
 
+int vk_mem_inspect(uint64_t addr, uint64_t size, VkMemInspect *out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof *out);
+    if (!addr || !size || addr > UINT64_MAX - size) return 0;
+    int ok = 0;
+    VkMemInspect result = {0};
+    plat_mutex_lock_shared(&pool_lock);
+    // Match bind_range's one-byte resolver candidate, then check the whole request against that same backing.
+    const pidx_ent *e = pidx_find(&pool_index, addr, 1);
+    const PoolRec *r = e ? e->buf : NULL;
+    if (!r || !r->size || r->lo > UINT64_MAX - r->size || addr < r->lo) goto done;
+    uint64_t rel = addr - r->lo;
+    if (rel >= r->size || size > r->size - rel) goto done;
+    uint64_t remaining = r->size - rel;
+    result.pool_flags = r->flags;
+    if (r->kind == POOL_IMPORT) {
+        if (!r->buf || addr < r->import_lo || addr + size > r->import_hi) goto done;
+        result.pool_kind = VK_MEM_INSPECT_POOL_IMPORT;
+        result.offset = addr - r->import_lo;
+        result.avail = r->import_hi - addr;
+        if (result.avail > remaining) result.avail = remaining;
+        result.cls = rec_class(r);
+        _Static_assert(MS_NONE == VK_MEM_INSPECT_MIRROR_NONE && MS_ON == VK_MEM_INSPECT_MIRROR_ON &&
+                       MS_REFUSED == VK_MEM_INSPECT_MIRROR_REFUSED, "inspection mirror-state schema");
+        result.mirror_state = r->mstate;
+        result.mirror_present = r->mbuf != VK_NULL_HANDLE;
+        result.shadow_storage = r->smap != NULL;
+    } else if (r->kind == POOL_PHYS) {
+        if (!r->buf) goto done;
+        result.pool_kind = VK_MEM_INSPECT_POOL_PHYSICAL;
+        result.offset = rel;
+        result.avail = remaining;
+        result.cls = VK_MCLS_DEVICE;
+    } else if (r->kind == POOL_VIRT) {
+        uint64_t k = rel / NVN_VPOOL_PAGE, in_page = rel % NVN_VPOOL_PAGE;
+        uint64_t pages = r->size / NVN_VPOOL_PAGE;
+        if (pages > r->npages) pages = r->npages;
+        if (!r->pt || k >= pages) goto done;
+        const PoolRec *ph = r->pt[k].phys;
+        uint64_t start = r->pt[k].off;
+        if (!ph || ph->kind != POOL_PHYS || !ph->buf || start % NVN_VPOOL_PAGE ||
+            start > ph->size || NVN_VPOOL_PAGE > ph->size - start) goto done;
+        uint64_t end = start + NVN_VPOOL_PAGE;
+        for (uint64_t j = k + 1; j < pages && r->pt[j].phys == ph && r->pt[j].off == end; j++) {
+            if (NVN_VPOOL_PAGE > ph->size - end) break;
+            end += NVN_VPOOL_PAGE;
+        }
+        result.pool_kind = VK_MEM_INSPECT_POOL_VIRTUAL;
+        result.offset = start + in_page;
+        result.avail = end - result.offset;
+        if (result.avail > remaining) result.avail = remaining;
+        result.cls = VK_MCLS_DEVICE;
+    } else {
+        goto done;
+    }
+    if (result.avail < size) goto done;
+    result.buffer_present = 1;
+    *out = result;
+    ok = 1;
+done:
+    plat_mutex_unlock_shared(&pool_lock);
+    return ok;
+}
+
 int vk_mem_descriptor_key(uint64_t addr, uint64_t size, VkDescKey *out) {
     memset(out, 0, sizeof *out);
     if (!addr || !size || addr > UINT64_MAX - size) return 0;
