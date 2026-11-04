@@ -66,4 +66,5 @@ def main():
     return int(failures != 0)
 
 
-if __name__ == '__main__':raise SystemExit(main())
+if __name__ == '__main__':
+    raise SystemExit(main())
