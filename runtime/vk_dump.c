@@ -6,6 +6,8 @@
 //   pass_<seq>_t<i>_<w>x<h>_<vkformat>_<name>.png   colour target i (td: depth; img<slot>: storage image; lut<id>: 3D;
 //                                                    a BC target drawn through a block view: its blocks as that view)
 //   ..._tm.png                                       float formats: x/(1+x) of the same image (the plain one clamps)
+//   ..._nan.png                                      an image with NaN texels: those in magenta over the _tm image
+//                                                    at a third of its brightness
 //   passes.txt   per pass or dispatch: targets, draws, each distinct pipeline + texture set with its shaders' SPIR-V
 //                hashes (sh_<hash>.spv written once) and the bound textures with their samplers
 //   images.txt   per image: channel min/max, distinct texel values over the image and over its top quarter
@@ -218,8 +220,8 @@ static void write_images(const Job *j) {
     uint32_t pw = j->w * j->d, ph = j->h;
     uint64_t n = (uint64_t)pw * ph;
     float *px = malloc(n * 16);
-    uint8_t *out = malloc(n * 4);
-    if (!px || !out) rt_fatal("vk_dump: out of memory for %s", j->name);
+    uint8_t *out = malloc(n * 4), *nanm = calloc(n, 1);
+    if (!px || !out || !nanm) rt_fatal("vk_dump: out of memory for %s", j->name);
     float mn[4] = {INFINITY, INFINITY, INFINITY, INFINITY}, mx[4] = {-INFINITY, -INFINITY, -INFINITY, -INFINITY};
     uint64_t nans = 0;
     for (uint32_t z = 0; z < j->d; z++)
@@ -228,7 +230,7 @@ static void write_images(const Job *j) {
                 float *o = px + 4 * ((uint64_t)y * pw + (uint64_t)z * j->w + x);
                 decode(j->f, j->map + (((uint64_t)z * j->h + y) * j->w + x) * j->f->bytes, o);
                 for (int c = 0; c < 4; c++) {
-                    if (isnan(o[c])) { nans++, o[c] = 0; continue; }
+                    if (isnan(o[c])) { nans++, o[c] = 0, nanm[(uint64_t)y * pw + (uint64_t)z * j->w + x] = 1; continue; }
                     if (o[c] < mn[c]) mn[c] = o[c];
                     if (o[c] > mx[c]) mx[c] = o[c];
                 }
@@ -257,6 +259,14 @@ static void write_images(const Job *j) {
         snprintf(path, sizeof path, "%s/%s%s.png", dir, j->name, pass ? "_tm" : "");
         rt_write_png(path, out, pw, ph);
     }
+    if (nans) {   // out holds the last image written: _tm for float formats
+        for (uint64_t i = 0; i < n; i++)
+            for (int c = 0; c < 3; c++) out[4 * i + c] = nanm[i] ? (c == 1 ? 0 : 255) : (uint8_t)(out[4 * i + c] / 3);
+        char path[600];
+        snprintf(path, sizeof path, "%s/%s_nan.png", dir, j->name);
+        rt_write_png(path, out, pw, ph);
+    }
+    free(nanm);
     uint64_t all = distinct(j, 0, j->h), top = distinct(j, 0, j->h / 4 ? j->h / 4 : 1);
     plat_mutex_lock(&img_lock);
     if (images_f) {
@@ -600,7 +610,7 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info) 
             if (!h) { sp(b, "no handle (dummy)\n"); continue; }
             view_t v;
             int hv = 0;
-            const VkTexImage *t = vk_texture_by_id(NVN_HANDLE_TEX(h), &v, &hv);
+            const VkTexImage *t = vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(h), &v, &hv);
             if (!t) { sp(b, "tex %d unresolved (dummy)\n", NVN_HANDLE_TEX(h)); continue; }
             static const char *vt[] = {"1D", "2D", "3D", "cube", "1DArray", "2DArray", "cubeArray"};
             sp(b, "tex %d %s(%d) %ux%ux%u levels %u layers %u image %s", NVN_HANDLE_TEX(h), fmt_name(t->format, fn),
@@ -614,7 +624,7 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info) 
                 // storage image: no sampler
             } else if (r->separate) {
                 sp(b, " | separate sampler (not replayed: default sampler)");
-            } else if (vk_sampler_params(NVN_HANDLE_SAMP(h), &s)) {
+            } else if (vk_sampler_params(&ex->samp_pool, NVN_HANDLE_SAMP(h), &s)) {
                 static const char *minn[] = {"N", "L", "N_mipN", "L_mipN", "N_mipL", "L_mipL"};
                 int mf = s.minf;
                 sp(b, " | samp %d: mag %s min %s (vk min %s mip %s) wrap %s/%s/%s aniso %g lod %g..%g bias %g%s",
@@ -631,7 +641,7 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info) 
             sp(b, " | addr %#llx mirrored %d gpu_owned %d bound %d uploads %u last-check %d written-since %d",
                (unsigned long long)t->addr, t->mirrored, t->gpu_owned, t->bound, ups, last, wr);
             uint8_t ssw[4] = {0};
-            vk_texture_slot_swz(NVN_HANDLE_TEX(h), ssw);
+            vk_texture_slot_swz(&ex->tex_pool, NVN_HANDLE_TEX(h), ssw);
             sp(b, " | swz image %u%u%u%u slot %u%u%u%u", t->swz[0], t->swz[1], t->swz[2], t->swz[3], ssw[0], ssw[1], ssw[2],
                ssw[3]);
             if (hv && v.set_swizzle) sp(b, " view %u%u%u%u", v.swz[0], v.swz[1], v.swz[2], v.swz[3]);
@@ -787,7 +797,7 @@ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPip
         uint64_t h = handle_of(ex, 5, bd->res->slot, 1);
         view_t v;
         int hv = 0;
-        const VkTexImage *t = h ? vk_texture_by_id(NVN_HANDLE_TEX(h), &v, &hv) : NULL;
+        const VkTexImage *t = h ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(h), &v, &hv) : NULL;
         if (!t) continue;
         uint32_t lv = hv && v.set_levels ? v.base_level : 0, layer = hv && v.set_layers ? v.min_layer : 0;
         if (lv >= t->levels || layer >= t->layers) continue;

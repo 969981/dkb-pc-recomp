@@ -747,8 +747,9 @@ static void reflect_spirv(GfxShader *s) {
     int32_t *loc = calloc(bound, sizeof *loc);
     uint8_t *packed = calloc(bound, 1), *ttype = calloc(bound, 1), *tcomps = calloc(bound, 1);
     uint8_t *width = calloc(bound, 1), *span = calloc(bound, 1), *length = calloc(bound, 1);
+    uint8_t *array_element_span = calloc(bound, 1);
     uint32_t *pointee = calloc(bound, sizeof *pointee);
-    if (!loc || !packed || !ttype || !tcomps || !width || !span || !length || !pointee) goto out;
+    if (!loc || !packed || !ttype || !tcomps || !width || !span || !length || !array_element_span || !pointee) goto out;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
         if (!len || i + len > n) break;
@@ -782,6 +783,7 @@ static void reflect_spirv(GfxShader *s) {
             // Interfaces, Location and Component Assignment). Cap each factor before multiplying: only 32 slots
             // fit our reflection. Unknown lengths and element widths GfxShaderIo cannot describe stay unsupported.
             if (width[id] == 32 && a[2] < bound) {
+                array_element_span[id] = span[a[1]];
                 uint32_t slots = (uint32_t)span[a[1]] * length[a[2]];
                 span[id] = slots > 32 ? 32 : (uint8_t)slots;
             }
@@ -793,7 +795,12 @@ static void reflect_spirv(GfxShader *s) {
                 int l = loc[var] - 1;
                 uint32_t t = pointee[type] < bound ? pointee[type] : 0;
                 GfxShaderIo io = {ttype[t], tcomps[t] ? tcomps[t] : 4, packed[var]};
-                for (uint32_t j = 0; j < span[t] && l + j < 32; j++) {
+                uint32_t slots = span[t];
+                // A GS input's outer fixed array indexes vertices, not Locations. Keep its element span rather
+                // than divide the saturated total: inner arrays still consume Locations. Unsupported arrays stay so.
+                if (sc == SC_INPUT && s->stage == GFX_STAGE_GS && slots && array_element_span[t])
+                    slots = array_element_span[t];
+                for (uint32_t j = 0; j < slots && l + j < 32; j++) {
                     if (sc == SC_INPUT) s->in_mask |= 1u << (l + j), s->in[l + j] = io;
                     else s->out_mask |= 1u << (l + j), s->out[l + j] = io;
                 }
@@ -802,7 +809,7 @@ static void reflect_spirv(GfxShader *s) {
         i += len;
     }
 out:
-    free(loc), free(packed), free(ttype), free(tcomps), free(width), free(span), free(length), free(pointee);
+    free(loc), free(packed), free(ttype), free(tcomps), free(width), free(span), free(length), free(array_element_span), free(pointee);
 }
 
 // This ABI field is an exact JSON integer, not a numeric prefix such as 1.5 or 1e1. Missing means legacy version 0.
