@@ -15,6 +15,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
+#include "nvn_geometry_control.h"
 #include "nvn_tex.h"
 #include "platform/platform.h"
 
@@ -421,6 +422,8 @@ NVN_API(nvnProgramInitialize) {
 static void prog_release(prog_t *o) {
     if (o->serial) gfx_backend()->program_release(o);
     o->serial = 0;
+    free(o->owned_control);
+    o->owned_control = NULL;
 }
 // void nvnProgramFinalize(NVNprogram *p)
 NVN_API(nvnProgramFinalize) {
@@ -433,18 +436,38 @@ static int prog_set_shaders(prog_t *o, int n, const NVNshaderData *sd) {
         rt_log("nvn: ProgramSetShaders with %d stages at %p", n, (const void *)sd);
         return 0;
     }
-    prog_release(o);
-    o->nstage = (uint32_t)n;
-    if (n) memcpy(o->sd, sd, (size_t)n * sizeof *sd);
+    NVNshaderData next[6] = {0};
+    uint8_t *owned = NULL;
+    if (n) memcpy(next, sd, (size_t)n * sizeof *sd);
     for (int i = 0; i < n; i++) {   // NVN 2 stages are lowered to the NVN 1 shape (nvn2_lower.cpp)
-        const uint8_t *ctl = sd[i].control, *code = (const uint8_t *)(uintptr_t)sd[i].data, *nctl, *ncode;
+        const uint8_t *ctl = next[i].control, *code = (const uint8_t *)(uintptr_t)next[i].data, *nctl, *ncode;
         gfx_shader_nvn2_dump(ctl, code);   // only with DKB_SHADER_DUMP
         if (gfx_shader_is_nvn2(ctl) && nvn2_lower(ctl, code, &nctl, &ncode))
-            o->sd[i] = (NVNshaderData){(NVNbufferAddress)(uintptr_t)ncode, nctl};
+            next[i] = (NVNshaderData){(NVNbufferAddress)(uintptr_t)ncode, nctl};
+        ctl = next[i].control;
+        code = (const uint8_t *)(uintptr_t)next[i].data;
+        // Raw NVN2 controls have a different compact layout. Only the host's
+        // explicitly tagged legacy-shaped controls are copied here.
+        if (!ctl || !code || gfx_shader_is_nvn2(ctl) ||
+            memcmp(ctl + NVN_GEOMETRY_CONTROL_OFFSET, "TKGSMETA", 8)) continue;
+        uint32_t length = nvn_geometry_control_u32(ctl + 0x704);
+        if (nvn_geometry_control_get(ctl, 0x880, code, length, NULL) != 1) goto fail;
+        if (!owned && !(owned = malloc((size_t)n * 0x880))) goto fail;
+        memcpy(owned + (size_t)i * 0x880, ctl, 0x880);
+        next[i].control = owned + (size_t)i * 0x880;
     }
+    // Prepare first: sd may alias the old stage list or its owned controls.
+    // The back end drains replay before the old snapshot is freed.
+    prog_release(o);
+    o->nstage = (uint32_t)n;
+    memcpy(o->sd, next, sizeof next);
+    o->owned_control = owned;
     o->serial = nvn_new_serial();
-    NVN_LOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)o, n, n ? (unsigned long long)sd[0].data : 0ull);
+    NVN_LOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)o, n, n ? (unsigned long long)next[0].data : 0ull);
     return 1;
+fail:
+    free(owned);
+    return 0;
 }
 // NVNboolean nvnProgramSetShaders(NVNprogram *p, int n, const NVNshaderData *sd)
 NVN_API(nvnProgramSetShaders) {
