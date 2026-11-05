@@ -3,6 +3,22 @@
 Milestones of DKB Recomp, newest first. The plan they follow is [bananza-plan.md](bananza-plan.md); open work is in
 the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
+## 5 November 2026
+
+- **The destructible terrain renders with `TOTK_NATIVE_GS=1`** (#67 by philneitz, 0ee59b2, [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)).
+  The terrain's passthrough geometry stage now replays natively and fills the indirect counts that the reset from #48
+  leaves at zero. In the mining tunnel the walls and floor render, where they are black with the switch off. It is
+  translator patch 0018 and stays opt-in. A 180 s tutorial run with the Vulkan validation layer had 0 faults and the
+  same 10 validation errors as with it off.
+- **Written ranges go through a hash table** (#74 by philneitz, a8d6afc). `note_written` searched its whole list on
+  every call. In the Hilltop Layer with the geometry stage it took most of the replay thread.
+- **The opening wall's cause is found** ([#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45), by dwk001).
+  The translator's decoder treats an unpredicated `CAL` as an unconditional branch, so the code after the call loses
+  its predecessor. In a square root's slow path the result is then overwritten with `0 × inf = NaN`. The one-line fix
+  brings the wall back here as well and will be patch 0019.
+- **A device lost in the end-of-tutorial cutscene** ([#75](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/75))
+  reproduces on two machines and two drivers, with and without the `CAL` fix. Skipping the cutscene avoids it.
+
 ## 4 November 2026
 
 - **The NaN on DK's face is fixed** (#72 by zswxp59, 60e7616, [#70](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/70)).
