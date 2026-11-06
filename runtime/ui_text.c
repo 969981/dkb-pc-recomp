@@ -51,7 +51,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     // printf format of the overlay line in FPS mode: the frame rate
     [UI_PERF_LINE_FPS] = "%.0f fps",
     [UI_MENU_GRAPHICS] = "Picture",
-    [UI_MENU_OUTPUT_RES] = "Game resolution",
+    [UI_MENU_OUTPUT_RES] = "Render resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
                                 "more video memory and GPU time. A wider size (21:9) widens the camera's view and moves "
                                 "the HUD to the screen's corners; a taller one (16:10, Steam Deck) moves it to the top "
@@ -313,7 +313,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_OFF] = "Выкл.", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Полный",
     [UI_PERF_LINE_FPS] = "%.0f к/с",
     [UI_MENU_GRAPHICS] = "Изображение",
-    [UI_MENU_OUTPUT_RES] = "Разрешение игры",
+    [UI_MENU_OUTPUT_RES] = "Разрешение рендеринга",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
                                 "видеопамяти и времени GPU. Более широкий размер (21:9) расширяет обзор камеры и "
                                 "переносит интерфейс в углы экрана, более высокий (16:10, Steam Deck) переносит его к "
