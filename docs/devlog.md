@@ -5,6 +5,10 @@ the [roadmap issue](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10).
 
 ## 5 November 2026
 
+- **The destructible terrain renders by default.** `native_gs` (#67) is now on unless `TOTK_NATIVE_GS=0`. On an RTX
+  5060 Ti the rocks drew with textures in hand-played gameplay up to the end-of-tutorial cutscene, and philneitz saw
+  the same on NVIDIA and on a Radeon 610M. The cutscene's device loss (#75) happens with the switch on or off, as does
+  the Radeon's own device loss.
 - **The destructible terrain renders with `TOTK_NATIVE_GS=1`** (#67 by philneitz, 0ee59b2, [#45](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/45)).
   The terrain's passthrough geometry stage now replays natively and fills the indirect counts that the reset from #48
   leaves at zero. In the mining tunnel the walls and floor render, where they are black with the switch off. It is
