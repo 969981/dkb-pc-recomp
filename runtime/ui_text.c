@@ -90,8 +90,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_COLOR_GAMMA_DESC] = "Below 1 brightens dark and middle tones, above 1 darkens them; 1 leaves them.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
-    [UI_MENU_DKB_FPS_LIMIT_DESC] = "Changes apply immediately; game timing adjusts automatically. Higher frame rates "
-                                 "are experimental and need enough CPU and GPU performance.",
+    [UI_MENU_DKB_FPS_LIMIT_DESC] = "With Game speed follows the clock enabled, changes apply immediately. Above 60 "
+                                 "needs that experimental setting and enough CPU and GPU performance.",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
                                "follows the clock.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
@@ -100,6 +100,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_DISPLAY] = "Monitor rate", [UI_MENU_FPS_DISPLAY_HZ] = "Monitor rate (%.0f Hz)",
     [UI_MENU_REALTIME] = "Game speed follows the clock",
     [UI_MENU_REALTIME_DESC] = "Steps the game by real time, so a slow frame does not slow the game down.",
+    [UI_MENU_DKB_REALTIME_DESC] = "Experimental; off by default. Adjusts game timing to measured frame duration. "
+                                "Camera, physics, cutscenes and audio still need validation. Requires restarting.",
     [UI_MENU_CLOTH_REALTIME] = "Cloth on the clock",
     [UI_MENU_CLOTH_REALTIME_DESC] = "Steps cloth and hair by real time as well.",
     [UI_MENU_HIGHFPS_FIX] = "High frame rate fixes",
@@ -354,8 +356,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_COLOR_GAMMA_DESC] = "Ниже 1 осветляет тёмные и средние тона, выше 1 затемняет их; 1 — без изменений.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
-    [UI_MENU_DKB_FPS_LIMIT_DESC] = "Изменения применяются сразу; шаг игрового времени подстраивается автоматически. "
-                                 "Высокая частота кадров экспериментальна и требует достаточной производительности CPU и GPU.",
+    [UI_MENU_DKB_FPS_LIMIT_DESC] = "При включённой настройке «Скорость игры по часам» изменения применяются сразу. "
+                                 "Для частоты выше 60 нужны этот экспериментальный режим и достаточная производительность CPU и GPU.",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
                                "игры по часам».",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
@@ -363,6 +365,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_DISPLAY] = "Как у монитора", [UI_MENU_FPS_DISPLAY_HZ] = "Как у монитора (%.0f Гц)",
     [UI_MENU_REALTIME] = "Скорость игры по часам",
     [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
+    [UI_MENU_DKB_REALTIME_DESC] = "Экспериментальный режим, по умолчанию выключен. Шаг игрового времени зависит от длительности кадра. "
+                                "Камера, физика, кат-сцены и звук ещё требуют проверки. Нужен перезапуск.",
     [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
     [UI_MENU_CLOTH_REALTIME_DESC] = "Ткань и волосы тоже идут по реальному времени.",
     [UI_MENU_HIGHFPS_FIX] = "Исправления для высокого FPS",

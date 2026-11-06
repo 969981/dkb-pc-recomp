@@ -22,9 +22,9 @@
 // One 64-bit and one 32-bit store per present; the guest reads the floats on its own threads, and each stays finite
 // and in range whichever store it sees.
 //
-// Bananza 1.0.0 uses dynamic timing automatically with the existing FPS limit.
+// Bananza 1.0.0 opts into experimental dynamic timing with TOTK_REALTIME=1.
 // Its controller consumes an integer rate at patch page +12; its game clocks
-// consume the precise 60 Hz ratio at +8. TotK's REALTIME toggle does not gate it.
+// consume the precise 60 Hz ratio at +8. The existing FPS limit sets the host cap.
 //
 // The world clock (frame_step_world_us) sums the steps from the first present that finds the player actor away from
 // the origin, where the title screen keeps it: the end of the first save load. Recorded and scripted input
@@ -80,9 +80,6 @@ void frame_step_init(void) {
         rt_log("frame rate: no timing patch table; using the game's original frame timing");
         return;
     }
-    // Bananza's FPS selector is the sole control: timing must remain active when
-    // the cap changes, including when an older ini has TotK's REALTIME disabled.
-    if (!rt_game_version) rt_patch_switch(realtime, 1);
     if (!rt_patch_enabled(realtime) && rt_patch_enabled(cloth)) {
         rt_patch_disable(cloth);
         rt_log("frame rate: cloth clock off, it needs the real-time step (TOTK_REALTIME=0)");
@@ -95,7 +92,8 @@ void frame_step_init(void) {
     }
     frame_limit_live();   // TOTK_FPS_LIMIT decides the set fps60 from the start
     if (!rt_game_version) {
-        rt_log("frame rate: Bananza automatic dynamic step; host-paced frames (experimental)");
+        rt_log("frame rate: Bananza %s", step_word ? "experimental dynamic step; host-paced frames" :
+               "original game timing (TOTK_REALTIME=1 opts into experimental dynamic timing)");
         return;
     }
     rt_log("frame rate: present interval %s, %s", rt_patch_enabled(fps60) ? "1..3 (above 30 fps)" : "2..3 (shipping 30 fps)",

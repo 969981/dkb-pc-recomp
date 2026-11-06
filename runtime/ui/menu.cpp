@@ -638,8 +638,8 @@ static void tab_screen(float scale) {
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
-    // Bananza handles timing automatically; this toggle belongs to TotK.
-    if (rt_game_version) opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
+    opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME,
+               rt_game_version ? UI_MENU_REALTIME_DESC : UI_MENU_DKB_REALTIME_DESC);
     opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
     opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
     row_game_lang();

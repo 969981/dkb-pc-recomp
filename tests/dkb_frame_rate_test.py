@@ -35,7 +35,11 @@ def main():
                 assert ins.kind == 'op'
                 code.append(ins.code)
         bodies.append(f'void patch_{pc:x}(Cpu *c, void *page) {{\n'+ '\n'.join(code)+'\n}')
-    assert len(bodies) == 9
+    assert len(bodies) == 8
+    # The common exit must retain the controller-selected interval, not force 1.
+    assert all('patch_1ead2c' not in body for body in bodies)
+    original = lifter.lift(0xb9404281, 0x70001ead2c)
+    bodies.append('void original_interval(Cpu *c) {\n'+original.code+'\n}')
     source = '#include "cpu.h"\n#include <math.h>\n#include <stdio.h>\n'+'\n'.join(bodies)
     source += r'''
 int main(void) {
@@ -45,7 +49,9 @@ int main(void) {
         float ratio=60.0f/(rate+fraction*0.25f);
         uint32_t rounded=(uint32_t)lroundf(rate+fraction*0.25f);
         memcpy(page+8,&ratio,4); memcpy(page+12,&rounded,4);
-        memset(state,0xa5,sizeof state); memcpy(expected,state,sizeof state);
+        memset(state,0xa5,sizeof state);
+        uint32_t interval=1+fraction;
+        memcpy(state+0x40,&interval,4); memcpy(expected,state,sizeof state);
         Cpu c={0};
         for(unsigned i=0;i<32;i++) { c.x[i]=0x123456789abc0000ull+i; c.v[i]=(__uint128_t)c.x[i]<<64|~c.x[i]; }
         c.sp=(uintptr_t)(stack+sizeof stack); c.nzcv=0xa0000000; c.x[20]=(uintptr_t)state;
@@ -55,9 +61,12 @@ int main(void) {
         patch_1ead24(&c,page);
         errors+=memcmp(&c,&want,sizeof c)!=0;
         errors+=memcmp(state,expected,sizeof state)!=0;
-        want=c; want.x[1]=1;
-        patch_1ead2c(&c,page);
+        cases++;
+        want=c; want.x[1]=interval;
+        original_interval(&c);
         errors+=memcmp(&c,&want,sizeof c)!=0;
+        errors+=memcmp(state,expected,sizeof state)!=0;
+        cases++;
         void (*clocks[])(Cpu*,void*)={patch_1bc834,patch_2d9fc8,patch_2da120,patch_34e99c,patch_34ec1c,patch_34ec68,patch_69fc60};
         for(unsigned clock=0;clock<7;clock++) {
             memset(stack,0xa5,sizeof stack);

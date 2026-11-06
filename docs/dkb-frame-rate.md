@@ -1,9 +1,11 @@
 # Experimental Bananza frame timing
 
-Bananza 1.0.0 automatically adjusts game timing to the existing frame-rate
-selector, including its monitor-rate choice. The default cap remains 60 FPS.
-Changes apply without restarting or enabling a separate setting. TotK retains
-its manual real-time-clock toggle; Bananza does not show that toggle.
+Bananza 1.0.0 can adjust game timing to measured frame duration. This is
+experimental and off by default. Enable the existing **Game speed follows the
+clock** option (`TOTK_REALTIME=1`, or `realtime = 1` in `totk.ini`) and restart
+once. With it enabled, the existing frame-rate selector, including Monitor rate,
+applies cap changes without restarting. The default cap remains 60 FPS. TotK
+retains its existing on-by-default timing setting.
 No new frame-rate choices are added. Numeric caps in configuration accept 30
 through 360; this is an experimental range,
 not a claim that all rates or scenes have been validated.
@@ -15,37 +17,42 @@ seconds-conversion logic remains in place. The maximum step is 1/15 second;
 long stalls can still slow simulation. No rendering interpolation or frame
 generation is added. CPU and GPU performance determine the achievable rate.
 
+The controller's `+0x40` field is its chosen present interval: the native path
+stores it at `1eadec`, computes `60 / interval`, and passes it through `1ead2c`
+to `1eaed0`. Keep that interval unchanged, including values above 1; the host's
+`runtime/nvn_api_obj.c` `present_period` already uses the selected cap when
+real-time timing is enabled. No scene-specific interval policy is assumed.
+At the rate hook `1ead24`, `x8` is dead: the next call at `1ead28` targets
+`1eaf30`, whose first instruction overwrites `w8` before any read of `x8`.
+
 ## Validation
 
 - Patch generation checks all original instruction words against base 1.0.0.
 - `python tests/dkb_frame_rate_test.py --cc <clang>` checks the lifted replacement
   instructions on synthetic registers, stack and controller memory, including
-  fractional rates, at O0 and O2: 9,688 cases per build, zero failures.
-- A local Unicorn check independently executes all nine replacement sequences
-  at twelve rates: 108 cases, zero failures.
-- Windows, Ryzen 7 9800X3D, RTX 5090, 240 Hz display: isolated save loads and scripted cave gameplay at 30 and 60
-  FPS, and with 120 and 240 caps, exited successfully. The 240-cap run reached
-  240 FPS on the title screen and approximately 100–170 FPS in the tested cave
-  views. A measured eight-second gameplay interval accumulated 7.997 seconds
-  in the camera's native clock with the precise clock patches.
+  fractional rates and preserved present intervals 1 through 4, at O0 and O2:
+  12,456 cases per build, zero failures.
+- A local Unicorn check independently executes all eight replacement sequences
+  at twelve rates: 96 cases, zero failures.
+- Review revision, Windows, Ryzen 7 9800X3D, RTX 5090, 240 Hz display:
+  a 60-second save-load and scripted cave run with no timing opt-in exited
+  successfully; the log confirmed `realtime off` and original game timing.
+- A 72-second opt-in run switched 60 → 120 → 240 → 30 → 45 → 60 → Monitor rate
+  (239.984 Hz) → 60 through the live settings API without restarting and exited
+  successfully. At the 240 cap, short cave samples achieved about 184–193 FPS;
+  settled simulation/wall-time ratios there were 0.996–1.002. The native present
+  interval remained 1 in this run; preservation of values 2–4 is covered by the
+  synthetic test, not a cutscene playtest.
 - Targets were tested through 240 FPS to match the available display; higher
   rates were not validated. Gameplay remains performance-limited: the tester
   reports difficulty sustaining above approximately 120 FPS on this system.
   The short automated observations above do not establish a performance gain.
 - The clean player build passes `--selftest` and `--probe-cfg`.
-- The automatic-timing revision completed a 72-second session without an opt-in
-  flag, including with the old `REALTIME=0` setting. Caps switched through 60,
-  120, 240, 30, 45, 60, monitor rate (239.984 Hz), and back to 60 without a
-  restart. This background run was performance-limited to roughly 30–35 FPS in
-  the cave, so it validates live configuration and timing rather than high-FPS
-  performance. A late sample reported simulation/wall-time speed of 0.998.
-- One 65-second session switched 60 → 120 → 240 → 30 → 45 FPS through the
-  live settings API without restarting and exited successfully. The observed
-  camera clock settled to 2 at 30 FPS and 1.333333 at 45 FPS.
 
-This is not fully qualified arbitrary-frame-rate support. A one-second full-stick
-camera turn accumulated about 139.6 degrees at 60 FPS and 147.5 degrees in the
-higher-rate run. Input sampling and the camera's frame-based smoothing need
+This is not fully qualified arbitrary-frame-rate support. Earlier prototype
+tests measured about 139.6 degrees at 60 FPS and 147.5 degrees at higher FPS
+for a one-second full-stick camera turn. This discrepancy remains unresolved;
+input sampling and the camera's frame-based smoothing need
 further isolation. Jumping and movement were exercised, but jump trajectories,
 destruction physics, cutscenes, audio synchronization and long-session stability
 have not been established equivalent across rates. No test establishes sustained

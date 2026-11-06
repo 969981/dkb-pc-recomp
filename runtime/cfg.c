@@ -370,16 +370,22 @@ void cfg_each_active(void (*cb)(const char *key, const char *value, int from_env
     }
 }
 
+const CfgMeta *cfg_meta_at(int i) {
+    static const CfgMeta dkb_realtime = {"REALTIME", "0", "0|1", RESTART};
+    if (i < 0 || (size_t)i >= sizeof metas / sizeof *metas) return NULL;
+    // Bananza timing is experimental; TotK retains its established default.
+    if (!rt_game_version && !strcmp(metas[i].key, "REALTIME")) return &dkb_realtime;
+    return &metas[i];
+}
+
 const CfgMeta *cfg_meta(const char *key) {
     char k[64];
     snprintf(k, sizeof k, "%s", key);
     const char *name = norm_key(k);
     for (size_t i = 0; i < sizeof metas / sizeof *metas; i++)
-        if (!strcmp(metas[i].key, name)) return &metas[i];
+        if (!strcmp(metas[i].key, name)) return cfg_meta_at((int)i);
     return NULL;
 }
-
-const CfgMeta *cfg_meta_at(int i) { return i >= 0 && (size_t)i < sizeof metas / sizeof *metas ? &metas[i] : NULL; }
 
 const char *cfg_value(const char *name) {
     const char *e = cfg_get(name);

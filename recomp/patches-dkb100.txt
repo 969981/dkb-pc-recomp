@@ -8,12 +8,13 @@ set hidproxy DKB_SKIP_HID_PROXY 1
 site hidproxy main 73bea0 9404d9d0 2a1f03e0   # bl sub_71008725E0 -> mov w0, wzr
 
 # Experimental host-paced frame timing. The controller's common exit passes the
-# measured simulation rate from patch page +12 to the framework and requests one
-# present interval. frame_step_init enables this set automatically for Bananza;
-# the existing REALTIME setting only controls TotK.
-set realtime TOTK_REALTIME 1
+# measured simulation rate from patch page +12 to the framework. Opt-in until
+# physics, camera and cutscene timing have been qualified across frame rates.
+# x8 is dead here: 1ead28 calls 1eaf30, whose first instruction writes w8 before
+# reading it. Keep the controller's present interval at +0x40 and its original
+# load at 1ead2c; nvn_api_obj.c present_period uses the host cap with realtime on.
+set realtime TOTK_REALTIME 0
 site realtime main 1ead24 aa1303e0 @page:x8 b9400d01 b9005281 b9005681 aa1303e0
-site realtime main 1ead2c b9404281 52800021
 
 # Clock producers divide 60 by the controller's integer FPS. Read the precise
 # 60 Hz step at +8 instead. Preserve the address register, stack and flags; the
