@@ -58,6 +58,102 @@ The settings keep TotK Recomp's `TOTK_` names, so its fixes apply without a rena
 Command-line options: `--seconds S` stops the run after S seconds of game time, and `--shot frame.png` with it saves
 that frame. A shot is for your own debugging; do not post it if it shows game content.
 
+## Experimental ultrawide mode
+
+The optional `DKB_ULTRAWIDE=1` mode uses `DKB_OUTPUT_RES` for a wider native render
+target and increases the camera's horizontal view while keeping its vertical
+view. It is disabled by default. The HUD retains its proportions and can sit at
+the screen edges or inside the central 16:9 area; menus remain centered.
+Saving and loading indicators follow the same HUD setting. Their local capture
+panes stay unchanged; only the final icon, shadow and loading group anchors move.
+Scenes and layouts outside the recorded test coverage still need checking.
+With no resolution setting, Bananza retains its stock 2880x1620 output.
+
+Generate the matching background overlay from your own packed RomFS before
+running. Install the Python `zstandard` package in the build environment if it
+is not already present. For a build in `build/ultrawide`, for example:
+
+```powershell
+python tools/dkb_wide_layout.py --romfs build/extracted/dkb100-packed/romfs --out build/ultrawide/romfs-patches-3440x1440 --aspect 3440x1440
+python tools/dkb_wide_layout.py --romfs build/extracted/dkb100-packed/romfs --out build/ultrawide/romfs-patches-3440x1440-hud-edges --aspect 3440x1440 --hud edges
+$env:DKB_ULTRAWIDE = '1'
+$env:DKB_OUTPUT_RES = '3440x1440'
+$env:DKB_ASPECT = 'fit'
+build/ultrawide/dkb.exe
+```
+
+The overlay belongs beside that build's `romfs-index.bin` and is selected only
+while ultrawide is enabled. Its original-file and replacement hashes are checked
+by the existing RomFS overlay loader. It contains game data and must stay private
+under `build/`. Backgrounds are extended separately from logos, text, controls,
+and guide movie panes. Regenerate it when changing the output resolution.
+
+The title's cave wall is a particle effect rather than a layout pane. The overlay
+uniformly enlarges the `BootMenuEnv` wall and atmosphere layers to cover the
+viewport, cropping their top and bottom instead of distorting their proportions.
+The logo, text, debris and animation timing stay unchanged. This requires
+regenerating existing overlays; replacing the executable alone does not update
+the backdrop. The generator validates both emitter names, bounds and original
+scales before writing any replacement resources.
+
+F1 opens the existing settings menu. On the Screen tab, **Ultrawide** enables
+the wider camera view, **Render resolution** chooses the render target, and **HUD
+position** selects **Screen edges** (the default) or **Centered (16:9)**. These
+three settings apply after restarting because the game loads its display and
+layout resources at boot.
+Settings are saved in `totk.ini` beside the executable. Environment overrides
+lock their corresponding menu controls; omit `DKB_ULTRAWIDE`, `DKB_OUTPUT_RES`
+and `DKB_ASPECT` from a launcher when using the menu to save these choices.
+
+Render resolution also works with Ultrawide off: choose a 16:9 size from 1280x720
+through the original 2880x1620. With Ultrawide on, the list
+offers 21:9 and 32:9 sizes. Switching Ultrawide selects a resolution near the
+previous render height, preferring the monitor's aspect ratio when enabling it.
+Window size changes the host window rather than the game's render resolution.
+
+`DKB_HUD_POSITION=edges|centered` is the equivalent override. Edge mode loads
+`romfs-patches-<width>x<height>-hud-edges`, a complete overlay including the
+backgrounds. If that folder is absent, the centered overlay is used and the log
+reports the fallback. Generate both folders for each installed menu resolution:
+2560x1080, 3440x1440 and 3840x1080. The 32:9 menu preset is 3840x1080.
+5120x1440 repeatedly crashed while creating game render resources during
+gameplay loading, and 3840x2160 also failed. Menu presets are kept within the
+largest tested frame, 3440x1440, pending support for larger render resources.
+The wider parser range remains available for diagnostic environment overrides;
+accepting a resolution in the parser does not establish game compatibility.
+
+Picture fitting only preserves or stretches the finished image when
+the window and game have different shapes. It does not change the camera view;
+use Ultrawide for that. Keep Black bars selected for undistorted proportions.
+
+`python tests/dkb_wide_layout_test.py` checks synthetic layouts and animation
+keys without game data, including untouched panes, animation tangents and
+fail-closed checks for an unexpected layout revision. It also checks that the
+title-effect patch changes only the wall and atmosphere scale, and rejects
+unknown or malformed emitter data.
+
+`python tests/dkb_wide_projection_test.py` exercises the lifted UI patches on
+full-screen and local capture matrices, including register and stack preservation.
+The shared orthographic projection path widens only the game's 1920x1080 UI
+canvas. Smaller capture canvases keep their original projection so dialogue
+backgrounds, captured text and icon shadows are not narrowed a second time.
+
+The configuration boundary test runs without game data:
+
+```powershell
+clang -O2 -march=x86-64-v3 -I runtime tests/dkb_wide_test.c -o build/dkb-wide-test.exe
+build/dkb-wide-test.exe
+build/ultrawide/dkb.exe --probe-cfg
+```
+
+Set `DKB_ULTRAWIDE=0` with a 16:9 `DKB_OUTPUT_RES` to use a standard view at the
+selected resolution. Use `2880x1620` for the original render dimensions. The wide
+background overlay is ignored at 16:9. Invalid resolutions, or a wide resolution
+with Ultrawide off, fall back to stock 2880x1620 and produce a log message.
+Keep `DKB_ASPECT=fit` for a centered picture
+on a wider monitor. Neither mode changes your save files. The feature requires
+regenerating with `recomp/patches-dkb100.txt`, just like the controller patch.
+
 ## What to report
 
 Open an issue with the issue form, or comment on [#3](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/3)

@@ -52,6 +52,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f fps",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Render resolution",
+    [UI_MENU_ULTRAWIDE] = "Ultrawide",
+    [UI_MENU_ULTRAWIDE_DESC] = "Expand the camera's horizontal view for 21:9 or 32:9. Menus keep their proportions. "
+                              "Off uses a 16:9 view. Changing this selects a resolution with the nearest height. Restart to apply.",
+    [UI_MENU_WIDE_RES] = "Render resolution",
+    [UI_MENU_WIDE_RES_DESC] = "The resolution the game renders before scaling the image to your window or screen. "
+                             "Higher resolutions improve detail but need more GPU time and video memory. "
+                             "Ultrawide enables the 21:9 and 32:9 choices. Restart to apply.",
+    [UI_MENU_HUD_POSITION] = "HUD position",
+    [UI_MENU_HUD_POSITION_DESC] = "Place corner displays near the screen edges, or keep them inside a centered 16:9 "
+                                 "area. Menus and aiming markers stay centered. Restart to apply.",
+    [UI_MENU_HUD_EDGES] = "Screen edges", [UI_MENU_HUD_CENTERED] = "Centered (16:9)",
+    [UI_MENU_WIDE_DISABLED] = "Enable Ultrawide first",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
                                 "more video memory and GPU time. A wider size (21:9) widens the camera's view and moves "
                                 "the HUD to the screen's corners; a taller one (16:10, Steam Deck) moves it to the top "
@@ -314,6 +326,18 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f к/с",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение рендеринга",
+    [UI_MENU_ULTRAWIDE] = "Ультраширокий экран",
+    [UI_MENU_ULTRAWIDE_DESC] = "Расширяет обзор камеры по горизонтали для 21:9 или 32:9. Меню сохраняют пропорции. "
+                              "При выключении используется обзор 16:9. Выбирается разрешение с ближайшей высотой. Требуется перезапуск.",
+    [UI_MENU_WIDE_RES] = "Разрешение отрисовки",
+    [UI_MENU_WIDE_RES_DESC] = "Разрешение игры до масштабирования под окно или экран. Более высокое улучшает "
+                             "детализацию, но требует больше ресурсов GPU и видеопамяти. "
+                             "Ультраширокий режим добавляет варианты 21:9 и 32:9. Требуется перезапуск.",
+    [UI_MENU_HUD_POSITION] = "Положение интерфейса",
+    [UI_MENU_HUD_POSITION_DESC] = "Расположить угловые индикаторы у краёв экрана или в центральной области 16:9. "
+                                 "Меню и прицел остаются в центре. Требуется перезапуск.",
+    [UI_MENU_HUD_EDGES] = "У краёв экрана", [UI_MENU_HUD_CENTERED] = "По центру (16:9)",
+    [UI_MENU_WIDE_DISABLED] = "Сначала включите ультраширокий экран",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
                                 "видеопамяти и времени GPU. Более широкий размер (21:9) расширяет обзор камеры и "
                                 "переносит интерфейс в углы экрана, более высокий (16:10, Steam Deck) переносит его к "
