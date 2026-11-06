@@ -60,99 +60,60 @@ that frame. A shot is for your own debugging; do not post it if it shows game co
 
 ## Experimental ultrawide mode
 
-The optional `DKB_ULTRAWIDE=1` mode uses `DKB_OUTPUT_RES` for a wider native render
-target and increases the camera's horizontal view while keeping its vertical
-view. It is disabled by default. The HUD retains its proportions and can sit at
-the screen edges or inside the central 16:9 area; menus remain centered.
-Saving and loading indicators follow the same HUD setting. Their local capture
-panes stay unchanged; only the final icon, shadow and loading group anchors move.
-Scenes and layouts outside the recorded test coverage still need checking.
-With no resolution setting, Bananza retains its stock 2880x1620 output.
+Bananza 1.0.0 supports an optional wider horizontal camera view with proportional UI.
+The title/main-menu background fills the wider viewport: its wall and atmosphere are
+enlarged uniformly and cropped vertically, while the logo and text keep their proportions.
+Corner HUD elements, including saving/loading indicators, can move to the screen edges
+or remain in a centered 16:9 area. Menu controls and world markers remain centered.
 
-Generate the matching background overlay from your own packed RomFS before
-running. Install the Python `zstandard` package in the build environment if it
-is not already present. For a build in `build/ultrawide`, for example:
+Open F1 → Screen to set **Ultrawide**, **Render resolution**, and **HUD position**.
+Ultrawide is off by default; HUD placement defaults to **Screen edges** when enabled.
+All three settings currently require a restart. Available resolution presets are:
+
+| Ultrawide | Aspect-ratio group | Presets |
+| --- | --- | --- |
+| Off | 16:9 | 1280x720, 1600x900, 1920x1080, 2560x1440, 2880x1620 |
+| On | 21:9 class | 2560x1080, 3440x1440 |
+| On | 32:9 | 3840x1080 |
+
+The original virtual-display functions return 2880x1620 (16:9); this remains the
+default when no resolution is selected. These dimensions do not establish the native
+3D rendering resolution or the Switch 2 screen's resolution. Window size controls the
+host window separately. Use **Black bars** (`DKB_ASPECT=fit`) to preserve proportions
+when the window and game have different aspect ratios.
+
+Build with `recomp/patches-dkb100.txt` and generate matching overlays from your own packed
+RomFS (requires Python `zstandard`). For a 3440x1440 build, generate both HUD variants:
 
 ```powershell
 python tools/dkb_wide_layout.py --romfs build/extracted/dkb100-packed/romfs --out build/ultrawide/romfs-patches-3440x1440 --aspect 3440x1440
 python tools/dkb_wide_layout.py --romfs build/extracted/dkb100-packed/romfs --out build/ultrawide/romfs-patches-3440x1440-hud-edges --aspect 3440x1440 --hud edges
-$env:DKB_ULTRAWIDE = '1'
-$env:DKB_OUTPUT_RES = '3440x1440'
-$env:DKB_ASPECT = 'fit'
 build/ultrawide/dkb.exe
 ```
 
-The overlay belongs beside that build's `romfs-index.bin` and is selected only
-while ultrawide is enabled. Its original-file and replacement hashes are checked
-by the existing RomFS overlay loader. It contains game data and must stay private
-under `build/`. Backgrounds are extended separately from logos, text, controls,
-and guide movie panes. Regenerate it when changing the output resolution.
+Repeat for each installed ultrawide resolution, placing the folders beside `romfs-index.bin`.
+The overlays contain game data and must stay private under `build/`. Regenerate older
+overlays to include the title-background fix; updating the executable alone is insufficient.
+Missing edge-HUD overlays fall back to the centered variant with a log message.
 
-The title's cave wall is a particle effect rather than a layout pane. The overlay
-uniformly enlarges the `BootMenuEnv` wall and atmosphere layers to cover the
-viewport, cropping their top and bottom instead of distorting their proportions.
-The logo, text, debris and animation timing stay unchanged. This requires
-regenerating existing overlays; replacing the executable alone does not update
-the backdrop. The generator validates both emitter names, bounds and original
-scales before writing any replacement resources.
+Environment equivalents are `DKB_ULTRAWIDE=0|1`, `DKB_OUTPUT_RES=<width>x<height>`,
+and `DKB_HUD_POSITION=edges|centered`. Overrides lock the corresponding F1 controls;
+otherwise choices are saved in `totk.ini`. Turning Ultrawide off allows the 16:9 presets
+and skips the wide overlay. Invalid sizes fall back to the original 2880x1620 dimensions.
 
-F1 opens the existing settings menu. On the Screen tab, **Ultrawide** enables
-the wider camera view, **Render resolution** chooses the render target, and **HUD
-position** selects **Screen edges** (the default) or **Centered (16:9)**. These
-three settings apply after restarting because the game loads its display and
-layout resources at boot.
-Settings are saved in `totk.ini` beside the executable. Environment overrides
-lock their corresponding menu controls; omit `DKB_ULTRAWIDE`, `DKB_OUTPUT_RES`
-and `DKB_ASPECT` from a launcher when using the menu to save these choices.
+5120x1440 (32:9) and 3840x2160 failed during render-resource creation and are excluded
+from the menu. Diagnostic overrides can accept larger sizes but do not establish support.
+Coverage remains limited to short Windows/NVIDIA runs; other scenes and GPUs need testing.
 
-Render resolution also works with Ultrawide off: choose a 16:9 size from 1280x720
-through the original 2880x1620. With Ultrawide on, the list
-offers 21:9 and 32:9 sizes. Switching Ultrawide selects a resolution near the
-previous render height, preferring the monitor's aspect ratio when enabling it.
-Window size changes the host window rather than the game's render resolution.
-
-`DKB_HUD_POSITION=edges|centered` is the equivalent override. Edge mode loads
-`romfs-patches-<width>x<height>-hud-edges`, a complete overlay including the
-backgrounds. If that folder is absent, the centered overlay is used and the log
-reports the fallback. Generate both folders for each installed menu resolution:
-2560x1080, 3440x1440 and 3840x1080. The 32:9 menu preset is 3840x1080.
-5120x1440 repeatedly crashed while creating game render resources during
-gameplay loading, and 3840x2160 also failed. Menu presets are kept within the
-largest tested frame, 3440x1440, pending support for larger render resources.
-The wider parser range remains available for diagnostic environment overrides;
-accepting a resolution in the parser does not establish game compatibility.
-
-Picture fitting only preserves or stretches the finished image when
-the window and game have different shapes. It does not change the camera view;
-use Ultrawide for that. Keep Black bars selected for undistorted proportions.
-
-`python tests/dkb_wide_layout_test.py` checks synthetic layouts and animation
-keys without game data, including untouched panes, animation tangents and
-fail-closed checks for an unexpected layout revision. It also checks that the
-title-effect patch changes only the wall and atmosphere scale, and rejects
-unknown or malformed emitter data.
-
-`python tests/dkb_wide_projection_test.py` exercises the lifted UI patches on
-full-screen and local capture matrices, including register and stack preservation.
-The shared orthographic projection path widens only the game's 1920x1080 UI
-canvas. Smaller capture canvases keep their original projection so dialogue
-backgrounds, captured text and icon shadows are not narrowed a second time.
-
-The configuration boundary test runs without game data:
+Run the layout, projection/register-preservation, and configuration checks with:
 
 ```powershell
+python tests/dkb_wide_layout_test.py
+python tests/dkb_wide_projection_test.py
 clang -O2 -march=x86-64-v3 -I runtime tests/dkb_wide_test.c -o build/dkb-wide-test.exe
 build/dkb-wide-test.exe
 build/ultrawide/dkb.exe --probe-cfg
 ```
-
-Set `DKB_ULTRAWIDE=0` with a 16:9 `DKB_OUTPUT_RES` to use a standard view at the
-selected resolution. Use `2880x1620` for the original render dimensions. The wide
-background overlay is ignored at 16:9. Invalid resolutions, or a wide resolution
-with Ultrawide off, fall back to stock 2880x1620 and produce a log message.
-Keep `DKB_ASPECT=fit` for a centered picture
-on a wider monitor. Neither mode changes your save files. The feature requires
-regenerating with `recomp/patches-dkb100.txt`, just like the controller patch.
 
 ## What to report
 
