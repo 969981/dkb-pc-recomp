@@ -125,6 +125,7 @@ static void log_open(int game) {
     plat_append_write(g_log_file, g_log_early, n);
     g_log_bytes = n;
     __atomic_store_n(&g_log_state, LOG_FILE, __ATOMIC_RELEASE);
+    rt_log("version: %s (%s)", rt_port_version, rt_game_version ? "TotK" : "Bananza 1.0.0");
     rt_log("log: %s", g_log_path);
 }
 
@@ -507,6 +508,12 @@ int main(int argc, char **argv) {
             double s = strtod(argv[i], &end);
             if (*end || !(s > 0) || s > 1e6) return usage(argv[0]);
             cfg.seconds = s;
+        } else if (!strcmp(argv[i], "--version")) {
+            // The port version (VERSION, plus the commit of a checkout) and the game it was built for, so a report says
+            // which build it came from.
+            printf("%s %s (%s)\n", rt_game_version ? "totk" : "dkb", rt_port_version,
+                   rt_game_version ? "Tears of the Kingdom" : "Donkey Kong Bananza 1.0.0");
+            return 0;
         } else if (!strcmp(argv[i], "--shot")) {
             if (++i == argc) return usage(argv[0]);
             cfg.shot = argv[i];
