@@ -303,8 +303,12 @@ def build_bin(out):
     b = out / 'bin'
     b.mkdir(parents=True, exist_ok=True)
     for f in ('totk_xlate.exe', 'totk_xlate.id'):
-        shutil.copy2(MAIN_ROOT / 'build' / 'xlate' / f, b / f)
-    shutil.copy2(MAIN_ROOT / 'toolchain' / 'hactool' / 'hactool.exe', b / 'hactool.exe')
+        src = MAIN_ROOT / 'build' / 'xlate' / f
+        if not src.is_file():
+            sys.exit(f'{src}: missing; build the shader translator with: .venv\\Scripts\\python tools\\build_xlate.py')
+        shutil.copy2(src, b / f)
+    if GAME == 'totk':   # Bananza's installer extracts with its own tools, not hactool
+        shutil.copy2(MAIN_ROOT / 'toolchain' / 'hactool' / 'hactool.exe', b / 'hactool.exe')
     dll = unpack('sdl3-dll') / 'SDL3.dll'
     if sha256_file(dll) != SDL3_DLL_SHA256:
         sys.exit(f'{dll}: not the pinned SDL3.dll')
@@ -346,9 +350,10 @@ def collect_licenses(out):
         (unpack('sdl3-dll') / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
-        (MAIN_ROOT / 'toolchain' / 'hactool' / 'LICENSE', 'hactool-LICENSE.txt'),
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
     ]
+    if GAME == 'totk':
+        pairs.append((MAIN_ROOT / 'toolchain' / 'hactool' / 'LICENSE', 'hactool-LICENSE.txt'))
     for src, name in pairs:
         shutil.copy2(src, lic / name)
     with tarfile.open(fetch('libvpx-src')) as t:   # the MSYS2 package carries no licence text; the notice needs both
