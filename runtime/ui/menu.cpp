@@ -478,6 +478,7 @@ static void row_window_size(void) {
 // another shape, resolution.c res_init; the installer lays the HUD out for each, installer/steps.py ASPECT_SIZES), and
 // the current value when it is another size.
 static void row_output_res(void) {
+    if (!rt_game_version) return;  // Bananza's resolution row is beside its ultrawide setting.
     static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160",
                                        "2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440",
                                        "1280x800", "1680x1050", "1920x1200", "2560x1600"};
@@ -491,6 +492,44 @@ static void row_output_res(void) {
         names[i] = shown[i];
     }
     opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC);
+}
+
+// The resolution is always editable. Ultrawide selects the available aspect
+// ratios; switching it keeps the nearest render height, preferring the monitor's
+// aspect when widening. Window dimensions do not change the render resolution.
+static void rows_dkb_wide(void) {
+    // 5120x1440 and 3840x2160 fail during game render-resource creation. Keep
+    // presets within the largest tested frame (3440x1440) until that is fixed.
+    static const char *const standard[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "2880x1620"};
+    static const char *const wide[] = {"2560x1080", "3440x1440", "3840x1080"};
+    bool enabled = cfg_bool("TOTK_ULTRAWIDE");
+    const char *const *sizes = enabled ? wide : standard;
+    int count = enabled ? sizeof wide / sizeof *wide : sizeof standard / sizeof *standard;
+    opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_WIDE_RES, sizes, sizes, count, UI_MENU_WIDE_RES_DESC);
+    row_window_size();
+    bool changed = opt_toggle("TOTK_ULTRAWIDE", UI_MENU_ULTRAWIDE, UI_MENU_ULTRAWIDE_DESC);
+    enabled = cfg_bool("TOTK_ULTRAWIDE");
+    sizes = enabled ? wide : standard;
+    count = enabled ? sizeof wide / sizeof *wide : sizeof standard / sizeof *standard;
+    if (changed && !cfg_from_env("TOTK_OUTPUT_RES")) {
+        int old_w = 0, old_h = 1080, mw = 0, mh = 0, best = 0;
+        sscanf(cfg_value("TOTK_OUTPUT_RES"), "%dx%d", &old_w, &old_h);
+        double aspect = 3440.0 / 1440;
+        if (gfx_window_monitor_size(&mw, &mh) && mh > 0 && mw * 9 > mh * 16) aspect = (double)mw / mh;
+        double best_score = 1e20;
+        for (int i = 0; i < count; i++) {
+            int w, h;
+            sscanf(sizes[i], "%dx%d", &w, &h);
+            double score = abs(h - old_h) + (enabled ? fabs((double)w / h - aspect) * 2000 : 0);
+            if (score < best_score) best = i, best_score = score;
+        }
+        cfg_set("TOTK_OUTPUT_RES", sizes[best]);
+        opt_save_soon();
+    }
+    static const char *const positions[] = {"edges", "centered"};
+    const char *names[] = {menu_text(UI_MENU_HUD_EDGES), menu_text(UI_MENU_HUD_CENTERED)};
+    if (!cfg_bool("TOTK_ULTRAWIDE")) opt_disable_next(UI_MENU_WIDE_DISABLED);
+    opt_choice_list("TOTK_HUD_POSITION", UI_MENU_HUD_POSITION, positions, names, 2, UI_MENU_HUD_POSITION_DESC);
 }
 
 static void row_render_scale(void) {
@@ -617,7 +656,8 @@ static void tab_screen(float scale) {
     opt_begin("##screen", scale);
     opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
     row_output_res();
-    row_window_size();
+    if (!rt_game_version) rows_dkb_wide();
+    else row_window_size();
     static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
     opt_choice("TOTK_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
     row_gpu();

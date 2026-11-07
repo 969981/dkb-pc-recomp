@@ -363,6 +363,10 @@ int probe_cfg(void) {
     plat_setenv("TOTK_MOUSE_SENS", NULL);
     plat_setenv("TOTK_FREE_CORES", NULL);
     CHECK(cfg_bool("TOTK_FPS60") == 1, "default: unset FPS60 is on");
+    plat_setenv("TOTK_OUTPUT_RES", NULL);
+    plat_setenv("DKB_OUTPUT_RES", NULL);
+    CHECK(EQ(cfg_value("TOTK_OUTPUT_RES"), rt_game_version ? "1920x1080" : "2880x1620"),
+          "default: preserve the game's stock output resolution");
     CHECK(EQ(cfg_value("TOTK_VK_PRESENT"), "mailbox") && cfg_int("TOTK_SPLIT_DRAWS") == 64, "default: text and integer");
     plat_setenv("TOTK_MOUSE_SENS", "2.5");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 2.5, "double: the environment value");
