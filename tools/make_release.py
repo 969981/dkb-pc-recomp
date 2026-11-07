@@ -107,6 +107,13 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 
+# --game dkb: Bananza builds the whole runtime from source at install time (installer/bananza.py, build_game.py
+# --full-build), so the folder carries every runtime source and the translator's inputs instead of libtotkrt.a.
+GAME = 'totk'
+GAMES = {'totk': dict(lifted=('v121', 'v143'), name='TotK-Setup'), 'dkb': dict(lifted=('dkb100',), name='DKB-Setup')}
+DKB_TOOLS_FILES = ['build_xlate.py', 'dkb_pack_romfs.py']
+DKB_TOOLS_DIRS = ['vendor/ryujinx', 'xlate']   # translator identity hashes these
+
 PROBES = ['--probe-kernel', '--probe-vkexec', '--probe-nvn-tex', '--probe-shader']
 
 
@@ -354,16 +361,19 @@ def collect_licenses(out):
 # ---- runtime/, recomp/, tools/, data/ ---------------------------------------------------------------------------------
 
 def lifted_version():
-    """The game version whose generated C the runtime library and --prove build against: v121, else v143."""
-    for version in ('v121', 'v143'):
+    """The game version whose generated C the runtime library and --prove build against: v121, else v143 (dkb100)."""
+    for version in GAMES[GAME]['lifted']:
         if (MAIN_ROOT / 'generated' / version / 'layout.json').is_file():
             return version
-    sys.exit('neither generated/v121 nor generated/v143 exists: extract a game version and lift it first '
-             '(tools/extract.py, recomp/gen.py; docs/building.md)')
+    sys.exit(f'none of generated/{", generated/".join(GAMES[GAME]["lifted"])} exists: extract a game version and lift it '
+             'first (tools/extract.py, recomp/gen.py; docs/building.md)')
 
 
 def runtime_lib(out, llvm):
     """Build libtotkrt.a with the folder's llvm/ and copy it, the headers and the install-side sources into runtime/."""
+    if GAME == 'dkb':   # no prebuilt library: the installer compiles the full runtime sources
+        copy_tree(ROOT / 'runtime', out / 'runtime', lambda r: '__pycache__' in r)
+        return
     build = MAIN_ROOT / 'build' / 'release-check' / 'rtlib'
     version = lifted_version()
     gen = MAIN_ROOT / 'generated' / version
@@ -385,7 +395,9 @@ def build_sources(out):
     for f in TOOLS_FILES:
         (out / 'tools').mkdir(exist_ok=True)
         shutil.copy2(ROOT / 'tools' / f, out / 'tools' / f)
-    for d in TOOLS_DIRS:
+    for f in (DKB_TOOLS_FILES if GAME == 'dkb' else []):
+        shutil.copy2(ROOT / 'tools' / f, out / 'tools' / f)
+    for d in TOOLS_DIRS + (DKB_TOOLS_DIRS if GAME == 'dkb' else []):
         copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
     (out / 'data').mkdir(exist_ok=True)
     text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
@@ -442,7 +454,7 @@ def build_launcher(out, llvm):
     run([llvm / 'bin' / 'llvm-windres.exe', '-I', ROOT / 'runtime', '-O', 'coff',
          ROOT / 'installer' / 'launcher' / 'launcher.rc', '-o', res], env=env)
     run([llvm / 'bin' / 'clang.exe', '-O2', '-mwindows', '-Wall', '-Wl,-s', '-I', work,
-         ROOT / 'installer' / 'launcher' / 'launcher.c', res, '-o', out / 'TotK-Setup.exe'], env=env)
+         ROOT / 'installer' / 'launcher' / 'launcher.c', res, '-o', out / (GAMES[GAME]['name'] + '.exe')], env=env)
 
 
 # ---- checks ----------------------------------------------------------------------------------------------------------
@@ -464,6 +476,9 @@ def check_bundle(out):
     shutil.rmtree(chk, ignore_errors=True)
     env = clean_env(out / 'python')
     py = out / 'python' / 'python.exe'
+    if GAME == 'dkb':   # the no-input CLI pass is the TotK path; Bananza gets only the window selftest
+        selftest(out, py, env)
+        return
     r = subprocess.run([py, '-m', 'installer', '--lang', 'en-US', '--dest', chk / 'install', '--temp', chk / 'temp'],
                        cwd=out, env=env, capture_output=True, text=True, timeout=600)
     events = [json.loads(line) for line in r.stdout.splitlines() if line.startswith('{')]
@@ -473,6 +488,10 @@ def check_bundle(out):
     if errors != ['check.inputs_needed'] or not started or 'inputs' not in steps:
         sys.exit(f'bundle check: exit {r.returncode}, errors {errors}, release read {started}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
     print(f'bundle check: the installer ran the host check from the folder and stopped at the game files (exit {r.returncode})')
+    selftest(out, py, env)
+
+
+def selftest(out, py, env):
     r = subprocess.run([py, '-m', 'installer.gui', '--selftest'], cwd=out, env=env, capture_output=True, text=True, timeout=300)
     if r.returncode:
         sys.exit(f'bundle check: window selftest exit {r.returncode}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
@@ -528,12 +547,25 @@ def prove(out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
-    ap.add_argument('--zip', type=Path, help='also write the folder as this zip')
+    ap.add_argument('--game', choices=sorted(GAMES), default='totk',
+                    help='totk (default) or dkb: generated/dkb100, DKB-Setup.exe, runtime built from source at install')
+    ap.add_argument('--out', type=Path, help='release folder (replaced); dkb default build/release/DKB-Setup')
+    ap.add_argument('--zip', type=Path, nargs='?', const=True,
+                    help='also write the folder as this zip; a bare --zip means DKB-Setup-<version>-windows.zip beside it (dkb)')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
     args = ap.parse_args()
+    global GAME
+    GAME = args.game
+    if args.out is None:
+        if GAME == 'totk':
+            ap.error('--out is required')
+        args.out = MAIN_ROOT / 'build' / 'release' / GAMES[GAME]['name']
     out = args.out.resolve()
+    if args.zip is True:
+        args.zip = out.parent / f'{GAMES[GAME]["name"]}-{version()}-windows.zip'
     if args.prove:
+        if GAME == 'dkb':
+            sys.exit('--prove needs libtotkrt.a, which the dkb folder does not carry (it compiles the runtime at install)')
         prove(out)
         return
     if out.exists():
