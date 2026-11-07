@@ -559,7 +559,8 @@ static void row_fps_limit() {
     }
     const char *set = cfg_get("TOTK_FPS_LIMIT"), *old = cfg_get("TOTK_FPS60");
     int cur = (!set || !*set) && old && !strcmp(old, "0") ? 0 : -1;
-    opt_choice_list("TOTK_FPS_LIMIT", UI_MENU_FPS_LIMIT, vals, names, N, UI_MENU_FPS_LIMIT_DESC, cur);
+    opt_choice_list("TOTK_FPS_LIMIT", UI_MENU_FPS_LIMIT, vals, names, N,
+                    rt_game_version ? UI_MENU_FPS_LIMIT_DESC : UI_MENU_DKB_FPS_LIMIT_DESC, cur);
 }
 
 // The menu's name of a TOTK_VK_PRESENT mode (gfx_window_present_mode); NULL for another.
@@ -637,7 +638,8 @@ static void tab_screen(float scale) {
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
-    opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
+    opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME,
+               rt_game_version ? UI_MENU_REALTIME_DESC : UI_MENU_DKB_REALTIME_DESC);
     opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
     opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
     row_game_lang();
