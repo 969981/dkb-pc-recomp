@@ -52,6 +52,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f fps",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Render resolution",
+    [UI_MENU_ULTRAWIDE] = "Ultrawide",
+    [UI_MENU_ULTRAWIDE_DESC] = "Expand the camera's horizontal view for 21:9 or 32:9. Menus keep their proportions. "
+                              "Off uses a 16:9 view. Changing this selects a resolution with the nearest height. Restart to apply.",
+    [UI_MENU_WIDE_RES] = "Render resolution",
+    [UI_MENU_WIDE_RES_DESC] = "The resolution the game renders before scaling the image to your window or screen. "
+                             "Higher resolutions improve detail but need more GPU time and video memory. "
+                             "Ultrawide enables the 21:9 and 32:9 choices. Restart to apply.",
+    [UI_MENU_HUD_POSITION] = "HUD position",
+    [UI_MENU_HUD_POSITION_DESC] = "Place corner displays near the screen edges, or keep them inside a centered 16:9 "
+                                 "area. Menus and aiming markers stay centered. Restart to apply.",
+    [UI_MENU_HUD_EDGES] = "Screen edges", [UI_MENU_HUD_CENTERED] = "Centered (16:9)",
+    [UI_MENU_WIDE_DISABLED] = "Enable Ultrawide first",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
                                 "more video memory and GPU time. A wider size (21:9) widens the camera's view and moves "
                                 "the HUD to the screen's corners; a taller one (16:10, Steam Deck) moves it to the top "
@@ -90,6 +102,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_COLOR_GAMMA_DESC] = "Below 1 brightens dark and middle tones, above 1 darkens them; 1 leaves them.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
+    [UI_MENU_DKB_FPS_LIMIT_DESC] = "With Game speed follows the clock enabled, changes apply immediately. Above 60 "
+                                 "needs that experimental setting and enough CPU and GPU performance.",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
                                "follows the clock.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
@@ -98,6 +112,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_DISPLAY] = "Monitor rate", [UI_MENU_FPS_DISPLAY_HZ] = "Monitor rate (%.0f Hz)",
     [UI_MENU_REALTIME] = "Game speed follows the clock",
     [UI_MENU_REALTIME_DESC] = "Steps the game by real time, so a slow frame does not slow the game down.",
+    [UI_MENU_DKB_REALTIME_DESC] = "Experimental; off by default. Adjusts game timing to measured frame duration. "
+                                "Camera, physics, cutscenes and audio still need validation. Requires restarting.",
     [UI_MENU_CLOTH_REALTIME] = "Cloth on the clock",
     [UI_MENU_CLOTH_REALTIME_DESC] = "Steps cloth and hair by real time as well.",
     [UI_MENU_HIGHFPS_FIX] = "High frame rate fixes",
@@ -314,6 +330,18 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f к/с",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение рендеринга",
+    [UI_MENU_ULTRAWIDE] = "Ультраширокий экран",
+    [UI_MENU_ULTRAWIDE_DESC] = "Расширяет обзор камеры по горизонтали для 21:9 или 32:9. Меню сохраняют пропорции. "
+                              "При выключении используется обзор 16:9. Выбирается разрешение с ближайшей высотой. Требуется перезапуск.",
+    [UI_MENU_WIDE_RES] = "Разрешение отрисовки",
+    [UI_MENU_WIDE_RES_DESC] = "Разрешение игры до масштабирования под окно или экран. Более высокое улучшает "
+                             "детализацию, но требует больше ресурсов GPU и видеопамяти. "
+                             "Ультраширокий режим добавляет варианты 21:9 и 32:9. Требуется перезапуск.",
+    [UI_MENU_HUD_POSITION] = "Положение интерфейса",
+    [UI_MENU_HUD_POSITION_DESC] = "Расположить угловые индикаторы у краёв экрана или в центральной области 16:9. "
+                                 "Меню и прицел остаются в центре. Требуется перезапуск.",
+    [UI_MENU_HUD_EDGES] = "У краёв экрана", [UI_MENU_HUD_CENTERED] = "По центру (16:9)",
+    [UI_MENU_WIDE_DISABLED] = "Сначала включите ультраширокий экран",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
                                 "видеопамяти и времени GPU. Более широкий размер (21:9) расширяет обзор камеры и "
                                 "переносит интерфейс в углы экрана, более высокий (16:10, Steam Deck) переносит его к "
@@ -352,6 +380,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_COLOR_GAMMA_DESC] = "Ниже 1 осветляет тёмные и средние тона, выше 1 затемняет их; 1 — без изменений.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
+    [UI_MENU_DKB_FPS_LIMIT_DESC] = "При включённой настройке «Скорость игры по часам» изменения применяются сразу. "
+                                 "Для частоты выше 60 нужны этот экспериментальный режим и достаточная производительность CPU и GPU.",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
                                "игры по часам».",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
@@ -359,6 +389,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_DISPLAY] = "Как у монитора", [UI_MENU_FPS_DISPLAY_HZ] = "Как у монитора (%.0f Гц)",
     [UI_MENU_REALTIME] = "Скорость игры по часам",
     [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
+    [UI_MENU_DKB_REALTIME_DESC] = "Экспериментальный режим, по умолчанию выключен. Шаг игрового времени зависит от длительности кадра. "
+                                "Камера, физика, кат-сцены и звук ещё требуют проверки. Нужен перезапуск.",
     [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
     [UI_MENU_CLOTH_REALTIME_DESC] = "Ткань и волосы тоже идут по реальному времени.",
     [UI_MENU_HIGHFPS_FIX] = "Исправления для высокого FPS",

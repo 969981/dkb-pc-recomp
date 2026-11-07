@@ -58,6 +58,63 @@ The settings keep TotK Recomp's `TOTK_` names, so its fixes apply without a rena
 Command-line options: `--seconds S` stops the run after S seconds of game time, and `--shot frame.png` with it saves
 that frame. A shot is for your own debugging; do not post it if it shows game content.
 
+## Experimental ultrawide mode
+
+Bananza 1.0.0 supports an optional wider horizontal camera view with proportional UI.
+The title/main-menu background fills the wider viewport: its wall and atmosphere are
+enlarged uniformly and cropped vertically, while the logo and text keep their proportions.
+Corner HUD elements, including saving/loading indicators, can move to the screen edges
+or remain in a centered 16:9 area. Menu controls and world markers remain centered.
+
+Open F1 → Screen to set **Ultrawide**, **Render resolution**, and **HUD position**.
+Ultrawide is off by default; HUD placement defaults to **Screen edges** when enabled.
+All three settings currently require a restart. Available resolution presets are:
+
+| Ultrawide | Aspect-ratio group | Presets |
+| --- | --- | --- |
+| Off | 16:9 | 1280x720, 1600x900, 1920x1080, 2560x1440, 2880x1620 |
+| On | 21:9 class | 2560x1080, 3440x1440 |
+| On | 32:9 | 3840x1080 |
+
+The original virtual-display functions return 2880x1620 (16:9); this remains the
+default when no resolution is selected. These dimensions do not establish the native
+3D rendering resolution or the Switch 2 screen's resolution. Window size controls the
+host window separately. Use **Black bars** (`DKB_ASPECT=fit`) to preserve proportions
+when the window and game have different aspect ratios.
+
+Build with `recomp/patches-dkb100.txt` and generate matching overlays from your own packed
+RomFS (requires Python `zstandard`). For a 3440x1440 build, generate both HUD variants:
+
+```powershell
+python tools/dkb_wide_layout.py --romfs build/extracted/dkb100-packed/romfs --out build/ultrawide/romfs-patches-3440x1440 --aspect 3440x1440
+python tools/dkb_wide_layout.py --romfs build/extracted/dkb100-packed/romfs --out build/ultrawide/romfs-patches-3440x1440-hud-edges --aspect 3440x1440 --hud edges
+build/ultrawide/dkb.exe
+```
+
+Repeat for each installed ultrawide resolution, placing the folders beside `romfs-index.bin`.
+The overlays contain game data and must stay private under `build/`. Regenerate older
+overlays to include the title-background fix; updating the executable alone is insufficient.
+Missing edge-HUD overlays fall back to the centered variant with a log message.
+
+Environment equivalents are `DKB_ULTRAWIDE=0|1`, `DKB_OUTPUT_RES=<width>x<height>`,
+and `DKB_HUD_POSITION=edges|centered`. Overrides lock the corresponding F1 controls;
+otherwise choices are saved in `totk.ini`. Turning Ultrawide off allows the 16:9 presets
+and skips the wide overlay. Invalid sizes fall back to the original 2880x1620 dimensions.
+
+5120x1440 (32:9) and 3840x2160 failed during render-resource creation and are excluded
+from the menu. Diagnostic overrides can accept larger sizes but do not establish support.
+Coverage remains limited to short Windows/NVIDIA runs; other scenes and GPUs need testing.
+
+Run the layout, projection/register-preservation, and configuration checks with:
+
+```powershell
+python tests/dkb_wide_layout_test.py
+python tests/dkb_wide_projection_test.py
+clang -O2 -march=x86-64-v3 -I runtime tests/dkb_wide_test.c -o build/dkb-wide-test.exe
+build/dkb-wide-test.exe
+build/ultrawide/dkb.exe --probe-cfg
+```
+
 ## What to report
 
 Open an issue with the issue form, or comment on [#3](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/3)
