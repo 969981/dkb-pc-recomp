@@ -51,6 +51,8 @@
 #include "host.h"
 #include "nvn_hmap.h"
 #include "platform/platform.h"
+#include "spirv_nan_guard.h"
+#include "spirv_screen_uv.h"
 #include "tex.h"
 
 #define LOG_ONCE(...) do { static volatile int32_t once_; if (!plat_xchg32(&once_, 1)) rt_log(__VA_ARGS__); } while (0)
@@ -1220,10 +1222,77 @@ static uint32_t *spirv_fmz(const uint32_t *w, uint64_t n, int vertex_only, uint6
     return o;
 }
 
+// Fragment stages whose screen-position varyings are rebuilt from gl_FragCoord (spirv_screen_uv.c): Bananza's map
+// mask, which AMD's near-plane clipping turns into long wedges (Eglantine too). Named by NVN 2 stage origin, which
+// gfx_shader.c keeps per input id in shader-cache/nvn2-origins.bin, so the pipelines the boot prewarm builds from the
+// cache know it once the stage was lowered in any run (--translate-shaders or play). Until then the FNV-1a 64 of the
+// translated SPIR-V (the "fs" hash of a TOTK_DUMP passes.txt) names it on the hosts where it was measured.
+// TOTK_FIX_SCREEN_UV=0 leaves them as the game wrote them.
+static int screen_uv_stage(const GfxShader *src) {
+    static const uint64_t origins[] = {0x81f30a4006e64d83ull};
+    static const uint64_t spirv_hashes[] = {0x544677ae4ec509beull};   // RX 9070 XT, translator d1b11706005e89ab
+    static int on = -1;
+    if (on < 0) on = cfg_bool("TOTK_FIX_SCREEN_UV");
+    if (!on || !src || gfx_shader_stage(src) != GFX_STAGE_FS) return 0;
+    uint64_t o = gfx_shader_origin(src);
+    for (size_t i = 0; i < sizeof origins / sizeof *origins; i++)
+        if (o == origins[i]) return 1;
+    uint64_t h = gfx_shader_spirv_fnv(src);
+    for (size_t i = 0; i < sizeof spirv_hashes / sizeof *spirv_hashes; i++)
+        if (h == spirv_hashes[i]) return 1;
+    return 0;
+}
+
+// DKB_NAN_GUARD (spirv_nan_guard.c): fragment stages store 0 instead of NaN to their float colour outputs (default,
+// or "zero"), a colour named by the stage instead ("mark"), or what they computed ("0"). One NaN texel in the scene
+// colour is spread by the bloom into a glowing band crossed by black lines, and the console shows none. In "mark"
+// mode the colour comes from the stage's SPIR-V hash (the "fs" hash of a TOTK_DUMP passes.txt): each of r, g, b is
+// 0, 1, 4 or 16 from two bits of the hash, so a frame dump's _tm image tells the stage apart from the others drawn in
+// the pass, and the log lists each stage with its colour.
+static uint32_t *nan_guard(const GfxShader *src, const uint32_t *w, uint64_t words, uint64_t *out_n) {
+    static int mode_set = -1;   // 0 off, 1 zero, 2 mark; read and written atomically
+    static volatile int32_t logged;
+    int mode = __atomic_load_n(&mode_set, __ATOMIC_RELAXED);
+    if (mode < 0) {   // every racing thread computes the same value; only the first logs it
+        const char *e = cfg_get("TOTK_NAN_GUARD");
+        int m = !e || !strcmp(e, "1") || !strcmp(e, "zero") ? 1 : !strcmp(e, "0") || !*e ? 0 : !strcmp(e, "mark") ? 2 : 1;
+        if (!plat_xchg32(&logged, 1)) {
+            if (e && *e && strcmp(e, "0") && strcmp(e, "1") && strcmp(e, "zero") && strcmp(e, "mark"))
+                rt_log("vk: DKB_NAN_GUARD=%s ignored, using zero (use 0, zero or mark)", e);
+            rt_log("vk: NaN guard on fragment outputs: %s", m == 2 ? "mark" : m ? "zero" : "off");
+        }
+        __atomic_store_n(&mode_set, m, __ATOMIC_RELAXED);
+        mode = m;
+    }
+    if (!mode || !src || gfx_shader_stage(src) != GFX_STAGE_FS) return NULL;
+    static const float level[4] = {0.0f, 1.0f, 4.0f, 16.0f};
+    uint64_t h = mode == 2 ? gfx_shader_spirv_fnv(src) : 0;
+    float marker[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (mode == 2) {
+        marker[0] = level[h & 3], marker[1] = level[h >> 2 & 3], marker[2] = level[h >> 4 & 3], marker[3] = 1.0f;
+        if (!(h & 0x3f)) marker[0] = 16.0f;   // never black: black is what the zero mode writes
+    }
+    unsigned stores = 0;
+    uint32_t *o = spirv_nan_guard(w, words, marker, out_n, &stores);
+    if (o && mode == 2)
+        rt_log("vk: fs %016llx: NaN marked as %g %g %g (%u stores)", (unsigned long long)h, marker[0], marker[1],
+               marker[2], stores);
+    return o;
+}
+
 static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w, uint64_t words, int geometry_chain) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = geometry_chain ? spirv_fixup_linked(w, words, &fixed_n, 1) : spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
+    uint32_t *suv = NULL;
+    if (screen_uv_stage(src)) {
+        uint64_t suv_n = 0;
+        suv = spirv_screen_uv(w, words, &suv_n);
+        if (suv) w = suv, words = suv_n;
+        rt_log("vk: fs %016llx (origin %016llx): screen position %s", (unsigned long long)gfx_shader_spirv_fnv(src),
+               (unsigned long long)gfx_shader_origin(src),
+               suv ? "rebuilt from gl_FragCoord" : "left as written (unexpected layout)");
+    }
     static int fmz_mode = -1;   // 0 off, 1 vertex stage only, 2 every stage
     if (fmz_mode < 0) {
         const char *e = cfg_get("TOTK_FMZ");
@@ -1260,6 +1329,8 @@ static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w
             rt_log("vk: FMZ rewrite %016llx mul=%u fma=%u", (unsigned long long)h, nm, nf);
         }
     }
+    uint32_t *nan = nan_guard(src, w, words, &words);
+    if (nan) w = nan;
     spv_dump(w, words, src);
     uint64_t ov_n = 0;
     uint32_t *ov = spv_override(w, words, &ov_n);
@@ -1268,7 +1339,9 @@ static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
     free(ov);
+    free(nan);
     free(fmz);
+    free(suv);
     free(fixed);
     return r == VK_SUCCESS ? m : VK_NULL_HANDLE;
 }
