@@ -46,13 +46,35 @@ jobs:
           upstream_sha="$(git rev-parse "upstream/$UPSTREAM_BRANCH")"
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
 
-          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
-            echo "Fork already contains upstream $upstream_sha."
+          # GitHub's GITHUB_TOKEN cannot push *any* incoming commits that change
+          # .github/workflows, even when a later merge restores the original file.
+          # Import upstream content in a single-parent snapshot instead, retaining
+          # our trusted workflows and local documentation on every synchronization.
+          previous_source="$(cat .upstream-bananza.sha 2>/dev/null || true)"
+          if [[ "$previous_source" == "$upstream_sha" ]]; then
+            echo "Already synchronized upstream $upstream_sha."
           else
-            # Never force-push. Git fails safely on conflicting local changes.
-            git merge --no-commit --no-ff "upstream/$UPSTREAM_BRANCH"
+            if [[ -n "$previous_source" ]]; then
+              git cat-file -e "${previous_source}^{commit}"
+              if ! git merge-base --is-ancestor "$previous_source" "$upstream_sha"; then
+                echo "::error::Upstream history changed; refusing to apply a reverse patch."
+                exit 1
+              fi
+              # After the first snapshot, import ONLY changes since our last
+              # recorded upstream SHA. Squash merges alone would replay history.
+              git diff --binary "$previous_source" "$upstream_sha" -- . \
+                ':(exclude).github/workflows' ':(exclude)docs' | git apply --3way --index
+            else
+              # First migration: squash without importing upstream commits
+              # containing workflow edits into the protected push history.
+              git merge --squash "$upstream_sha"
+              git restore --source=HEAD --staged --worktree -- .github/workflows docs
+            fi
+            printf '%s\n' "$upstream_sha" > .upstream-bananza.sha
+            git add .upstream-bananza.sha
             python3 tools/check_content.py --staged
-            git commit -m "Synchronize DKB upstream at $upstream_sha"
+            git diff --cached --check
+            git commit -m "Synchronize DKB upstream snapshot at $upstream_sha"
             git push origin HEAD:bananza
           fi
 
