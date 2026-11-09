@@ -62,8 +62,15 @@ jobs:
               fi
               # After the first snapshot, import ONLY changes since our last
               # recorded upstream SHA. Squash merges alone would replay history.
+              delta="$(mktemp)"
               git diff --binary "$previous_source" "$upstream_sha" -- . \
-                ':(exclude).github/workflows' ':(exclude)docs' | git apply --3way --index
+                ':(exclude).github/workflows' ':(exclude)docs' > "$delta"
+              if [[ -s "$delta" ]]; then
+                git apply --3way --index "$delta"
+              else
+                echo "Upstream changed only excluded files; no source patch to apply."
+              fi
+              rm -f "$delta"
             else
               # First migration: squash without importing upstream commits
               # containing workflow edits into the protected push history.
