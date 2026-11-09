@@ -26,7 +26,7 @@ from .events import render
 TEXT = Path(__file__).resolve().parent / 'text'
 UI_LANGUAGES = ('en', 'ru')
 STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
-DKB_STEP_ORDER = ('check', 'dkb_data', 'dkb_translator', 'lift', 'compile', 'dkb_verify', 'cleanup')
+DKB_STEP_ORDER = ('check', 'dkb_data', 'dkb_translator', 'lift', 'compile', 'dkb_shaders', 'dkb_verify', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
@@ -124,6 +124,7 @@ class Form:
     exefs: str = ''
     romfs: str = ''
     package: str = ''
+    nup: str = ''
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -145,9 +146,15 @@ class Form:
         if not self.dest.strip():
             found.append('ui.need_dest')
         if self.game == 'bananza':
+            nup = self.nup.strip()
+            if nup:   # a .nup replaces both folders
+                if not Path(nup).is_file():
+                    found.append('dkb.need_nup')
+                if self.exefs.strip() or self.romfs.strip():
+                    found.append('dkb.nup_and_folders')
             for name in ('exefs', 'romfs'):
                 value = getattr(self, name).strip()
-                if not value and not update:
+                if not value and not update and not nup:
                     found.append('dkb.need_' + name)
                 elif value and not Path(value).is_dir():
                     found.append('dkb.need_' + name)
@@ -176,7 +183,7 @@ class Form:
                   ('--lang', self.lang), ('--dest', self.dest))
         if self.game == 'bananza':
             cmd += ['--game', 'bananza']
-            fields = (('--exefs', self.exefs), ('--romfs', self.romfs), ('--package', self.package),
+            fields = (('--nup', self.nup), ('--exefs', self.exefs), ('--romfs', self.romfs), ('--package', self.package),
                       ('--lang', self.lang), ('--dest', self.dest))
         for flag, value in fields:
             if value.strip():

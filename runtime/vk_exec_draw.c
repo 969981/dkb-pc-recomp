@@ -52,7 +52,7 @@ static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
     c0_push = ex->push[1];
 }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_RESET, W_GEOMETRY, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_SKIP_VS, W_SKIP_FS, W_RESET, W_GEOMETRY, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -841,8 +841,9 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
 // (runtime/cfg.c): without it the destructible terrain draws black; DKB_NATIVE_GS=0 turns it off.
 // Eglantine takes the varyings from the hardware skip mask (Maxwell register 0x1240, translate_program.cpp,
 // LowerGeometryPassthrough); the host does not have that mask for NVN 2 programs, so this infers it: what the vertex
-// stage writes and the fragment stage reads. That is enough for a fragment stage that reads nothing, as the terrain's
-// does; a stage whose real mask differs would forward the wrong set.
+// stage writes and the fragment stage reads. On AMD's RDNA 1/2 Windows driver the mine voxel stage is the known
+// exception: its captured hardware mask forwards locations 0 and 19 across both its depth and colour variants. RADV
+// and the other drivers keep the reflected mask.
 static int native_gs_on(void) {
     static int on = -1;
     if (on < 0) on = cfg_bool("TOTK_NATIVE_GS");
@@ -858,7 +859,9 @@ static const uint8_t *native_gs_control(const uint8_t *ctl, const uint8_t *code,
     static size_t count, capacity;
     GfxShaderIo io[32];
     const uint32_t fs_in = gfx_shader_inputs(native_gs_fs, io), vs_out = gfx_shader_outputs(native_gs_vs, io);
-    const uint32_t mask = fs_in & vs_out;
+    uint32_t mask = fs_in & vs_out;
+    if (vk_caps.amd_sc && nvn2_origin(code) == UINT64_C(0x3dbaaf649cb5f927))
+        mask |= (UINT32_C(1) << 0) | (UINT32_C(1) << 19);
     for (size_t i = 0; i < count; i++)
         if (made[i].ctl == ctl && made[i].mask == mask) return made[i].copy;
     uint32_t skip[8];
@@ -2158,6 +2161,16 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
     int k = bp == VK_PIPELINE_BIND_POINT_COMPUTE;
     if (B.pipe[k] == p) return;
     vkCmdBindPipeline(ex->cb, bp, p);
+    if (vk_ctx()->has_nv_checkpoints && vk_checkpoints_on()) {   // DKB_GPU_CHECKPOINTS=1: name the shaders the checkpoint's pipeline holds
+        uint64_t o[3] = {0};
+        const uint8_t *ctl, *code;
+        uint32_t len;
+        static const int stages[2][3] = {{NVN_STAGE_VS, NVN_STAGE_GS, NVN_STAGE_FS}, {NVN_STAGE_CS, -1, -1}};
+        for (int i = 0; i < 3 && ex->prog; i++)
+            if (stages[k][i] >= 0 && find_stage(ex->prog, stages[k][i], &ctl, &code, &len)) o[i] = nvn2_origin(code);
+        vk_checkpoint_note(p, o[0], o[1], o[2]);
+        rec_checkpoint(ex->cb, p);
+    }
     ex->recorded++;
     B.pipe[k] = p;
     if (!k) B.st_valid = 0;
@@ -2315,6 +2328,42 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     return 1;
 }
 
+// DKB_SKIP_VS / DKB_SKIP_FS (debug only, for bisecting the device loss of #75): comma-separated 16-digit hex NVN 2
+// stage origins. A draw whose vertex (fragment) stage is listed in the matching variable is skipped, so a run that
+// stops faulting names the culprit shader. Parsed once; unset costs one flag test per draw.
+typedef struct { int n; uint64_t list[16]; } SkipList;
+static int skip_listed(const VkExec *ex, int stage, SkipList *sl, const char *var, int warn, const char *msg) {
+    if (sl->n < 0) {
+        sl->n = 0;
+        const char *e = cfg_get(var);
+        while (e && *e && sl->n < 16) {
+            char *end;
+            uint64_t v = strtoull(e, &end, 16);
+            if (end == e) break;
+            sl->list[sl->n++] = v;
+            e = *end == ',' ? end + 1 : end;
+        }
+    }
+    if (!sl->n) return 0;
+    const uint8_t *ctl, *code = NULL;
+    uint32_t len;
+    if (!find_stage(ex->prog, stage, &ctl, &code, &len)) return 0;
+    uint64_t o = nvn2_origin(code);
+    for (int i = 0; i < sl->n; i++)
+        if (sl->list[i] == o) return warn_once(warn, msg), 1;
+    return 0;
+}
+
+static int skip_vs_listed(const VkExec *ex) {
+    static SkipList sl = {-1};
+    return skip_listed(ex, NVN_STAGE_VS, &sl, "TOTK_SKIP_VS", W_SKIP_VS, "DKB_SKIP_VS is active: draws of the listed NVN 2 vertex stages are skipped");
+}
+
+static int skip_fs_listed(const VkExec *ex) {
+    static SkipList sl = {-1};
+    return skip_listed(ex, NVN_STAGE_FS, &sl, "TOTK_SKIP_FS", W_SKIP_FS, "DKB_SKIP_FS is active: draws of the listed NVN 2 fragment stages are skipped");
+}
+
 static struct { int on, valid, has_fs, has_gs; MemoKey k; const GfxShader *vs, *fs, *gs; } SM = {-1};
 
 // Numeric handles are relative to the active descriptor tables. Keep the per-handle memos only while those tables
@@ -2399,6 +2448,13 @@ static int geometry_draw(VkExec *ex, uint32_t prim) {
             if (!(sph[0] & (1u << 24)) || sph[2] >> 24 != 1 || (sph[3] >> 24 & 15) != 7 || (sph[4] & 0xfff) != 1) {
                 warn_once(W_GEOMETRY, "native GS: a stage outside the passthrough subset keeps the vertex and fragment path");
                 return 0;
+            }
+            // Metal has no geometry stage (MoltenVK): skip before the pipeline and the lowered GS are built. The vertex
+            // and fragment stages alone would draw black, so the draw is dropped and counted in draws skipped.
+            if (!vk_geometry_supported()) {
+                warn_once(W_GEOMETRY, "native GS: the device has no geometryShader: draws that need one are skipped");
+                __atomic_fetch_add(&gfx_counters.draws_skipped, 1, __ATOMIC_RELAXED);
+                return -1;
             }
             geometry_input = GFX_GEOMETRY_TRIANGLES;
             return 1;
@@ -2528,7 +2584,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         native_gs_vs = vs, native_gs_fs = fs;
         if (gs_wait) gs = shader_for(ex, NVN_STAGE_GS, &has_gs, NULL, 1);
     }
-    if (light_quad_fault_skip(ex, vs, fs)) return 0;
+    if (light_quad_fault_skip(ex, vs, fs) || skip_vs_listed(ex) || skip_fs_listed(ex)) return 0;
     if (!vs || (has_fs && !fs) || (want_gs && (!has_gs || !gs))) return 0;
     if (!geometry_feedback_safe(ex, vs, gs)) return 0;
     uint32_t fbl = feedback_prepare(ex, fs);
@@ -2772,6 +2828,69 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 // ---- dispatch and uniform buffer updates
 
+// WORKAROUND, MoltenVK only (TOTK_MVK_UPSCALE_BLIT / DKB_MVK_UPSCALE_BLIT, on by default there, 0 turns it off):
+// Bananza's own compute upscaler (the dispatch that scales the graded frame to the output size) gives wrong results on
+// Metal. Its input is right; its output keeps a dim red channel, little green and blue, and blocks, so every scene is
+// dark red and blue. The cause is not found: fast math off (MVK_CONFIG_FAST_MATH_ENABLED=0), a write-only binding of the
+// R11G11B10F output and the shared memory size (12 KiB) are ruled out; the shader also uses subgroup shuffles and votes
+// and texel fetches. Until it is found the dispatch is replaced by a linear blit of its input (texture slot 0) to its
+// output (image slot 1): the picture is right, without the game's own reconstruction and sharpening. The shaders are
+// matched by the hash of their SPIR-V (the name TOTK_DUMP prints), so a translator change that alters them turns this
+// off by itself. Other drivers never take this path.
+// Whole images, mip 0, layer 0: the game makes each input texture at the size it renders (1920x1080 and 1280x720 for
+// the intro, the current dynamic resolution such as 2095x1179 in play, a new texture when it changes), so the full
+// extent is the rendered area; a run in the mining tunnel showed no stretch or border.
+// The upscaler's variants: fixed resolution (the intro: 1920x1080 or 1280x720 in) and dynamic resolution (gameplay
+// after the intro, e.g. 2095x1179 in).
+static int mvk_upscale_cs(uint64_t h) { return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full; }
+
+// Whether the device can blit from format f with linear filtering (src) or into it (dst), optimal tiling.
+static int blit_ok(VkFormat f, int dst) {
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(vk_ctx()->phys, f, &fp);
+    VkFormatFeatureFlags want = dst ? VK_FORMAT_FEATURE_BLIT_DST_BIT
+                                    : VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    return (fp.optimalTilingFeatures & want) == want;
+}
+
+// Records the blit in place of the dispatch; 0 when this is not the upscaler or the blit cannot be done (the shader
+// then runs). The caller has already put a full barrier before it (vk_exec_barrier in op_dispatch) and puts one after.
+static int mvk_upscale_blit(VkExec *ex, const GfxShader *cs) {
+    static int on = -1;
+    if (on < 0) on = vk_caps.moltenvk && cfg_bool("TOTK_MVK_UPSCALE_BLIT");
+    // The hash is kept with the shader (gfx_shader_spirv_fnv): a cache of the last shader alone missed on nearly every
+    // dispatch, as dispatches alternate between compute shaders, and hashing the whole SPIR-V each time took about 12%
+    // of the replaying thread on an M4.
+    if (!on || !mvk_upscale_cs(gfx_shader_spirv_fnv(cs))) return 0;
+    uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
+    view_t vs, vd;
+    int hvs = 0, hvd = 0;
+    const VkTexImage *s = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
+    const VkTexImage *t = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
+    const char *why = !s || !t                                                     ? "its images do not resolve"
+                    : s->samples > 1 || t->samples > 1                             ? "an image is multisampled"
+                    : s->type != VK_IMAGE_TYPE_2D || t->type != VK_IMAGE_TYPE_2D ? "an image is not 2D"
+                    : !(s->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) || !(t->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+                        ? "an image lacks transfer usage"
+                    : !blit_ok(s->format, 0) || !blit_ok(t->format, 1) ? "the formats cannot be blitted linearly"
+                                                                       : NULL;
+    if (why) {
+        static int warned;
+        if (!warned++) rt_log("vk_exec: MoltenVK workaround: the upscaler runs as a shader: %s", why);
+        return 0;
+    }
+    static int logged;
+    if (!logged++)
+        rt_log("vk_exec: MoltenVK workaround: the game's upscaler dispatches are linear blits (first %ux%u -> %ux%u, "
+               "TOTK_MVK_UPSCALE_BLIT=0 runs the shaders)", s->width, s->height, t->width, t->height);
+    VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}};
+    bl.srcOffsets[1] = (VkOffset3D){(int32_t)s->width, (int32_t)s->height, 1};
+    bl.dstOffsets[1] = (VkOffset3D){(int32_t)t->width, (int32_t)t->height, 1};
+    vkCmdBlitImage(ex->cb, s->image, VK_IMAGE_LAYOUT_GENERAL, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
+    return 1;
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
     static int skip = -1;   // DKB_SKIP_COMPUTE=1: drop every direct dispatch (bisecting GPU faults)
@@ -2793,8 +2912,12 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     twin_dispatch = 1;
     bind_resources(ex, info);
     twin_dispatch = 0;
-    vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
+    int blit = mvk_upscale_blit(ex, cs);
+    if (!blit) vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
+    // The blit is a transfer write, where what follows expects a compute-shader write: a full barrier makes it visible
+    // to every later access (the one before it, vk_exec_barrier above, already covers the transfer reads).
+    if (blit) vk_exec_barrier(ex);
     note_work(ex, 2, (uint64_t)d->x * (uint64_t)d->y * (uint64_t)d->z);
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }

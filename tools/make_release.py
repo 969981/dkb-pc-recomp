@@ -3,6 +3,10 @@
     .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/TotK-Setup [--zip build/release/TotK-Setup.zip]
     .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/TotK-Setup --prove
 
+For Donkey Kong Bananza add --game dkb (needs generated/dkb100 and build/xlate): --out defaults to build/release/DKB-Setup and a
+bare --zip writes DKB-Setup-<version>-windows.zip beside it. The folder carries every runtime source instead of
+libtotkrt.a, has no hactool, and --prove does not apply. The TotK description below is otherwise the same.
+
 Needs Python 3.14 (tarfile reads the MSYS2 .zst packages), uv on PATH and network access on the first run. Downloads are
 cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismatch stops the build. The folder holds:
 
@@ -111,7 +115,7 @@ RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 # --full-build), so the folder carries every runtime source and the translator's inputs instead of libtotkrt.a.
 GAME = 'totk'
 GAMES = {'totk': dict(lifted=('v121', 'v143'), name='TotK-Setup'), 'dkb': dict(lifted=('dkb100',), name='DKB-Setup')}
-DKB_TOOLS_FILES = ['build_xlate.py', 'dkb_pack_romfs.py']
+DKB_TOOLS_FILES = ['build_xlate.py', 'dkb_pack_romfs.py', 'dkb_shader_census.py', 'extract_nup.py']   # extract_nup: .nup input
 DKB_TOOLS_DIRS = ['vendor/ryujinx', 'xlate']   # translator identity hashes these
 
 PROBES = ['--probe-kernel', '--probe-vkexec', '--probe-nvn-tex', '--probe-shader']
@@ -403,13 +407,15 @@ def build_sources(out):
     for f in (DKB_TOOLS_FILES if GAME == 'dkb' else []):
         shutil.copy2(ROOT / 'tools' / f, out / 'tools' / f)
     for d in TOOLS_DIRS + (DKB_TOOLS_DIRS if GAME == 'dkb' else []):
-        copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
+        # The translator identity (build_xlate.py identity) hashes every file under vendor/ryujinx, README.md included.
+        copy_tree(ROOT / 'tools' / d, out / 'tools' / d,
+                  lambda r, d=d: '__pycache__' in r or (r.endswith('.md') and d != 'vendor/ryujinx'))
     (out / 'data').mkdir(exist_ok=True)
     if GAME == 'totk':   # the TotK installer reads the shared shader list; the Bananza one does not
         text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
         (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
     copy_tree(ROOT / 'installer', out / 'installer', lambda r: '__pycache__' in r or r.startswith('launcher/'))
-    shutil.copy2(ROOT / 'totk.ini.example', out / 'totk.ini.example')
+    shutil.copy2(ROOT / 'totk.ini.example', out / ('dkb.ini.example' if GAME == 'dkb' else 'totk.ini.example'))
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', out / 'THIRD_PARTY_NOTICES.md')
     (out / 'VERSION').write_text(version() + '\n', encoding='utf-8')
 
@@ -447,7 +453,7 @@ def launcher_header(path):
     for lang in ('en', 'ru'):
         texts = json.loads((ROOT / 'installer' / 'text' / f'{lang}.json').read_text(encoding='utf-8'))
         for key in ('title', 'python_missing'):
-            lines.append(f'#define LAUNCHER_{key.upper()}_{lang.upper()} {c_wide(texts["launcher." + key])}')
+            lines.append(f'#define LAUNCHER_{key.upper()}_{lang.upper()} {c_wide(texts[("dkb." if GAME == "dkb" else "") + "launcher." + key])}')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('\n'.join(lines) + '\n', encoding='ascii')
 
