@@ -128,6 +128,7 @@ static int test_present(const GfxBackend *b, uint8_t *guest, int *w_out, int *h_
     uint64_t frames = gfx_stats().frames;
     // the exact colour check needs the bilinear blit: FSR's approximate reciprocals move a flat colour by 1/255
     plat_setenv("TOTK_UPSCALER", "bilinear");
+    plat_setenv("TOTK_SMAA", "off");
     vk_present_capture(1);
     const int crop[4] = {0, 0, TEX_W, TEX_H};
     b->present(&t, crop, 0);
@@ -846,6 +847,7 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
 }
 
 int probe_vkexec(void) {
+    vk_hdr_off();   // the present checks read 8-bit swapchain pixels
     layouts_equal = 0;
     main_tid = plat_thread_id();
     const GfxBackend *b = &gfx_vulkan_backend;
