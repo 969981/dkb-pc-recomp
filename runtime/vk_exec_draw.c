@@ -136,6 +136,7 @@ static struct {
     VkDescriptorSetLayout ds_last_layout[2];
     int ds_pushed[2];                    // set number holds the push of DS.psig under ds_layout
     int res_valid;                       // the graphics sets bound hold what the inputs in RS give (bind_resources)
+    float jit[2];                        // the DLSS jitter the recorded viewport carries (vk_dlss_jitter)
 } B;
 
 // Contents of B.ds_last: the set's packed descriptors (VkDescSlot), which with its layout determine every write. A draw
@@ -685,6 +686,7 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
 
 void vk_exec_image_gone(VkImage image) {
     vk_exec_bc_gone(image);
+    vk_dlss_image_gone(image);
     if (!views_by_image.klen) return;
     for (ViewNode *n = nvn_hm_del(&views_by_image, &image), *next; n; n = next) {
         next = n->next;
@@ -2191,12 +2193,19 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
 
 static void record_fixed(VkExec *ex) {
     VkCommandBuffer cb = ex->cb;
+    // upscaler = dlss: the scene's draws are moved by DLSS's sub-pixel jitter (vk_dlss.c); a change of it, entering or
+    // leaving the scene's passes included, records the viewport again.
+    float j[2] = {0, 0};
+    if (ex->depth.image && vk_dlss_wanted()) vk_dlss_jitter(ex->depth.image, j);
+    if (j[0] != B.jit[0] || j[1] != B.jit[1]) ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
     if (ex->dirty & VK_EXEC_DIRTY_VIEWPORT) {
         float x = 0, y = 0, w = (float)ex->pass_w, h = (float)ex->pass_h;
         if (ex->has_vp) x = ex->vp[0][0], y = ex->vp[0][1], w = ex->vp[0][2], h = ex->vp[0][3];
         if (w < 1) w = 1;
         if (h < 1) h = 1;
         VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
+        if (j[0] != 0 || j[1] != 0) v.x += j[0], v.y += j[1];
+        B.jit[0] = j[0], B.jit[1] = j[1];
         vkCmdSetViewportWithCount(cb, 1, &v);
         ex->recorded++;
     }
@@ -2680,6 +2689,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         ex->recorded++;
         B.st = s, B.st_valid = 1;
     }
+    if (ex->depth.image && vk_dlss_wanted()) vk_dlss_scene_draw(ex);   // before the jitter in record_fixed
     record_fixed(ex);
     repeat_stats(ex, info);
     bind_resources(ex, info);
@@ -2881,7 +2891,12 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 // extent is the rendered area; a run in the mining tunnel showed no stretch or border.
 // The upscaler's variants: fixed resolution (the intro: 1920x1080 or 1280x720 in) and dynamic resolution (gameplay
 // after the intro, e.g. 2095x1179 in).
-static int mvk_upscale_cs(uint64_t h) { return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full; }
+// The hashes move with the translator: the first two are from an older translator, the last two from the one of
+// 2026-11-09 (found with the log line "dlss: compute shader ... is not the game's upscaler" of upscaler = dlss).
+static int mvk_upscale_cs(uint64_t h) {
+    return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full || h == 0xb14741d70eb26339ull ||
+           h == 0xbd63ebb7ee8d50eaull;
+}
 
 // Whether the device can blit from format f with linear filtering (src) or into it (dst), optimal tiling.
 static int blit_ok(VkFormat f, int dst) {
@@ -2930,6 +2945,49 @@ static int mvk_upscale_blit(VkExec *ex, const GfxShader *cs) {
     return 1;
 }
 
+// upscaler = dlss (experimental): the same dispatch of the game's upscaler is replaced by NVIDIA DLSS on its input
+// (texture slot 0) and output (image slot 1), whole images as above (vk_dlss.c). 0 when DLSS is off or failed, or the
+// images do not fit it: the shader then runs. NGX binds its own pipelines and descriptors into the command buffer, so
+// the caller forgets the bound state (vk_exec_draw_new_cb) after it; -1 (NGX failed after it may have bound its own):
+// the caller also binds the game's pipeline and resources again before its dispatch.
+static int dlss_upscale(VkExec *ex, const GfxShader *cs) {
+    if (!vk_dlss_wanted()) return 0;
+    if (!mvk_upscale_cs(gfx_shader_spirv_fnv(cs))) {
+        // The upscaler is matched by hash, which a translator change moves: with DLSS on, list the compute shaders
+        // seen (the first 48 distinct) so a run that never reaches DLSS shows which hash to add.
+        static uint64_t seen[48];
+        static int nseen;
+        uint64_t h = gfx_shader_spirv_fnv(cs);
+        int i = 0;
+        while (i < nseen && seen[i] != h) i++;
+        if (i == nseen && nseen < 48) {
+            seen[nseen++] = h;
+            uint64_t ds = ex->tex[NVN_STAGE_CS][0], dd = ex->img[NVN_STAGE_CS][1];
+            view_t ws, wd;
+            int hws = 0, hwd = 0;
+            const VkTexImage *a = ds ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(ds), &ws, &hws) : NULL;
+            const VkTexImage *b = dd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(dd), &wd, &hwd) : NULL;
+            rt_log("dlss: compute shader %016llx is not the game's upscaler (tex0 %ux%u fmt %d, img1 %ux%u fmt %d)",
+                   (unsigned long long)h, a ? a->width : 0, a ? a->height : 0, a ? (int)a->format : 0,
+                   b ? b->width : 0, b ? b->height : 0, b ? (int)b->format : 0);
+        }
+        return 0;
+    }
+    uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
+    view_t vs, vd;
+    int hvs = 0, hvd = 0;
+    const VkTexImage *s = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
+    const VkTexImage *t = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
+    if (!s || !t || s->samples > 1 || t->samples > 1 || s->type != VK_IMAGE_TYPE_2D || t->type != VK_IMAGE_TYPE_2D ||
+        !(s->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || !(t->usage & VK_IMAGE_USAGE_STORAGE_BIT)) {
+        static int warned;
+        if (!warned++) rt_log("dlss: the upscaler's images do not resolve to single-sampled 2D sampled and storage images: "
+                              "the game's upscaler runs for them");
+        return 0;
+    }
+    return vk_dlss_record(ex->cb, ex->fence, s, t);
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
     static int skip = -1;   // DKB_SKIP_COMPUTE=1: drop every direct dispatch (bisecting GPU faults)
@@ -2952,11 +3010,21 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     bind_resources(ex, info);
     twin_dispatch = 0;
     int blit = mvk_upscale_blit(ex, cs);
-    if (!blit) vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
+    int dlss = blit ? 0 : dlss_upscale(ex, cs);
+    if (dlss) vk_exec_draw_new_cb(), ex->dirty = VK_EXEC_DIRTY_ALL;   // NGX left its own pipeline, descriptors and state
+    if (dlss < 0) {                    // it failed: the game's upscaler runs on its own binds again
+        bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+        twin_dispatch = 1;
+        bind_resources(ex, info);
+        twin_dispatch = 0;
+        dlss = 0;
+    }
+    if (!blit && !dlss) vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
     // The blit is a transfer write, where what follows expects a compute-shader write: a full barrier makes it visible
-    // to every later access (the one before it, vk_exec_barrier above, already covers the transfer reads).
-    if (blit) vk_exec_barrier(ex);
+    // to every later access (the one before it, vk_exec_barrier above, already covers the transfer reads). DLSS's
+    // writes get the same.
+    if (blit || dlss) vk_exec_barrier(ex);
     note_work(ex, 2, (uint64_t)d->x * (uint64_t)d->y * (uint64_t)d->z);
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }
