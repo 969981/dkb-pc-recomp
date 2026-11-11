@@ -137,6 +137,16 @@ void vk_fsr_release(void);   // before the device goes away
 // swapchain image dst, which is in TRANSFER_DST and holds the scaled picture, and leaves it there; 0 = nothing recorded.
 int vk_smaa_record(VkCommandBuffer cb, VkImage dst, const int to[4]);
 void vk_smaa_release(void);   // before the device goes away
+// Frame generation (vk_framegen.c, TOTK_FRAME_GEN = 2x), called by the present thread. vk_fg_record: before the game's
+// frame is presented, copies the crop of src (the window texture, in GENERAL, fmt its format, w x h) into its history and,
+// when the frame before is there, makes the frame between them; returns 1 when a made frame exists (then the caller
+// calls vk_fg_show in place of the blit), 0 for the plain present (off, no history, a hitch, a failure). The game's
+// texture is read only by the command buffer it submits. vk_fg_show: presents the made frame, then the game's, whose
+// flip waits half a frame interval, or until pending() says another job is waiting; frame (0: none) goes to
+// vk_thumbs_frame for the game's frame.
+int vk_fg_record(VkImage src, VkFormat fmt, int w, int h, const int crop[4]);
+void vk_fg_show(int (*pending)(void), uint64_t frame);
+void vk_fg_release(void);   // before the device goes away
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
@@ -158,6 +168,7 @@ void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, u
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
 void vk_hdr_release(void);   // before the device goes away
 void vk_present_flip(void);
+int gfx_window_closing(void);   // the exit has started: the swapchain and the present passes are being freed
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
 void vk_queue_lock(void);
@@ -318,6 +329,7 @@ VkCommandBuffer vk_upload_begin(void);
 void vk_upload_end(void);
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
 uint64_t vk_upload_flush(int wait);
+int vk_upload_done(uint64_t seq);                 // the upload batch seq (vk_upload_flush's value) has completed
 // Upload batch figures since the previous call (the perf line): GPU time of the timed ones, batches submitted, time
 // threads waited in vk_upload_flush(1), bytes of staging allocated.
 void vk_upload_perf(uint64_t *gpu_ns, uint64_t *timed, uint64_t *batches, uint64_t *wait_ns, uint64_t *bytes);
@@ -415,6 +427,10 @@ int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *
 int vk_texture_cpu_stale(uint64_t addr, uint64_t size);    // a GPU-written mirrored texture there has stale storage
 uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size);   // newest recorded writer of such a texture; 0: none
 void vk_texture_write_back(uint64_t addr, uint64_t size);   // writes those images back into their storage (waits)
+// The replay's deferred-read write-back (TOTK_WB_ASYNC, default off): copies recorded and submitted without waiting,
+// written to the storage by a later vk_texture_wb_poll once they completed. TOTK_WB_ASYNC=0: vk_texture_write_back.
+void vk_texture_write_back_async(uint64_t addr, uint64_t size);
+void vk_texture_wb_poll(void);                      // finishes the asynchronous write-backs whose copies completed
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc);   // vk_pool_fini: drop the images there
 void vk_texture_stats(uint64_t *images, uint64_t *uploads, uint64_t *reuploads);
 // Entries now, live and released (TextureFinalize, kept until sweep_released), with the bytes of their own memory
@@ -564,6 +580,8 @@ typedef struct {
 // One descriptor of the packed array a descriptor update template reads (VkPipeInfo.tpl), 24 bytes for every type; the
 // bytes a type leaves unused are zero, so equal descriptors compare equal byte for byte.
 typedef union { VkDescriptorImageInfo image; VkDescriptorBufferInfo buffer; VkBufferView view; uint64_t w[3]; } VkDescSlot;
+// The most uniform buffers of one set the pipelines make UNIFORM_BUFFER_DYNAMIC (TOTK_DYN_UBO, vk_pipeline.c).
+#define VK_DYN_UBO_MAX 32
 // Both return the cached pipeline (created on first use; failures are cached and logged once). info: may be NULL.
 // Valid until vk_pipeline_shutdown; thread-safe.
 VkPipeline vk_pipeline_graphics(const VkPipeState *s, const VkPipeInfo **info);
