@@ -40,7 +40,7 @@ static int push_skip_on(void) { return 0; } // exercise every push
 static int bind_sig(const VkExec *ex,const VkPipeInfo *info) { (void)ex; (void)info; abort(); }
 void vk_mem_count(int cls,int use,uint64_t bytes) { (void)cls; (void)use; (void)bytes; abort(); }
 static void support_in(const VkExec *ex,float in[3]) { (void)ex; (void)in; abort(); }
-static void support_fill(uint8_t *out,float x,float y,float z) { (void)out; (void)x; (void)y; (void)z; abort(); }
+void gfx_support_fill(uint8_t *out,float x,float y,float z) { (void)out; (void)x; (void)y; (void)z; abort(); }
 static void *scratch(VkExec *ex,uint32_t n,VkBuffer *buffer,VkDeviceSize *offset) {
     (void)ex; (void)n; (void)buffer; (void)offset; abort();
 }
@@ -53,9 +53,16 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex,int stage,const GfxShaderRes 
 }
 void vk_texture_lock(void) { abort(); }
 void vk_texture_unlock(void) { abort(); }
-static void tex_info(VkExec *ex,const GfxShaderRes *r,uint64_t h,int image,int separate,VkDescriptorImageInfo *out) {
-    (void)ex; (void)r; (void)h; (void)image; (void)separate; (void)out; abort();
+static void tex_info(VkExec *ex,const GfxShaderRes *r,uint64_t h,int image,int separate,uint32_t gen,uint32_t ep,
+                     uint32_t sg,int *locked,VkDescriptorImageInfo *out) {
+    (void)ex; (void)r; (void)h; (void)image; (void)separate; (void)gen; (void)ep; (void)sg; (void)locked; (void)out;
+    abort();
 }
+// The descriptor memos' keys: one unchanged descriptor context for every case.
+static void descriptor_state(VkExec *ex) { (void)ex; }
+uint32_t vk_texture_slots_gen(void) { return 0; }
+uint32_t vk_texture_epoch(void) { return 0; }
+uint32_t vk_sampler_gen(void) { return 0; }
 
 // Bounded malloc storage supplies alignment without imposing an array's declared
 // effective type. The real producers decide packet sizes and copy every payload.

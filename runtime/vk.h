@@ -116,7 +116,7 @@ void vk_checkpoint_compute(VkPipeline p);
 // device-address bindings seen so far (vk_crumbs.c). Called by vk_device_fault_report for every address it prints.
 void vk_crumbs_report_address(uint64_t address);
 
-// ---- window and present (gfx_present.c). Host threads only.
+// ---- window and present (gfx_window.c, vk_present.c). Host threads only.
 // vk_present_image: blits the crop rectangle {x, y, w, h} of src (NULL, or w/h <= 0: the whole w x h image), scaled
 // to the swapchain extent, into the acquired swapchain image and presents it. src is in layout, which is
 // VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL (its writes made visible to the transfer stage by the caller's barrier) or
@@ -168,16 +168,19 @@ void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, u
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
 void vk_hdr_release(void);   // before the device goes away
 void vk_present_flip(void);
-int gfx_window_closing(void);   // the exit has started: the swapchain and the present passes are being freed
+// TOTK_FLIGHT thumbnails (GfxBackend.thumbs_enable, thumbs_read; flight.c): the present thread blits every presented
+// frame into a host-visible ring of n thumbnails.
+void vk_thumbs_enable(int n);            // before the first present; n slots of FLIGHT_THUMB_W x FLIGHT_THUMB_H
+void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame of the vk_present_image call that follows
+// Copies frame's thumbnail as RGBA when the ring still holds it complete; 0 when it was never written, is still in
+// flight or was overwritten. Takes the present lock for one slot copy (about 20 us); any thread.
+int vk_thumbs_read(uint64_t frame, uint8_t *rgba);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 // Copy of the last presented swapchain image, for probes: on, the next presents read the image back into a host buffer
 // and wait for the GPU. *px stays valid until the next present; the format is the swapchain's. Returns 0 with no frame.
-// The rectangle {x, y, w, h} of a dw x dh swapchain image a cw x ch picture is presented in (gfx_present.c,
-// TOTK_ASPECT); the rest is black.
-void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]);
 void vk_present_capture(int on);
 int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt);
 
@@ -185,11 +188,18 @@ int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt);
 // extensions a surface needs (their count, at most max), and whether a queue family of pd can present to it.
 int gfx_window_vk_extensions(const char **out, int max);
 int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t family);
-void gfx_window_resize(int client_w, int client_h);   // programmatic resize; returns after the swapchain is rebuilt
 void gfx_vsync_bind_counter(volatile int32_t *counter);  // host-side stand-in for a bound event: incremented per tick
-unsigned gfx_window_focus_messages(void);          // OE_MSG_FOCUS_STATE_CHANGED pushes made by the window thread
-void gfx_exit_release(void);                       // before plat_exit, after the saves: drains the present, releases the device; parks if another exit is under way
-void gfx_window_release_vk(void);                  // vk_shutdown calls it first: destroys swapchain, surface, present objects
+// The Vulkan back end's window entries (GfxBackend.window_start, window_resize, present_mode, window_hdr10, exit_wait, exit_release;
+// gfx.h). gfx_window_start calls the first under its start lock: the device, window, surface and swapchain, idempotent.
+void vk_present_window_start(void);
+void vk_present_window_resize(void);               // the window has its new size; the swapchain follows it
+const char *vk_present_mode(void);                  // the present mode the swapchain got; "" before one
+int vk_present_hdr10(void);                         // the swapchain is HDR10 now (any thread)
+// exit_wait: the queued present goes out, before gfx_window.c's start lock (the present thread may be waiting for it).
+void vk_present_exit_wait(void);
+// exit_release, under that lock: the device lets go of the window (swapchain, surface, present objects).
+void vk_present_exit_release(void);
+void vk_present_release(void);                     // vk_shutdown calls it first: destroys swapchain, surface, present objects
 long vk_validation_errors_total(void);             // validation errors since the first vk_init, across vk_shutdown
 
 // ---- memory and textures (vk_memory.c, vk_texture.c)
@@ -278,6 +288,7 @@ void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
 const void *vk_usnap_bytes(uint64_t addr, uint64_t n);   // the copy's bytes for the CPU; NULL: not copied or dropped
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
+uint64_t vk_usnap_arena_bytes(void);                 // arenas created so far (all kept until shutdown)
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void);
@@ -308,6 +319,9 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when al
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
 uint64_t vk_mem_gen(void);
+// Changes whenever a GPU address may map to other storage (vk_mem_descriptor_key): a pool added, finalized or mapped.
+// Not at a submission's start and not with the mirrors, which change buffer spans only.
+uint64_t vk_mem_pool_gen(void);
 // Page write generations over guest memory (mem_written_pages plus vk_guest_written). Returns 1 when a page of the
 // range was written after generation `since`, 0 when not, -1 when the range is not write-watched (treat as written);
 // *now is the generation to pass next time.
@@ -369,6 +383,7 @@ void vk_mem_protect_until(uint64_t timeline_value);
 void vk_mem_collect(void);                         // frees what has completed
 typedef struct { uint64_t imported_pools, physical_pools, virtual_pools, import_failures, upload_batches; } VkMemStats;
 void vk_mem_stats(VkMemStats *s);
+void vk_mem_gpu_summary(char *out, size_t n);      // "; gpu: ..." for mem_commit_report: VMA, mirrors, staging, usnap
 void vk_mem_shutdown(void);                        // before vk_shutdown: waits idle, frees every memory and texture object
 
 // Textures. Images are keyed by storage GPU address plus descriptor and stay in VK_IMAGE_LAYOUT_GENERAL. A mirrored
@@ -455,9 +470,6 @@ int vk_dlss_instance_exts(const char **out, int max);
 int vk_dlss_device_exts(const char **out, int max);
 int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, const VkTexImage *out);
 void vk_dlss_release(void);   // device idle, before it goes away
-
-// 8-bit RGBA PNG with stored deflate blocks (boot.c); stops with rt_fatal when the file cannot be written.
-void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
 
 // ---- submission, synchronisation, completion (vk_sync.c, vk_backend.c)
 // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
