@@ -67,6 +67,12 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t f) {
 }
 void vk_usnap_end(uint64_t f) { NEED(!x_here && f == X.fence); snapshot_end++; }
 void vk_exec_pass_end(VkExec *ex) { NEED(ex == &X); ex->in_pass = 0; }
+static void par_flush(VkExec *ex) { (void)ex; }
+static int par_mode;
+static int par_threads(void) { return par_mode; }
+static int npiece __attribute__((unused));   // vk_exec.c only assigns it now
+static int par_collecting(void) { return 0; }
+static uint64_t par_end_op[OP_COUNT_ + 1];
 static void walk(VkExec *ex, const op_hdr *h, int depth) {
     NEED(x_here && ex == &X && h->op == OP_BEGIN && !depth); ex->recorded += 2; walked++;
 }
@@ -166,7 +172,7 @@ void vk_mem_pick(VkMemSpan *s) { NEED(s->buffer == H(VkBuffer, 20)); s->buffer =
 void vk_mem_count(int cls, int use, uint64_t n) { NEED(cls == VK_MCLS_HOST_CACHED && use == VK_MUSE_COPY_SRC && n); }
 void vk_mem_bound_note(void *p) { NEED(p == (void *)1); }
 void vk_exec_barrier(VkExec *ex) { NEED(ex == &X); ex->in_pass = 0; ex->recorded++; barriers++; }
-void vk_exec_draw_new_cb(void) { NEED(X.cb == slots[cur_slot].cb && !X.in_pass); binds++; }
+void vk_exec_draw_new_cb(VkExec *ex) { NEED(ex == &X && X.cb == slots[cur_slot].cb && !X.in_pass); binds++; }
 VkResult vmaCreateBuffer(VmaAllocator a, const VkBufferCreateInfo *b, const VmaAllocationCreateInfo *i,
                          VkBuffer *out, VmaAllocation *allocation, VmaAllocationInfo *mapped) {
     (void)a; NEED(b->size && b->size <= (8ull << 20) && b->usage == VK_BUFFER_USAGE_TRANSFER_DST_BIT);
