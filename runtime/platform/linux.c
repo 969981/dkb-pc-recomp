@@ -987,6 +987,8 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
     fault_install();
 }
 
+const char *plat_crash_dump(void) { return NULL; }
+
 void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
     crash_fn = fn;
     fault_install();

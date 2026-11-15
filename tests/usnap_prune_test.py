@@ -1,5 +1,5 @@
 """runtime/vk_usnap.c wr_prune against a brute-force search: the GPU write ranges of the submissions in flight are kept
-sorted and merged, and wr_prune sorts only the ranges added since the last prune before merging them in. Over random
+sorted and merged (a write whose fence completed leaves, merged or not), and wr_prune sorts only the ranges added since the last prune before merging them in. Over random
 submissions (ranges of 4 bytes to 4 KiB, half of them not 16-byte aligned, a completed fence that moves forward),
 every range a write still in flight overlaps must be found by wr_hits, and the kept list must stay sorted and disjoint.
 A first case puts two unaligned ranges in one 16-byte bucket of the radix sort, the higher one added first.
@@ -42,6 +42,16 @@ int main(void) {
     checks += 2;
     if (!wr_hits(0x1000, 0x1004)) fails++, puts("FAIL: [0x1000,0x1004) lost in its bucket");
     if (!wr_hits(0x1008, 0x1010)) fails++, puts("FAIL: [0x1008,0x1010) lost");
+    // No write outlives its fence: a completed one is gone, and none is absorbed into a range that stays.
+    U.nwr = 0, nwr_sorted = 0, done_fence = 1000;
+    U.wr[U.nwr++] = (Wrote){0x5000, 0x6000, 1200};
+    U.wr[U.nwr++] = (Wrote){0x5800, 0x7000, 5};
+    wr_prune();
+    wr_prune();
+    checks += 2;
+    if (!wr_hits(0x5400, 0x5500)) fails++, puts("FAIL: a write in flight left the list");
+    if (U.nwr != 1 || U.wr[0].hi != 0x6000) fails++, puts("FAIL: a finished write was merged into a range in flight");
+    done_fence = 0;
     U.nwr = 0, nwr_sorted = 0;
     for (uint64_t fence = 1; fence <= 300; fence++) {
         int add = (int)(rnd() % 3000);

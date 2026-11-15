@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "gfx_spirv.h"
 #include "msort.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -231,6 +232,11 @@ enum { DP_PASS, DP_SHADER, DP_PIPE, DP_STATE, DP_SIG, DP_UBO, DP_SSBO, DP_TEX, D
 // rewrites its pointer block this way before every draw, all at one address, so ubo_ptr reads the latest update that
 // covers the pointer, else memory. Payloads stay in the recorded command buffer for the whole replay.
 #define UPD_N 4096
+typedef struct {
+    uint64_t fence;                      // the submission the entries belong to
+    uint32_t n;                          // updates noted in it
+    struct { uint64_t lo, hi; const uint8_t *data; } u[UPD_N];
+} UpdList;
 
 // The image and the levels [l0, l1) and layers [a0, a1) a texture's view covers.
 typedef struct { VkImage image; uint32_t l0, l1, a0, a1; } SubRange;
@@ -378,11 +384,8 @@ typedef struct DrawCtx {
     struct {
         uint64_t n, hdr, body, forced, field[BSF_N], pipe_chg, gen_chg, cls[7];   // cls[]: which bound state differed first
     } BSF;
-    struct {
-        uint64_t fence;                      // the submission the entries belong to
-        uint32_t n;                          // updates noted in it
-        struct { uint64_t lo, hi; const uint8_t *data; } u[UPD_N];
-    } UPD;
+    UpdList UPD;
+    const UpdList *updv;                     // what upd_read reads when set: a slice's pass's snapshot (vk_exec_draw_slice_view)
     struct {
         int on;
         uint32_t n;                        // draws closed
@@ -1451,7 +1454,9 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
         if (written) {
             // In a slice, a store over a uniform snapshot copy depends on the draw order (vk_usnap.c vk_usnap_drop).
             if (IN_SLICE(dc) && vk_usnap_covers(addr, n)) vk_exec_par_order_hazard();
-            vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
+            if (written == 1) vk_mem_gpu_wrote(&sp, n);
+            else vk_mem_gpu_kept(&sp, n);   // 2: kept in VRAM (gs_storage_writeback)
+            vk_usnap_drop(addr, n);
         }
         count_use(dc, sp.cls, use, n);
         VK_MEM_BOUND(sp);
@@ -1636,9 +1641,10 @@ static void upd_note(const VkExec *ex, const p_update_ub *u) {
 // 1 when an update of this submission supplied [a, a+n).
 static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
     DrawCtx *const dc = DC_OF(ex);
-    if (dc->UPD.fence != ex->fence) return 0;
-    for (uint32_t i = dc->UPD.n, end = dc->UPD.n > UPD_N ? dc->UPD.n - UPD_N : 0; i-- > end;) {
-        const typeof(dc->UPD.u[0]) *e = &dc->UPD.u[i % UPD_N];
+    const UpdList *L = dc->updv ? dc->updv : &dc->UPD;
+    if (L->fence != ex->fence) return 0;
+    for (uint32_t i = L->n, end = L->n > UPD_N ? L->n - UPD_N : 0; i-- > end;) {
+        const typeof(L->u[0]) *e = &L->u[i % UPD_N];
         if (a >= e->hi || a + n <= e->lo) continue;
         if (a < e->lo || a + n > e->hi) return 0;   // partly covered: memory
         memcpy(out, e->data + (a - e->lo), n);
@@ -1699,6 +1705,35 @@ static p_bind_buf guarded_storage_binding(const VkExec *ex, int st, const GfxSha
     return b;
 }
 
+// Storage the geometry stage writes stays in the VRAM mirror: the replay does not copy it back into guest memory at the
+// end of the submission (vk_memory.c vk_mem_mirror_end). Bananza's only geometry stage is the destructible terrain's
+// (native_gs_on), whose every draw writes the records of a 15,000-byte storage buffer at an address of its own that only
+// later GPU draws read: in the Hilltop Layer of Surf Hills (3.2.0) that was 70.5 of the 75 MiB written back a frame,
+// 7.7 ms of an RTX 5090's 17.7 ms a frame. The CPU writes none of those pages (the uploads into the mirrors stayed at
+// 76 MiB a frame without the write-back), so no later sync overwrites the GPU's bytes. Eglantine copies no GPU-written
+// buffer back for a Switch 2 title unless the CPU is seen reading it (buffer_cache_base.h AsyncBufferDownloads,
+// NoteCpuRead). Guest memory stays stale for these ranges, so two readers of it are kept away:
+// - the uniform snapshots (vk_usnap.c): vk_usnap_begin asks vk_mem_kept_overlaps and copies no kept range into a
+//   snapshot, whatever binds it later; a CPU rewrite of a page takes it out of the kept list (vk_memory.c mirror_sync);
+// - the mirror's re-uploads (vk_memory.c mirror_sync) work on 4 KiB pages: vk_mem_gpu_kept writes the partial first and
+//   last pages back, and mirror_sync leaves the whole pages out of a pool's flush range.
+// TOTK_GS_STORAGE_WRITEBACK=1 copies them back as every other GPU write; ab alternates with the A/B blocks.
+static int gs_storage_writeback(void) {
+    static int mode = -1;
+    int m = __atomic_load_n(&mode, __ATOMIC_ACQUIRE);
+    if (m < 0) {   // slice workers may get here together: the one whose store lands logs
+        int first = -1;
+        m = rt_knob("GS_STORAGE_WRITEBACK", "0");
+        if (__atomic_compare_exchange_n(&mode, &first, m, 0, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
+            rt_log("vk: storage the geometry stage writes %s (TOTK_GS_STORAGE_WRITEBACK=%s)",
+                   m == 2 ? "is copied back to guest memory in the B blocks" : m ? "is copied back to guest memory"
+                                                                                 : "stays in VRAM",
+                   m == 2 ? "ab" : m ? "1" : "0");
+        else m = first;
+    }
+    return RT_KNOB_ON(m);
+}
+
 static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *r, int written) {
     DrawCtx *const dc = DC_OF(ex);
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
@@ -1715,8 +1750,9 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
+        int how = !written ? 0 : st == NVN_STAGE_GS && !gs_storage_writeback() ? 2 : 1;
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
-                       written, guarded, &bi)) {
+                       how, guarded, &bi)) {
             if (written && bi.buffer != VK_NULL_HANDLE) {
                 note_written(ex, b->addr - lead, bi.range);
                 const uint8_t *ctl, *code;
@@ -1871,6 +1907,7 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
                 const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
                 if (!((d >> i & 1) && t->img && t->img->fb_usage) || vk_tex_fb_learned(t->img)) continue;
                 if (IS_HELPER(dc) && vk_spec_fail(VK_SPEC_FEEDBACK)) return 0;   // the replay thread's open pass would begin differently
+                vk_texture_hold_barrier();   // a held slice of an earlier pass reads the mark (vk_exec.c par_defer)
                 vk_tex_fb_learn((VkTexImage *)t->img);
                 vk_spec_world_changed();
             }
@@ -3200,6 +3237,7 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     static int nine = -1;
     if (nine < 0) nine = !strcasecmp(cfg_value("TOTK_FIX_VS_FAULT"), "9");
     if (!nine) return 0;
+    if (gfx_spirv_lq_folded(vs)) return 0;   // gfx_spirv.c folds this vertex stage, so its draws are drawn
     if (vs_origin == 0xcae0ef8e9fe9147full) {
         warn_once(W_FAULT_SKIP2, "the light quads of NVN 2 vertex stage cae0ef8e9fe9147f are skipped (#9)");
         return 1;
@@ -4354,10 +4392,16 @@ static DrawCtx *ctx_new(void) {
 }
 
 // The inline uniform updates the replay thread has noted, for ubo_ptr (only the entries in use are copied).
-static void upd_take(DrawCtx *c) {
+static void upd_copy(UpdList *to) {
     uint32_t n = draw_main.UPD.n < UPD_N ? draw_main.UPD.n : UPD_N;
-    memcpy(&c->UPD, &draw_main.UPD, offsetof(typeof(draw_main.UPD), u) + n * sizeof draw_main.UPD.u[0]);
+    memcpy(to, &draw_main.UPD, offsetof(UpdList, u) + n * sizeof draw_main.UPD.u[0]);
 }
+static void upd_take(DrawCtx *c) { upd_copy(&c->UPD); }
+
+// The inline uniform updates as of the start of a sliced pass, which its slices read (vk_exec_draw_slice_view): with
+// the pass ends held back (vk_exec.c par_defer) the slices of a pass may still be recorded while the next pass is
+// collected, and a copy into the recording threads' own contexts would change under them.
+static UpdList upd_snap[VK_EXEC_UPD_SNAPS];
 
 // Replay thread, before helper k is handed a part (it is idle). The helper's context is made the first time; it takes
 // the inline uniform updates the replay thread has noted (only the entries in use are copied), for ubo_ptr. NULL: the
@@ -4380,7 +4424,7 @@ VkExecFrame *vk_exec_draw_helper_frame(int k) { return &helper_ctx[k]->helper_fr
 // Submitting thread, at the start of a sliced pass: contexts for threads 0 to threads-1 (made the first time), each
 // with the inline uniform updates noted so far (no update op is collected into a sliced pass, so they hold for it).
 // The spare descriptor pools grow with the threads that record: each takes pools of its own for every submission.
-void vk_exec_draw_slices_begin(int threads) {
+void vk_exec_draw_slices_begin(int threads, int snap) {
     if (threads > SLICE_THREADS) threads = SLICE_THREADS;
     int made = 0;
     for (int k = 0; k < threads; k++) {
@@ -4389,8 +4433,8 @@ void vk_exec_draw_slices_begin(int threads) {
             c->slice = 1, made = 1;
             memset(c->DP.ticks, 0, sizeof c->DP.ticks), c->DP.draws = c->DP.ops = 0;   // its own profile (dp_log)
         }
-        upd_take(slice_ctx[k]);
     }
+    if (snap >= 0) upd_copy(&upd_snap[snap]);
     if (!made) return;
     int n = SPARE_POOLS + 8 * (threads > 1 ? threads - 1 : 0);
     plat_mutex_lock(&spare_lock);
@@ -4399,6 +4443,8 @@ void vk_exec_draw_slices_begin(int threads) {
 }
 
 struct DrawCtx *vk_exec_draw_slice_ctx(int k) { return k >= 0 && k < SLICE_THREADS ? slice_ctx[k] : NULL; }
+
+void vk_exec_draw_slice_view(struct DrawCtx *c, int snap) { c->updv = &upd_snap[snap]; }
 
 // Submitting thread, every slice of the pass recorded: the slices' frame counters go to vk_exec_frame.
 void vk_exec_draw_slices_end(int threads) {

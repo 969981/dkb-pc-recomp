@@ -42,7 +42,7 @@ typedef uint32_t NgxResult;
 enum { NGX_VERSION_API = 0x15, NGX_FEATURE_SUPER_SAMPLING = 1 };
 enum { Q_MAX_PERF, Q_BALANCED, Q_MAX_QUALITY, Q_ULTRA_PERF, Q_ULTRA_QUALITY, Q_DLAA };
 enum { F_MV_LOW_RES = 1 << 1, F_AUTO_EXPOSURE = 1 << 6 };
-enum { PRESET_L = 12, PRESET_M = 13 };   // NGX render preset hints
+enum { PRESET_K = 11, PRESET_L = 12, PRESET_M = 13 };   // NGX render preset hints
 typedef struct NgxParam NgxParam;
 typedef struct NgxHandle NgxHandle;
 typedef struct {   // NVSDK_NGX_Resource_VK holding an image view (the larger member of its union)
@@ -83,7 +83,8 @@ static NgxParam *params;
 static struct {
     NgxHandle *h;
     uint32_t w, h_, ow, oh;
-    int q;   // the quality mode it was made in (quality())
+    int q;        // the quality mode it was made in (quality())
+    int preset;   // the preset it was made with (preset_for)
     VkImage mv, depth;
     VmaAllocation mv_a, depth_a;
     VkImageView mv_v, depth_v;
@@ -521,8 +522,21 @@ static int quality(uint32_t w, uint32_t ow) {
     return s < 1.1f ? Q_DLAA : s < 1.6f ? Q_MAX_QUALITY : s < 1.85f ? Q_BALANCED : s < 2.5f ? Q_MAX_PERF : Q_ULTRA_PERF;
 }
 
+// The model a feature in mode q is made with. TOTK_DLSS_PRESET (dlss_preset, live): auto (the default) takes DLSS 4's
+// transformer (preset K) in every mode but Ultra Performance, which has its own model (L); m takes DLSS 4.5's second
+// transformer (preset M) instead of K. NVIDIA's recommended mapping is K for DLAA, Quality and Balanced and M for
+// Performance only. M is not used for Performance here: the game's dynamic resolution moves the input across the
+// Balanced/Performance scale, and each crossing would make a new feature (about 80 ms, feature()). In the Hilltop Layer
+// of Surf Hills (3.2.0, RTX 5090, Quality 2560x1440 -> 3840x2160) M took 2.6 to 3.7 ms of GPU time a frame and K 0.8,
+// at the end of the frame, where the game's main thread waits for the GPU.
+static int preset_for(int q) {
+    if (q == Q_ULTRA_PERF) return PRESET_L;
+    return strcmp(cfg_value("TOTK_DLSS_PRESET"), "m") ? PRESET_K : PRESET_M;
+}
+
 // The creation parameters of a feature for inputs up to w x h -> ow x oh in mode q.
 static void create_params(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int q) {
+    int p = preset_for(Q_MAX_QUALITY);   // every mode's hint but Ultra Performance's; NGX takes the one of mode q
     set_u(params, "CreationNodeMask", 1);
     set_u(params, "VisibilityNodeMask", 1);
     set_u(params, "Width", w);
@@ -532,11 +546,10 @@ static void create_params(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int 
     set_i(params, "PerfQualityValue", q);
     set_i(params, "DLSS.Feature.Create.Flags", F_MV_LOW_RES | F_AUTO_EXPOSURE);
     set_i(params, "DLSS.Enable.Output.Subrects", 0);
-    // DLSS 4.5's second transformer model (preset M) in every mode but Ultra Performance, which has its own (L).
-    set_u(params, "DLSS.Hint.Render.Preset.DLAA", PRESET_M);
-    set_u(params, "DLSS.Hint.Render.Preset.Quality", PRESET_M);
-    set_u(params, "DLSS.Hint.Render.Preset.Balanced", PRESET_M);
-    set_u(params, "DLSS.Hint.Render.Preset.Performance", PRESET_M);
+    set_u(params, "DLSS.Hint.Render.Preset.DLAA", (uint32_t)p);
+    set_u(params, "DLSS.Hint.Render.Preset.Quality", (uint32_t)p);
+    set_u(params, "DLSS.Hint.Render.Preset.Balanced", (uint32_t)p);
+    set_u(params, "DLSS.Hint.Render.Preset.Performance", (uint32_t)p);
     set_u(params, "DLSS.Hint.Render.Preset.UltraPerformance", PRESET_L);
 }
 
@@ -545,12 +558,13 @@ static void create_params(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int 
 // size: at that size the game stops running its upscaler) and each evaluation passes the input's size as
 // DLSS.Render.Subrect.Dimensions, so only a new output size makes a new one. Recreating it per input size cost about
 // 80 ms of the frame (3.2.0, RTX 5090, a 2560x1440 -> 2793x1571 step). The quality mode is the scale of the input it
-// is made for (w x h). The modes share preset M except Ultra Performance (L), so an input scale that crosses into or
-// out of Ultra Performance makes a new feature too; between the other modes only the mode's name in the log differs.
+// is made for (w x h). The modes share one preset except Ultra Performance (L, preset_for), so an input scale that
+// crosses into or out of Ultra Performance makes a new feature too, as does a change of dlss_preset; between the other
+// modes only the mode's name in the log differs.
 // 1 ready; 0 nothing recorded by NGX; -1 NGX failed after it may have recorded into cb.
 static int feature(VkCommandBuffer cb, uint64_t fence, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
-    int q = quality(w, ow);
-    if (F.h && F.ow == ow && F.oh == oh && (F.q == Q_ULTRA_PERF) == (q == Q_ULTRA_PERF)) return 1;
+    int q = quality(w, ow), preset = preset_for(q);
+    if (F.h && F.ow == ow && F.oh == oh && F.preset == preset) return 1;
     reap();
     if (F.h) {
         int i = 0;
@@ -576,10 +590,10 @@ static int feature(VkCommandBuffer cb, uint64_t fence, uint32_t w, uint32_t h, u
         fail(why);
         return -1;
     }
-    F.w = ow, F.h_ = oh, F.ow = ow, F.oh = oh, F.q = q, F.fresh = 1;
+    F.w = ow, F.h_ = oh, F.ow = ow, F.oh = oh, F.q = q, F.preset = preset, F.fresh = 1;
     static const char *const names[] = {"Performance", "Balanced", "Quality", "Ultra Performance", "Ultra Quality", "DLAA"};
-    rt_log("dlss: %s %ux%u -> %ux%u, preset %s (made for inputs up to %ux%u)", names[q], w, h, ow, oh,
-           q == Q_ULTRA_PERF ? "L" : "M", ow, oh);
+    rt_log("dlss: %s %ux%u -> %ux%u, preset %c (made for inputs up to %ux%u)", names[q], w, h, ow, oh,
+           'A' + preset - 1, ow, oh);
     return 1;
 }
 
@@ -589,12 +603,13 @@ static int feature(VkCommandBuffer cb, uint64_t fence, uint32_t w, uint32_t h, u
 // dispatch the replay sees with DLSS on (the title screen), and released with that submission's fence (grave). A
 // failure here is logged and leaves DLSS to try again at the game's upscaler as before. The replay thread only
 // (vk_exec_draw.c op_dispatch, before the dispatch's binds). 1 when NGX may have recorded into cb: the caller forgets
-// the bound state.
+// the bound state. The upscaler setting is live, so while another upscaler is chosen the warm-up waits for a later
+// dispatch: a switch to dlss from the menu still gets it, unless the game's upscale made a feature first.
 int vk_dlss_warm(VkCommandBuffer cb, uint64_t fence) {
     static int done;
-    if (done) return 0;
+    if (done || !vk_dlss_wanted() || strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) return 0;
     done = 1;
-    if (!vk_dlss_wanted() || strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) return 0;
+    if (F.h) return 0;   // the game's upscale got there first
     LARGE_INTEGER f, t0, t1;
     QueryPerformanceFrequency(&f);
     QueryPerformanceCounter(&t0);

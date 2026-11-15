@@ -29,7 +29,7 @@ the Glacier layer, Snow World (Layer 500) and the Tempest layer. The current rel
 builds the game from your own dump: [docs/installer.md](docs/installer.md). What still fails:
 
 - Device lost on NVIDIA in the Snow World descent (#197, #264): fixed on `bananza` by de4f966, which skips one light
-  quad; two players confirmed it. The Glacier rock ride (#196) waits for a retest. The #9 light quads draw again
+  quad; two players confirmed it. The Glacier rock ride (#196) is confirmed fixed too. The #9 light quads draw again
   (e9165d3), so their particles are back (#62).
 - Device lost on AMD cards with AMD's Windows driver. On 0.3.0, `vk_recorder = 0` in `dkb.ini` stopped it for three
   players (#84, #155, #142), then #124 and #123, and it is the default on `bananza` since d161f88. Other AMD reports
@@ -47,7 +47,6 @@ builds the game from your own dump: [docs/installer.md](docs/installer.md). What
   On `bananza` (9190e6b), `scene_res = full` draws it at the output size.
 - Add-on content: the installer unpacks DLC from a `.nup` (57eaed9); a player confirmed the DLC and the 3.2.0
   update load (#183). Loose RomFS mods load from a `mods` folder beside `dkb.exe` (7779dda).
-- `scene_res = full` at 3840x2160 crashes at start (#279); PR #244 grows the heap the pool comes from.
 
 Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 15 November 2026.
 

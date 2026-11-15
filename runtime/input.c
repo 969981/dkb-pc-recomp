@@ -870,6 +870,43 @@ int input_pad_layout(void) {
     return (int)plat_cas32(&pad_layout_shown, 0, 0);
 }
 
+int input_sony_pad_present(void) {
+    const char *e = cfg_get("TOTK_INPUT");
+    if (e && !strcmp(e, "none")) return 0;
+    // SDL_Init counts its callers, so start() initialising the subsystem again later is harmless.
+    if (!SDL_Init(SDL_INIT_GAMEPAD)) {
+        rt_log("input: PlayStation prompts: SDL gamepad init failed (%s)", SDL_GetError());
+        return 0;
+    }
+    // A pad is not always listed right after SDL_Init: a DualSense on Bluetooth showed up only at the input thread's
+    // first scan, so the prompts stayed Switch. Poll for up to PAD_WAIT_MS until one is listed (a start without a pad
+    // waits that long once).
+    enum { PAD_WAIT_MS = 800, PAD_POLL_MS = 20 };
+    int n = 0, sony = 0, waited = 0;
+    char seen[160] = "";
+    for (;;) {
+        SDL_UpdateGamepads();
+        SDL_JoystickID *ids = SDL_GetGamepads(&n);
+        for (int i = 0; ids && i < n && !sony; i++) {
+            SDL_GamepadType t = SDL_GetGamepadTypeForID(ids[i]);
+            sony = t == SDL_GAMEPAD_TYPE_PS3 || t == SDL_GAMEPAD_TYPE_PS4 || t == SDL_GAMEPAD_TYPE_PS5;
+            const char *name = SDL_GetGamepadNameForID(ids[i]);
+            snprintf(seen, sizeof seen, "%s", name ? name : "?");
+        }
+        SDL_free(ids);
+        if (n > 0 || waited >= PAD_WAIT_MS) break;
+        plat_sleep_ms(PAD_POLL_MS);
+        waited += PAD_POLL_MS;
+    }
+    if (sony) rt_log("input: PlayStation pad at start: \"%s\" (after %d ms)", seen, waited);
+    else if (n) rt_log("input: no PlayStation pad at start (\"%s\"): Switch prompts", seen);
+    else rt_log("input: no gamepad listed within %d ms of start: Switch prompts", waited);
+    // The probe runs on whichever thread opens the RomFS first, and SDL ties its device-notification window to the
+    // thread that initialised the subsystem: release it so start() initialises it again on the input thread.
+    SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+    return sony;
+}
+
 int input_pad_label(int pad_id) {
     if (pad_id < PAD_SOUTH || pad_id > PAD_NORTH) return PAD_LABEL_NONE;
     return (int)plat_cas32(&pad_labels[pad_id - PAD_SOUTH], 0, 0);

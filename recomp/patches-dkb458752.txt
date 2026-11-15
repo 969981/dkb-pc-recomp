@@ -96,6 +96,8 @@ site mousecamera main 80a3fc 6d42a3e9 6d42a3e9 9480178d  # pitch end: x19 is the
 
 # Let vertical mouse activity interrupt the same waiting states as stick input.
 site mousecamera main 5e949c 2d4e0660 2d4e0660 94889b69  # Interp manual input check  [1.0.0 5ef070]
+site mousecamera main 192b22c bd407260 bd407260 943b9405  # automatic pitch state manual input check  [1.0.0 173535c]
+site mousecamera main 192b3dc bd407260 bd407260 943b9399  # automatic pitch blend manual input check  [1.0.0 173550c]
 site mousecamera main 192b690 bd407260 bd407260 943b92ec  # SnapEnd manual input check  [1.0.0 17357c0]
 # AcceptRequest loads s0 from [x0, #0x70] at 1735878, before the kept mov x19, x0.
 # The comparisons at 1735884 and 1735898 consume that value against -0.15 and +0.15

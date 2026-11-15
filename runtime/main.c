@@ -224,10 +224,19 @@ static uint64_t lifted_function(uintptr_t rip) {
 
 static void crash_handler(const PlatCrash *x) {
     static volatile int32_t busy;
-    if (plat_xchg32(&busy, 1)) plat_exit(71);
+    if (plat_xchg32(&busy, 1)) {   // a fault while the report is made: no report, but still a dump
+        plat_crash_dump();
+        plat_exit(71);
+    }
+    // A stack overflow leaves too little stack for the report (rt_vlogf alone takes 2 KB): dump first there, from the
+    // dump's own thread, while the report may still die.
+    const char *dump = x->code == 0xc00000fdu ? plat_crash_dump() : NULL;
     char d[160];
     uintptr_t rip = x->rip;
-    rt_logf("FATAL: %s (%#x) at host %p (totk+%#llx)", x->what, x->code, (void *)rip, (unsigned long long)x->offset);
+    // x->module names the DLL of a fault outside this executable (the last-chance filter: a driver, a Vulkan layer);
+    // its offset is then into that module, and the lifted-function lookup below finds nothing.
+    rt_logf("FATAL: %s (%#x) at host %p (%s+%#llx)", x->what, x->code, (void *)rip, x->module ? x->module : "totk",
+            (unsigned long long)x->offset);
     if (x->access >= 0)
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
@@ -238,7 +247,7 @@ static void crash_handler(const PlatCrash *x) {
     if (lazy_err)
         rt_logf("  lazy heap commit failed: error %u at %#llx, commit limit reached?\n", lazy_err, (unsigned long long)lazy_at);
 #endif
-    uint64_t f = lifted_function(rip);
+    uint64_t f = x->module ? 0 : lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
     for (int i = 0; i < x->nframes; i++) {   // abort and invalid parameter: where the host code called it
         uint64_t g = lifted_function(x->frames[i]);
@@ -250,6 +259,14 @@ static void crash_handler(const PlatCrash *x) {
     if (c) rt_guest_dump(c);
     else rt_logf("  not on a guest thread\n");
     fflush(stderr);
+    // The dump comes last: it suspends the other threads and can hang on a lock one of them holds, and by now the
+    // report is in the log. It holds game-derived memory (thread stacks): the line says so, since players copy this
+    // log into issues.
+    if (!dump) dump = plat_crash_dump();
+    if (dump) {
+        rt_logf("  minidump: %s (keep it on this PC: send it only privately, when asked for)\n", dump);
+        fflush(stderr);
+    }
     plat_exit(71);
 }
 

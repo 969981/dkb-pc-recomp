@@ -9,6 +9,12 @@ area = "tools"
 cmd = ["{python}", "tests/check_content_test.py"]
 
 [[test]]
+name = "dkb-ps-prompts"
+tier = 0
+area = "tools"
+cmd = ["{python}", "tests/dkb_ps_prompts_test.py"]
+
+[[test]]
 name = "nup-extract"
 tier = 0
 area = "tools"
@@ -70,6 +76,12 @@ area = "gfx"
 cmd = ["{python}", "tests/dkb_wide_layout_test.py"]
 
 [[test]]
+name = "layout-neutral-runtime"
+tier = 0
+area = "runtime"
+cmd = ["{python}", "tests/layout_neutral_runtime_test.py"]
+
+[[test]]
 name = "installer-update"
 tier = 0
 area = "installer"
@@ -94,6 +106,12 @@ area = "tools"
 cmd = ["{python}", "tests/perf_evidence_test.py"]
 
 # ------------------------------------------------------------------ tier 1
+
+[[test]]
+name = "build-game-keys"
+tier = 1
+area = "tools"
+cmd = ["{python}", "tests/build_game_keys_test.py"]
 
 [[test]]
 name = "romfs-image"
@@ -377,6 +395,13 @@ area = "shaders"
 cmd = ["{python}", "tests/alpha_test_spirv_test.py", "--cc", "{cc}", "--spirv-val", "{spirv_val}", "--out", "{out}"]
 
 [[test]]
+name = "dkb-wide"
+tier = 1
+area = "gfx"
+cmd = ["{python}", "tests/dkb_wide_test.py", "--cc", "{cc}", "--out", "{out}"]
+needs = ["cc"]
+
+[[test]]
 name = "aoc-romfs"
 tier = 1
 area = "os"
@@ -514,6 +539,12 @@ name = "nan-guard-spirv"
 tier = 1
 area = "shaders"
 cmd = ["{python}", "tests/nan_guard_spirv_test.py", "--cc", "{cc}", "--spirv-val", "{spirv_val}", "--out", "{out}"]
+
+[[test]]
+name = "lq-fold-spirv"
+tier = 1
+area = "shaders"
+cmd = ["{python}", "tests/lq_fold_spirv_test.py", "--cc", "{cc}", "--spirv-val", "{spirv_val}", "--out", "{out}"]
 
 [[test]]
 name = "note-written"

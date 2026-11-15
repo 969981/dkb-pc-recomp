@@ -362,7 +362,8 @@ def port_version():
     return version
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False,
+               content_keys=False):
     """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
     out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
     except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE."""
@@ -430,8 +431,27 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         sources = [p for p in sources if p.name in INSTALL_SIDE] + [out / 'modules.c']
     else:
         sources += [out / 'modules.c']
+    # An install compiles the runtime from the release's folder (Bananza all of it, --full-build; TotK INSTALL_SIDE)
+    # into the objects an earlier install left, and ninja decides by file times. A release unpacked from a zip carries
+    # the archive's times, written in UTC and read as local time without a zone, so sources made less than the zone's
+    # offset after the last install look older than its objects: a changed romfs.c was not compiled again and the
+    # PlayStation prompts never loaded. With content_keys every runtime command line carries one hash over every file
+    # below runtime/ (a source can include a .c or embed a font, so no narrower set is safe); ninja compares command
+    # lines, so new contents always compile.
+    digest = None
+    if content_keys and not make_lib:
+        h = hashlib.sha256()
+        for f in sorted(p for p in RUNTIME.rglob('*') if p.is_file()):
+            h.update(f.relative_to(RUNTIME).as_posix().encode() + b'|' + f.read_bytes())
+        digest = h.hexdigest()[:16]
     for src in sources:
         o = runtime_object(out, src)
+        if digest and src.suffix in ('.c', '.cpp') and src.is_relative_to(RUNTIME):
+            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
+            extra = f' -std=c++20 -I {cmd_path(RUNTIME / "third_party" / "eglantine")}' if src.suffix == '.cpp' else ''
+            lines.append(f'  rtflags = $rtflags{extra} -DRT_TREE_DIGEST=0x{digest}')
+            rt.append(o)
+            continue
         if src.suffix == '.rc':   # windres writes no depfile: the files totk.rc embeds are listed by hand
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "totk.manifest")} '
                          f'{ninja_path(RUNTIME / "dkb.ico")}')
@@ -452,9 +472,13 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     if runtime_lib:
         # Whole archive: the runtime's weak defaults (nvn_procs.c, nvn_api_core.c, vk_sync.c) would otherwise satisfy
         # references before the linker pulls the members with the strong definitions, which would stay out of totk.exe.
+        # The library's hash rides in the command: a lib unpacked with old zip times is only an implicit input and
+        # would not relink the exe on file times alone.
         rule = 'link_lib'
+        lib_sha = hashlib.sha256(runtime_lib.read_bytes()).hexdigest()[:16] if runtime_lib.is_file() else 'missing'
         lines += ['', 'rule link_lib',
-                  f'  command = $cc $ldflags @$out.rsp -Wl,--whole-archive {cmd_path(runtime_lib)} -Wl,--no-whole-archive $libs -o $out',
+                  f'  command = $cc $ldflags @$out.rsp -Wl,--whole-archive {cmd_path(runtime_lib)} -Wl,--no-whole-archive $libs -o $out'
+                  f' # {lib_sha}',
                   '  rspfile = $out.rsp', '  rspfile_content = $in_newline', '  description = LINK $out']
     lines += ['', f'build {ninja_path(exe)}: {rule} ' + ' '.join(ninja_path(o) for o in every) +
               (f' | {ninja_path(runtime_lib)}' if runtime_lib else ''),
@@ -867,12 +891,16 @@ def main():
 
     layout = read_layout(gen)
     names = [n for n, _, _ in layout]
-    wanted = args.modules.split(',') if args.modules else names
-    unknown = [m for m in wanted if m not in names]
-    if unknown:
-        sys.exit(f'unknown modules {unknown}; the layout has {names}')
-    linked = [m for m in names if m in wanted]
-    mods = {m: chunk_files(gen, m) for m in linked}
+    # --make-runtime-lib compiles no generated modules: skip chunk_files (and its manifest.json reads) entirely.
+    if args.make_runtime_lib:
+        wanted, linked, mods = [], [], {}
+    else:
+        wanted = args.modules.split(',') if args.modules else names
+        unknown = [m for m in wanted if m not in names]
+        if unknown:
+            sys.exit(f'unknown modules {unknown}; the layout has {names}')
+        linked = [m for m in names if m in wanted]
+        mods = {m: chunk_files(gen, m) for m in linked}
 
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
@@ -918,7 +946,7 @@ def main():
     if runtime_lib and not runtime_lib.is_file():
         sys.exit(f'{runtime_lib} not found: build it with --make-runtime-lib')
     text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
-                                 args.make_runtime_lib)
+                                 args.make_runtime_lib, content_keys=bool(runtime_lib or args.full_build))
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)

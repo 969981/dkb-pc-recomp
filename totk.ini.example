@@ -61,6 +61,8 @@
 # memory = auto
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
+# Drop or release cached textures when VRAM usage rises above this percentage (0 to 100; 0 = off). Default: 90.
+# tex_vram_pressure = 90
 # Host zstd decoder in place of the game's (0 = the game's), and a check that decodes every call both ways and logs
 # the differences (1 = on; slow).
 # zstd_native = 1
@@ -248,6 +250,10 @@
 # labels (A with B, X with Y; it loads romfs-patches-xbox, docs/controls.md, "Xbox button prompts"). The bind_ lines
 # below apply on top. Changes while the game runs take effect at once; the xbox_prompts prompts at the next start.
 # pad_layout = auto
+# Bananza: the button prompts for a PlayStation pad (cross, circle, square, triangle, L1 to R2, Options, Create;
+# docs/controls.md, "PlayStation button prompts"). auto takes them when a DualShock or DualSense pad is connected at
+# start, playstation always, switch never. The game reads its fonts at boot, so a change takes effect at the next start.
+# pad_prompts = auto
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
 # stick_deadzone = 8

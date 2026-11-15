@@ -286,8 +286,11 @@ uint64_t res_heap_extra_kib(void);                         // added to the HeapD
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   // the HeapDef table (.byml.zs) with
                                                            // the grown heaps, malloc'd; 0 = cannot (logged)
 void res_heapdef_served(void);                             // romfs.c serves the grown table
+int res_heapdef_grown(void);                               // 1 once romfs.c serves it
+const char *res_heapdef_path(void);                        // the game's HeapDef table in the RomFS
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
 void dkb_wide_init(void);                                  // Bananza-only virtual display and camera patch values
+uint64_t dkb_wide_heap_extra_kib(void);                    // Bananza: what the render-target pool needs added to GSys
 int dkb_wide_output(unsigned out[2]);                      // active mode; optional output gets its size or the stock size
 int res_sizes(unsigned out[2], unsigned scene[2]);         // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on). Bananza: the game's
