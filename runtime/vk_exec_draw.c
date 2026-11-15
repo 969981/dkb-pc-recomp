@@ -3166,6 +3166,12 @@ static int pipe_skip_mode(void) {
 // 782b2585777d2b4e, 392e2956038a9e64 and 7d85669ac430f01a read Location 9, feed every attribute per instance and carry
 // the same integer code (four reads of c9 at a computed index), and skipping every such quad left out ten vertex stages
 // that drew in all 17 logged runs. So it is matched by the name of its NVN 2 stage.
+//
+// Vertex stage ba1dd1e7ae8abb33 has the same shape (ten per-instance streams up to Location 9, a fragment stage
+// without c0+0x530) and faults the device later in the game, in the Snow World descent of #196 and #197 (RTX 5060 Ti,
+// 5070 Ti, 5080, 5090). On a replayed route that faulted in every run that drew it, zeroing its attribute or uniform
+// values only avoided the fault where that culls the instance (Location 6.w is its draw-or-not test), so as in #9 the
+// fault does not follow the values. Skipping it by name gave 0 faults in 7 runs that reached the spot.
 static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     DrawCtx *const dc = DC_OF(ex);
     static int on = -1;
@@ -3176,8 +3182,9 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
         if (on && !nv) rt_log("vk: TOTK_FIX_VS_FAULT=all: the light quad skip (#9) also runs on this non-NVIDIA GPU");
     }
     if (!on || !vs || !fs) return 0;
-    if (stage_origin(dc, ex->prog, NVN_STAGE_VS) == 0xcae0ef8e9fe9147full) {
-        warn_once(W_FAULT_SKIP2, "the light quad of NVN 2 vertex stage cae0ef8e9fe9147f is skipped (#9)");
+    const uint64_t vs_origin = stage_origin(dc, ex->prog, NVN_STAGE_VS);
+    if (vs_origin == 0xcae0ef8e9fe9147full || vs_origin == 0xba1dd1e7ae8abb33ull) {
+        warn_once(W_FAULT_SKIP2, "the light quads of NVN 2 vertex stages cae0ef8e9fe9147f and ba1dd1e7ae8abb33 are skipped (#9, #196, #197)");
         return 1;
     }
     const GfxShaderRes *r;
