@@ -163,3 +163,12 @@ guard poolguard main 429bf0 429b4c ptr x9 f9401927 st32 x29 -2c ffffffff
 guard poolguard main 42955c 429b4c vcall x9 b940028a
 guard poolguard main 429ce0 42a44c ptr x20 aa1403e0
 guard poolguard main 429594 429c54 ptr x10 f875794a
+# #218 crash 2, f_700011a7e0 (1.0.0 f_7000108020, -0x127c0): an empty node free list gives a null node at 11acd0;
+# the guard continues the id loop at 11ac28.
+guard poolguard main 11acd0 11ac28 ptr x8 f9400909
+
+# #229: the per-record table loads of f_7000a55520 (1.0.0 f_7000a37520, -0x1e000): the guards of patches-dkb100.txt.
+# Opt-out: DKB_FIX_RECORD_GUARD=0.
+set recguard DKB_FIX_RECORD_GUARD 1
+guard recguard main a55a84 a58388 ptr x10 3dc00140
+guard recguard main a55a9c a58388 ptr x11 3dc00160

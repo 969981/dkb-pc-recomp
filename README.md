@@ -24,23 +24,18 @@ As far as we know, no other static recompilation of a Switch 2 game is public.
 ## Status
 
 **Playable on recent NVIDIA cards, well past the first level.** Players report runs through layer -101, sublayer 200,
-the Glacier layer, Snow World (Layer 500) and the Tempest layer. The current release is 0.3.0. The
+the Glacier layer, Snow World (Layer 500) and the Tempest layer. The current release is 0.4.0. The
 [latest release](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries an installer that
-builds the game from your own dump: [docs/installer.md](docs/installer.md). What still fails:
+builds the game from your own dump (`.nup`, `.nx` or folders), and a Linux AppImage: [docs/installer.md](docs/installer.md).
+0.4.0 fixes the Snow World and Glacier device loss on NVIDIA (#196, #197, #264), turns the Vulkan recorder off on AMD's
+Windows driver (the device loss fix for #84, #124, #142, #155, #167, #176), and guards the guest crashes at the title
+screen and on loads (#157, #206), on layer changes (#218) and in a record loop (#229). What still fails:
 
-- Device lost on NVIDIA in the Snow World descent (#197, #264): fixed on `bananza` by de4f966, which skips one light
-  quad; two players confirmed it. The Glacier rock ride (#196) is confirmed fixed too. The #9 light quads draw again
-  (e9165d3), so their particles are back (#62).
-- Device lost on AMD cards with AMD's Windows driver. On 0.3.0, `vk_recorder = 0` in `dkb.ini` stopped it for three
-  players (#84, #155, #142), then #124 and #123, and it is the default on `bananza` since d161f88. Other AMD reports
-  wait for a retest (#176, #193, #206, #267). GPU hangs under RADV on Linux are still open (#99, #122, #198, #204); 25d1089 fences
-  the command buffer the recorder writes, a retest is asked.
-- Guest crashes (#148, #136, #218, #229). The write to address 0 at the title screen or on loads (#157, #173, #206)
-  is guarded on `bananza` (22f0a3a); retest asked. #218's crash on a layer change in 3.2.0 (`main+0x429480`) is the
-  loop 1.0.0 guards for #126; 3.2.0 has the same guards since 96a2ba7.
+- GPU hangs under RADV on Linux (#99, #122, #198, #204), and some AMD reports that wait for a retest (#193, #206).
+- Guest crashes without a reproduction (#126, #136, #148).
 - Intel Arc A770: a driver fault about 20 s in (#3).
 - Missing effects in the Tempest layer (#221): a player reports the tornado draws on `bananza`; retest asked.
-- Heavy scenes below 60 fps (#141, #156, #194, #207). On `bananza` (70c1b4a) new defaults raise our heavy test scene
+- Heavy scenes below 60 fps (#141, #156). Since 0.4.0 new defaults raise our heavy test scene
   from about 53 to 58 fps and halve the frames over 25 ms; a stall of about 0.45 s on area loads is left. See
   [docs/dkb-lowend.md](docs/dkb-lowend.md).
 - A soft 3D picture: the game's dynamic resolution draws the scene at 2/3 of the output (1280x720 at 1080p, #210).
@@ -48,7 +43,7 @@ builds the game from your own dump: [docs/installer.md](docs/installer.md). What
 - Add-on content: the installer unpacks DLC from a `.nup` (57eaed9); a player confirmed the DLC and the 3.2.0
   update load (#183). Loose RomFS mods load from a `mods` folder beside `dkb.exe` (7779dda).
 
-Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 15 November 2026.
+RecompLauncher on Linux and macOS: [docs/recomp-launcher.md](docs/recomp-launcher.md). Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 15 November 2026.
 
 | Phase | | State |
 | --- | --- | --- |
@@ -57,7 +52,7 @@ Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 15 Novembe
 | F2 NVN 2 | ✅ | 700 NVN 2 entry points answered; the game loop runs. 51 new command buffer calls (mesh shaders, VRS, DLSS, push constants…) are accepted but not recorded yet. |
 | F3 Shaders | ✅ | All 4,820 Ampere shader stages of the first 3D scene go through Eglantine's Ampere-to-Maxwell lowering and TotK Recomp's translator to SPIR-V. |
 | F4 Vulkan | ✅ | The title screen and the tutorial's 3D scene render. |
-| F5 Playable | ✅ | Controller, guide movies (VP9), push constants, installer and releases 0.1.0 to 0.3.0. |
+| F5 Playable | ✅ | Controller, guide movies (VP9), push constants, installer and releases 0.1.0 to 0.4.0. |
 | F6 Stability | 🚧 | Device lost on NVIDIA and AMD, RADV hangs and guest crashes in later areas. |
 | F7 Performance | 🚧 | A heavy scene runs at about 58 fps on `bananza`, with a stall of about 0.45 s on area loads. |
 | F8 Image | 🚧 | Missing effects, some textures and terrain details. |

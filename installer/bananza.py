@@ -229,7 +229,7 @@ def nup_source(layout, path, select):
     the format and order inventory() gives for a loose folder. Nothing is decompressed or written."""
     tool = tool_module(layout, 'extract_nup.py')
     try:
-        container = tool.Nup(path)
+        container = tool.open_container(path)
     except (tool.NupError, OSError, ValueError, UnicodeDecodeError) as e:
         raise InstallError('dkb.nup_invalid', path=str(path), detail=str(e)) from None
     try:
@@ -368,6 +368,7 @@ def preflight(layout, options, dest, temp, rep):
     missing = [p for p in (layout.clang, layout.ninja, layout.recomp / 'gen.py',
                            layout.recomp / f'patches-{game}.txt', layout.tools / 'dkb_pack_romfs.py',
                            *([layout.tools / 'extract_nup.py'] if nup_arg else []),
+                           *([layout.tools / 'extract_nx.py'] if nup_arg and nup_arg.suffix.lower() == '.nx' else []),
                            layout.tools / 'dkb_shader_census.py',
                            layout.tools / 'dkb_wide_layout.py', layout.tools / 'ultrawide_layout.py',
                            layout.tools / 'dkb_ps_prompts.py', layout.tools / 'data' / f'expected-{game}.json')
@@ -533,7 +534,9 @@ class Check(Step):
             host = json.loads(result.stdout)
         except ValueError:
             raise InstallError('check.host_probe_failed', code=result.returncode) from None
-        if not host['x86_64_v3']:
+        # Without AVX2 the game builds for x86-64-v2 (tools/build_game.py then compiles runtime/ instead of the
+        # release's v3 library)
+        if not host['x86_64_v3'] and not host['x86_64_v2']:
             raise InstallError('check.cpu_no_avx2')
         if not host['loader']:
             raise InstallError('check.vulkan_missing')
@@ -552,6 +555,8 @@ class Data(Step):
                  sha256(ctx.layout.tools / 'dkb_pack_romfs.py')]
         if 'nup' in ctx.info['sources']:   # folder installs keep the key they had before .nup input existed
             parts += [sha256(ctx.layout.tools / 'extract_nup.py'), ctx.info['sources']['nup_package']]
+            if ctx.info['sources']['nup'].lower().endswith('.nx'):
+                parts.append(sha256(ctx.layout.tools / 'extract_nx.py'))
         return digest(*parts)
 
     def current(self, ctx, record):

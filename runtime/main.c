@@ -515,11 +515,34 @@ static void portable_paths(RtConfig *c) {
     c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
 }
 
+// The lifted code is built for the x86-64 level tools/build_game.py chose; on a CPU below it the first AVX2 or FMA
+// instruction would fault, so say so and stop.
+static void require_cpu(void) {
+#if defined(__x86_64__)
+    __builtin_cpu_init();
+#if defined(__AVX2__)
+    int ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
+    const char *level = "x86-64-v3 (AVX2, FMA, BMI2)", *hint = "Rebuild with --march v2 (the setup does this on its own).";
+#else
+    int ok = __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
+    const char *level = "x86-64-v2 (SSE4.2)", *hint = "This CPU is too old for the game.";
+#endif
+    if (!ok) {
+        fprintf(stderr, "This build needs a CPU with %s, which this one lacks. %s\n", level, hint);
+        exit(1);
+    }
+#endif
+}
+
 int main(int argc, char **argv) {
+    require_cpu();
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     plat_crash_hook(crash_handler);
+    // Build the host-to-guest function table now, not in the crash handler: its malloc there faults again after heap
+    // damage, and the report then stops before the lifted function and the guest frames (#148).
+    lifted_function(0);
     parse_trace();
     prof_start();
     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait

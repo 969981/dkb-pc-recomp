@@ -2922,6 +2922,11 @@ static struct {
     int32_t keep_n;
     int idle;                                          // build at PLAT_PRIO_IDLE (boot), normal (preparation)
     PlatMutex stat;
+    // preparation progress: ok[i] set when variant i finished, mark = first unfinished index (saved to prog_path)
+    uint8_t *ok;
+    size_t mark;
+    char prog_path[PLAT_PATH_MAX * 2 + 32];
+    uint64_t sig;                                      // FNV-1a of shader-prepared.bin: a new list starts over
 } LB = {.stat = PLAT_MUTEX_INIT};
 
 VkPipeline vk_pipeline_compute(const GfxShader *cs, const VkPipeInfo **info) {
@@ -3197,6 +3202,7 @@ static void lb_stop(void) {
 // Preparation: one prepared variant at a time into the driver's disk cache (private shader copy, nothing kept).
 static void lb_warm_worker(void *arg) {
     (void)arg;
+    plat_thread_priority(PLAT_PRIO_BELOW_NORMAL);   // an hour-long run must leave the PC usable
     for (;;) {
         size_t i = (size_t)plat_inc64(&LB.next) - 1;
         if (i >= LB.n) return;
@@ -3224,12 +3230,21 @@ static void lb_warm_worker(void *arg) {
         if (owned) gfx_shader_release_private(sh);
         plat_mutex_lock(&LB.stat);
         uint64_t d = ++LB.done;
+        LB.ok[i] = 1;
+        size_t old = LB.mark;
+        while (LB.mark < LB.n && LB.ok[LB.mark]) LB.mark++;
+        // resume point on disk every 256 variants: a closed or killed run continues there (lb_warm_prepared)
+        if (LB.mark / 256 != old / 256) {
+            char buf[64];
+            int len = snprintf(buf, sizeof buf, "%zu %llu %zu\n", LB.n, (unsigned long long)LB.sig, LB.mark);
+            plat_file_write_atomic(LB.prog_path, buf, (size_t)len);
+        }
         plat_mutex_unlock(&LB.stat);
         if (d % 4000 == 0) lb_report("preparation progress");
     }
 }
 
-// Preparation: every variant of <dir>/shader-prepared.bin on every core at normal priority.
+// Preparation: every variant of <dir>/shader-prepared.bin on every core but one (from 4 cores up) at below-normal priority.
 static void lb_warm_prepared(const char *dir) {
     char path[PLAT_PATH_MAX * 2 + 32];
     snprintf(path, sizeof path, "%s/shader-prepared.bin", dir);
@@ -3239,18 +3254,42 @@ static void lb_warm_prepared(const char *dir) {
     LB.e = n ? calloc(n, sizeof *LB.e) : NULL;
     for (size_t i = 0; LB.e && i < n; i++)
         memcpy(LB.e[i].iid, f + 16 + 36 * i + 4, 32), LB.e[i].stage = f[16 + 36 * i], LB.e[i].prio = f[16 + 36 * i + 1];
+    uint64_t sg = 1469598103934665603ull;
+    for (size_t i = 0; f && i < size; i++) sg = (sg ^ f[i]) * 1099511628211ull;
     free(f);
     if (!LB.e) return;
     LB.n = n, LB.idle = 0, LB.t0 = now_ms();
+    // Resume: lib-warm.progress holds "count signature mark" of an interrupted run over this same list (the driver
+    // cache keeps the variants below mark). A finished run deletes it, so the next run builds everything again.
+    LB.ok = calloc(n, 1);
+    LB.sig = sg;
+    snprintf(LB.prog_path, sizeof LB.prog_path, "%s/lib-warm.progress", dir);
+    uint64_t psz = 0;
+    uint8_t *pf = plat_file_read(LB.prog_path, &psz);
+    size_t pn = 0, pm = 0;
+    unsigned long long ps = 0;
+    if (pf && psz < 63) {
+        char b[64] = {0};
+        memcpy(b, pf, psz);
+        if (sscanf(b, "%zu %llu %zu", &pn, &ps, &pm) == 3 && pn == n && ps == LB.sig && pm <= n) {
+            memset(LB.ok, 1, pm), LB.mark = pm, LB.next = (int64_t)pm, LB.done = pm;
+            rt_log("vk_pipeline: stage library prebuild resumes at %zu of %zu variants", pm, n);
+        }
+    }
+    free(pf);
     static const uint32_t no_pr[16], no_fs[4];
     lb_state(no_pr, no_fs);
     int cpus = (int)plat_cpu_usable(), k = 0;
+    if (cpus >= 4) cpus--;
+    rt_log("vk_pipeline: stage library preparation on %d threads at below-normal priority", cpus);
     PlatThread *t[64];
     for (int i = 0; i < cpus && i < 64; i++)
         if ((t[k] = plat_thread_new(lb_warm_worker, NULL, "lib warm"))) k++;
     if (!k) lb_warm_worker(NULL);
     for (int i = 0; i < k; i++) plat_thread_join(t[i]);
     lb_report("preparation done");
+    plat_file_delete(LB.prog_path);
+    free(LB.ok), LB.ok = NULL, LB.mark = 0;
     // with gpl off only compute variants are built: say so, rather than count the skipped ones as built
     if (LB.nolib)
         printf("prepare-shaders: %zu variants on %d threads in %.0f ms, %llu vertex/fragment variants skipped (graphics "

@@ -83,6 +83,21 @@ UCRT = Path(r'C:\msys64\ucrt64\bin')
 EXE = 'dkb.exe' if WIN else 'dkb'   # DKB Recomp: not TotK's executable
 
 
+def host_march():
+    """'x86-64-v3' when this CPU has AVX2, FMA, BMI1/2, F16C, MOVBE and LZCNT, else 'x86-64-v2' (SSE4.2; the lifted FMA
+    then falls back to libm's fma, slower). A CPU that cannot be probed keeps v3."""
+    try:
+        if WIN:
+            return 'x86-64-v3' if ctypes.windll.kernel32.IsProcessorFeaturePresent(40) else 'x86-64-v2'   # PF_AVX2
+        flags = next((l.split(':', 1)[1].split() for l in open('/proc/cpuinfo') if l.startswith('flags')), None)
+        if flags is None:
+            return 'x86-64-v3'
+        need = {'avx2', 'fma', 'bmi1', 'bmi2', 'f16c', 'movbe', 'abm'}   # abm: LZCNT
+        return 'x86-64-v3' if need <= set(flags) else 'x86-64-v2'
+    except (OSError, AttributeError):
+        return 'x86-64-v3'
+
+
 def on_path(name):
     """name on PATH, else a path that does not exist (the tool check below names it)."""
     found = shutil.which(name)
@@ -101,9 +116,7 @@ if DARWIN and (HOMEBREW_LLVM / 'clang').is_file():
 # On AArch64 the lowering uses GCC vector extensions and fma, both baseline there, so no -mcpu is needed.
 GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden']
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing']
-if platform.machine().lower() in ('x86_64', 'amd64'):
-    GEN_FLAGS.append('-march=x86-64-v3')
-    RT_FLAGS.append('-march=x86-64-v3')
+X86 = platform.machine().lower() in ('x86_64', 'amd64')   # -march is chosen after the options (host_march)
 if WIN:
     # _WIN32_WINNT: Windows 10, the port's minimum. MSYS2's headers default to it, llvm-mingw's (the release toolchain)
     # to Windows 7, which hides the per-monitor DPI functions gfx_window_win.c and dpi_probe_win.c call.
@@ -838,6 +851,9 @@ def main():
                     help=f'build only <out>/{LIB_NAME} from runtime/ (no generated C, no totk.exe)')
     ap.add_argument('--runtime-lib', type=Path, help=f'link against this {LIB_NAME} instead of compiling runtime/ '
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
+    ap.add_argument('--march', choices=('auto', 'v2', 'v3'), default='auto',
+                    help='x86-64 level of the generated code and the runtime: v3 needs AVX2/FMA/BMI2, v2 only SSE4.2 '
+                         '(default auto: v3 when this CPU has it)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
@@ -876,6 +892,16 @@ def main():
         # the libSDL3.so.0 beside it
         for lib in ('opus', 'vpx', 'zstd'):
             LINK_LIBS[LINK_LIBS.index(f'-l{lib}')] = f'-l:lib{lib}.a'
+    if X86:
+        # The prebuilt library CI makes is the v3 one whatever CPU builds it
+        march = ('x86-64-v3' if args.make_runtime_lib else host_march()) if args.march == 'auto' else 'x86-64-' + args.march
+        print(f'-march={march}' + (' (this CPU lacks x86-64-v3)' if args.march == 'auto' and march.endswith('v2') else ''))
+        if march.endswith('v2') and args.runtime_lib and not args.make_runtime_lib:
+            # The release's prebuilt library is x86-64-v3; runtime/ ships beside it, so compile it at v2 instead
+            print(f'ignoring {args.runtime_lib}: it is built for x86-64-v3, compiling runtime/ for v2')
+            args.runtime_lib = None
+        GEN_FLAGS.append('-march=' + march)
+        RT_FLAGS.append('-march=' + march)
     if args.sysroot and not WIN:
         # Every compile and the link: the game then needs no newer glibc than the sysroot's (the Steam Runtime's)
         sysroot = ['--target=x86_64-linux-gnu', f'--sysroot={cmd_path(args.sysroot.resolve())}']

@@ -23,6 +23,8 @@ straight from the container, without the loose copy; the Bananza installer extra
     python tools\\extract_nup.py <game>.nup --select latest --pack --out build\\extracted\\dkb458752
 
 
+A .nx archive (NXFormat) is read the same way: every snapshot of its first application is a package, see extract_nx.py.
+
 zstd comes from `compression.zstd` (Python 3.14), the `zstandard` module, or a `zstd` program on PATH, in that order.
 Everything else is the standard library.
 
@@ -201,6 +203,19 @@ class Nup:
         return [] if dir_index == NO_DIR else list(self.walk(dir_index))
 
 
+def open_container(path):
+    """The Nup of a .nup, or the equivalent view of a .nx (NXFormat, tools/extract_nx.py), by the file's magic."""
+    with open(path, 'rb') as f:
+        magic = f.read(4)
+    if magic != b'NXAR':
+        return Nup(path)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('_dkb_extract_nx', Path(__file__).with_name('extract_nx.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Nx(path, sys.modules[__name__])
+
+
 def safe_name(name):
     """A container is a file someone handed you: refuse names that would leave the output folder."""
     if not name or name in ('.', '..') or any(c in name for c in '/\\:\0'):
@@ -264,6 +279,9 @@ def _read_exact(src, n):
 def file_chunks(nup, zstd, idx, verify):
     """Yield the contents of file `idx` in chunks; after the last one, check its size and, with verify, its SHA-256.
     A failed check raises before the generator finishes, so a caller publishes nothing it has not seen checked."""
+    if hasattr(nup, 'file_chunks'):   # an NX archive (tools/extract_nx.py) keeps files in blocks, not extents
+        yield from nup.file_chunks(zstd, idx, verify)
+        return
     name, size, ext_off, ext_size, sha, codec = nup.files[idx]
     h = hashlib.sha256()
     written = 0
@@ -504,7 +522,7 @@ def pick(nup, which):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('nup', type=Path, nargs='?', help='the .nup file')
+    ap.add_argument('nup', type=Path, nargs='?', help='the .nup file (or a .nx: tools/extract_nx.py)')
     ap.add_argument('--out', type=Path, help='output folder: <out>\\exefs and <out>\\romfs are written')
     ap.add_argument('--list', action='store_true', help='list the packages and exit')
     ap.add_argument('--package', default='base', help='base (default), update, or an index from --list')
@@ -536,7 +554,7 @@ def main(argv=None):
     if args.aoc and not args.select:
         ap.error('--aoc needs --select')
     try:
-        nup = Nup(args.nup)
+        nup = open_container(args.nup)
         if args.list or args.out is None:
             list_packages(nup)
             if not args.list:

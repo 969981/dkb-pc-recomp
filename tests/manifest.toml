@@ -825,3 +825,9 @@ name = "nup-aoc"
 tier = 1
 area = "tools"
 cmd = ["{python}", "tests/nup_aoc_test.py"]
+
+[[test]]
+name = "nx-extract"
+tier = 0
+area = "tools"
+cmd = ["{python}", "tests/nx_extract_test.py"]
