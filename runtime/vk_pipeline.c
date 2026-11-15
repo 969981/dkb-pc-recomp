@@ -212,10 +212,11 @@ static int ensure_init(void) {
     vkGetPhysicalDeviceProperties2(c->phys, &p2);
     P.max_push = pd.maxPushDescriptors;
     P.max_stage_samplers = p2.properties.limits.maxPerStageDescriptorSamplers;
-    {   // TOTK_DYN_UBO (default off, 1 on, ab as 1 here; bind_resources reads the same knob): see dyn_ubo_convert.
-        // Off until it has run under the validation layer and on AMD and Intel.
+    {   // TOTK_DYN_UBO (0 off, 1 on, ab as 1 here; bind_resources reads the same knob): see dyn_ubo_convert.
+        // On by default except on Intel, where nobody has measured it: the -101 scene ran clean under the validation
+        // layer, and players measured gains on NVIDIA and AMD (docs/dkb-testing.md).
         uint32_t lim = p2.properties.limits.maxDescriptorSetUniformBuffersDynamic;
-        P.dyn_ubo = !rt_knob("DYN_UBO", "0") ? 0 : lim < VK_DYN_UBO_MAX ? lim : VK_DYN_UBO_MAX;
+        P.dyn_ubo = !rt_knob("DYN_UBO", vk_caps.intel ? "0" : "1") ? 0 : lim < VK_DYN_UBO_MAX ? lim : VK_DYN_UBO_MAX;
         rt_log("vk_pipeline: dynamic uniform buffers in the allocated fragment set: %s (up to %u, device limit %u)",
                P.dyn_ubo ? "on" : "off", P.dyn_ubo, lim);
     }

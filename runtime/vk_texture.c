@@ -164,11 +164,61 @@ static void tex_init(void *p) {
     __atomic_store_n(&tex_ready, 1, __ATOMIC_RELEASE);
     return;
 }
-static void lock(void) {
-    if (!__atomic_load_n(&tex_ready, __ATOMIC_ACQUIRE)) plat_once(&tex_once, tex_init, NULL);
-    plat_rmutex_lock(&tex_lock);
+// TOTK_LOCK_HOLDS=1 (diagnostic, off by default) times every outermost hold of tex_lock and keeps, by the return
+// address of the function that took it (the caller's call site, as an exe offset for totk.map), the holds over 200 us:
+// with TOTK_TRACE=perf the slices of parallel passes waited about 3 ms a frame for this lock, up to 3 ms at a time.
+#define HOLD_SITES 16
+static int holds_on = -1;
+static _Thread_local uint64_t hold_t0;
+static _Thread_local void *hold_ra;
+static PlatMutex holds_lock = PLAT_MUTEX_INIT;
+typedef struct { void *ra; uint64_t n, ns, max; } HoldSite;
+static HoldSite holds[HOLD_SITES];
+
+static void hold_note(void *ra, uint64_t ns) {
+    plat_mutex_lock(&holds_lock);
+    int k = 0;
+    while (k < HOLD_SITES && holds[k].ra && holds[k].ra != ra) k++;
+    if (k == HOLD_SITES) k = HOLD_SITES - 1;   // full: the last slot takes the rest
+    if (!holds[k].ra) holds[k].ra = ra;
+    holds[k].n++, holds[k].ns += ns;
+    if (ns > holds[k].max) holds[k].max = ns;
+    plat_mutex_unlock(&holds_lock);
 }
-static void unlock(void) { plat_rmutex_unlock(&tex_lock); }
+
+static void holds_log(uint64_t frame) {
+    if (holds_on <= 0) return;
+    char line[1200];
+    size_t o = 0;
+    line[0] = 0;
+    plat_mutex_lock(&holds_lock);
+    for (int k = 0; k < HOLD_SITES && holds[k].ra && o < sizeof line - 80; k++)
+        o += (size_t)snprintf(line + o, sizeof line - o, " exe+%#llx %llu (%.1f ms, longest %.0f us);",
+                              (unsigned long long)((uintptr_t)holds[k].ra - plat_exe_base()), (unsigned long long)holds[k].n,
+                              holds[k].ns / 1e6, holds[k].max / 1e3);
+    memset(holds, 0, sizeof holds);
+    plat_mutex_unlock(&holds_lock);
+    rt_log("perf: frame %llu: texture lock held over 200 us, by caller:%s", (unsigned long long)frame, o ? line : " none");
+}
+
+static void lock_at(void *ra) {
+    if (!__atomic_load_n(&tex_ready, __ATOMIC_ACQUIRE)) plat_once(&tex_once, tex_init, NULL);
+    if (!plat_rmutex_trylock(&tex_lock)) {
+        uint64_t t0 = kern_now_ns();   // contended: TOTK_TRACE=perf counts the long waits (perf_lock_wait)
+        plat_rmutex_lock(&tex_lock);
+        if (rt_trace & RT_TRACE_PERF) perf_lock_wait(PERF_LOCK_TEXTURE, kern_now_ns() - t0);
+    }
+    if (holds_on < 0) holds_on = cfg_get("TOTK_LOCK_HOLDS") && atoi(cfg_get("TOTK_LOCK_HOLDS")) > 0;
+    if (holds_on && tex_lock.depth == 1) hold_t0 = kern_now_ns(), hold_ra = ra;
+}
+#define lock() lock_at(__builtin_return_address(0))
+static void unlock(void) {
+    if (holds_on > 0 && tex_lock.depth == 1) {
+        uint64_t ns = kern_now_ns() - hold_t0;
+        if (ns > 200000) hold_note(hold_ra, ns);
+    }
+    plat_rmutex_unlock(&tex_lock);
+}
 
 static uint32_t umax(uint32_t a, uint32_t b) { return a > b ? a : b; }
 static uint32_t mip(uint32_t v, unsigned lv) { return umax(v >> lv, 1); }
@@ -1387,6 +1437,7 @@ void vk_texture_new_submit(void) {
         ru_n = ru_bytes = ru_ns = ru_wt_n = ru_wt_bytes = ru_wt_ns = n_hash_kept = 0;
         uint64_t ck, calls, untr;
         vk_mem_snap_stats(&ck, &calls, &untr);
+        holds_log(f * 60);
         rt_log("perf: frame %llu: binding storage checks %llu (texture %llu), write-watch snapshot queries %llu, untracked %llu",
                (unsigned long long)f * 60, (unsigned long long)ck, (unsigned long long)n_checks, (unsigned long long)calls,
                (unsigned long long)untr);
@@ -1691,6 +1742,10 @@ uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size) {
 // a stale map or stale resource bytes (wrong textures in the distance). Every hit is checked before any is written
 // back, since a write-back is itself a CPU write to storage another hit may share; the hits then go back oldest render
 // first, so where two descriptors share storage the newer render wins.
+static int wb_copies(Tex **hit, int k);
+static int wb_all_queueable(Tex **hit, int k);
+static void wb_land(void);
+
 void vk_texture_write_back(uint64_t addr, uint64_t size) {
     lock();
     Tex **hit = malloc(sizeof *hit * (size_t)(nowned + 1));
@@ -1706,11 +1761,11 @@ void vk_texture_write_back(uint64_t addr, uint64_t size) {
             Tex *x = hit[j];
             hit[j] = hit[j - 1], hit[j - 1] = x;
         }
-    for (int i = 0; i < k; i++) write_back(hit[i]);
-    for (int i = 0; i < k; i++) perf_count(PERF_CNT_WB);
+    int queued = wb_copies(hit, k);
     for (int i = k; i < n; i++) perf_count(PERF_CNT_WB_SKIP);
     free(hit);
     unlock();
+    if (queued) wb_land();
 }
 
 // ---- asynchronous write-back (TOTK_WB_ASYNC=1; off by default: the replay waits as before)
@@ -1831,10 +1886,11 @@ void vk_texture_write_back_async(uint64_t addr, uint64_t size) {
             Tex *x = hit[j];
             hit[j] = hit[j - 1], hit[j - 1] = x;
         }
+    int queue = wb_all_queueable(hit, k);   // else every hit goes back now, in order (wb_all_queueable)
     for (int i = 0; i < k; i++) {
-        if (wb_pending(hit[i])) { wb_async_dup++; continue; }
-        if (wb_queue(hit[i])) { wb_async_n++; continue; }
-        write_back(hit[i]);   // not copyable this way (ASTC, packed depth-stencil): as before
+        if (queue && wb_pending(hit[i])) { wb_async_dup++; continue; }
+        if (queue && wb_queue(hit[i])) { wb_async_n++; continue; }
+        write_back(hit[i]);
         perf_count(PERF_CNT_WB);
     }
     if (nwbp > first) {
@@ -1923,6 +1979,61 @@ void vk_texture_wb_poll(void) {
     unlock();
 }
 
+// A waited write-back (vk_texture_write_back, vk_texture_write_back_small) of the textures hit[0..k), oldest render
+// first, texture lock held. Done under the lock, the GPU wait (image_texels: vk_upload_flush(1), the copy behind all
+// the work queued so far) kept the lock for about 0.35 ms, some 340 times a second in Bananza's Lake Level (3.2.0), and
+// the replay's texture lookups waited for it: slot tokens, bind_resources and shader_for in the replay's slices, and
+// vk_texture_new_submit and vk_texture_gpu_written on the submitting thread. TOTK_WB_UNLOCKED (default 1) queues the
+// copies here as the asynchronous write-back does (wb_queue) and has the caller wait without the lock (wb_land); the
+// copies then land through vk_texture_wb_poll's checks: an entry destroyed meanwhile only frees its staging, a CPU
+// write to the storage after the render keeps the CPU's bytes, and a render recorded meanwhile leaves the texture
+// GPU-dirty. A texture the copy cannot take (ASTC, packed depth-stencil) is written back here as before. 0: every
+// texture as before, under the lock. 1 when copies were queued: the caller unlocks, then calls wb_land.
+static int wb_unlocked = -1;
+// Whether wb_queue can copy e through the GPU: not an ASTC image, and an aspect the copy can read (a packed
+// depth-stencil one cannot).
+static int wb_queueable(const Tex *e) {
+    VkImageAspectFlags aspect;
+    return !e->f.astc_bw && read_aspect(e, &aspect);
+}
+
+// Hits sorted oldest render first share storage: one written back now and a newer one queued would let the queued
+// copy's poll take the first write for a CPU write, keep those bytes and drop the newer render (vk_texture_wb_poll). So
+// when any hit cannot be queued, all go back in order, as before.
+static int wb_all_queueable(Tex **hit, int k) {
+    for (int i = 0; i < k; i++)
+        if (!wb_queueable(hit[i])) return 0;
+    return 1;
+}
+
+static int wb_copies(Tex **hit, int k) {
+    if (wb_unlocked < 0) {
+        wb_unlocked = rt_knob("WB_UNLOCKED", "1");
+        rt_log("vk: waited write-backs wait for the GPU %s (TOTK_WB_UNLOCKED=%s)",
+               wb_unlocked == 2 ? "without the texture lock in the B blocks" : wb_unlocked ? "without the texture lock" : "under the texture lock",
+               wb_unlocked == 2 ? "ab" : wb_unlocked ? "1" : "0");
+    }
+    int on = RT_KNOB_ON(wb_unlocked) && wb_all_queueable(hit, k), first = nwbp;
+    for (int i = 0; i < k; i++) {
+        int before = nwbp;
+        if (on && wb_queue(hit[i])) {
+            if (nwbp == before) hit[i]->gpu_dirty = 0;   // no region to copy: as write_back leaves it
+            continue;
+        }
+        write_back(hit[i]);
+        perf_count(PERF_CNT_WB);
+    }
+    if (nwbp == first) return 0;
+    uint64_t seq = vk_upload_flush(0);
+    for (int i = first; i < nwbp; i++) wbp[i].seq = seq;
+    return 1;
+}
+
+static void wb_land(void) {   // texture lock not held
+    vk_upload_flush(1);       // every batch so far, the copies just queued among them
+    vk_texture_wb_poll();     // they land in their storage
+}
+
 // TotK's grass system renders a 128x128 RGBA8 map of cut and trampled grass into a CPU-cached pool every frame and its
 // CPU code reads the pool bytes without nvnMemoryPoolInvalidateMappedRange (cut reactions: blades, insects, the cut
 // itself). On the Switch the bytes are there once the frame's fence has passed. So when the
@@ -1988,11 +2099,11 @@ void vk_texture_write_back_small(uint64_t fence) {
             Tex *x = hit[j];
             hit[j] = hit[j - 1], hit[j - 1] = x;
         }
-    for (int i = 0; i < k; i++) write_back(hit[i]);
-    for (int i = 0; i < k; i++) perf_count(PERF_CNT_WB);
+    int queued = wb_copies(hit, k);
     for (int i = k; i < n; i++) perf_count(PERF_CNT_WB_SKIP);
     free(hit);
     unlock();
+    if (queued) wb_land();
 }
 
 // ---------------------------------------------------------------- samplers (LAS textures.c)

@@ -256,6 +256,14 @@ uint64_t plat_counter_hz(void) { return qpc_freq(); }
 // The default timer tick is 15.6 ms; a 1 ms wait would cost a full tick.
 void plat_timer_1ms(void) { timeBeginPeriod(1); }
 
+// Only a console this process got for itself (the only process attached to it): a console the game was started from,
+// such as a command prompt, stays visible. The window is hidden, not freed, so stdout and stderr stay valid handles.
+void plat_console_hide(void) {
+    HWND w = GetConsoleWindow();
+    DWORD pids[2];
+    if (w && GetConsoleProcessList(pids, 2) == 1) ShowWindow(w, SW_HIDE);
+}
+
 static PlatScale qpc_ns;   // set before main, so no thread reads it half written
 
 __attribute__((constructor)) static void qpc_ns_init(void) { qpc_ns = plat_scale(1000000000u, qpc_freq()); }

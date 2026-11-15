@@ -194,6 +194,7 @@ typedef struct WbLocal { void *a; int n, cap; struct WbLocal *next; } WbLocal;
 static WbLocal *wb_locals;
 #define cmd_pool memory_cmd_pool
 @MEMORY_FUNCTIONS@
+static void pinned_reader(void) { (void)pinned_batch; }   // vk_upload_flush reads it; not part of this fixture
 #undef cmd_pool
 
 static void own_remove(Tex *e) { check(!e->listed, "fixture has no GPU writeback-list entry"); }

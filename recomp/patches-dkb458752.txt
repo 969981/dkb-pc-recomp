@@ -144,3 +144,20 @@ site dkbscene main 38df08 bd400120 @page:x9 bd411920  # 1.0.0 3c1624
 set render3d DKB_RENDER3D 0
 site render3d main 79024 bd41b100 @page:x10 bd412140  # ldr s0, [x10, #0x120] in place of ldr s0, [x8, #0x1b0]
 site render3d main 79028 bd41b501 bd412541  # ldr s1, [x10, #0x124] in place of ldr s1, [x8, #0x1b4]
+
+# Text box per-character transform setter main+0x86d848 (1.0.0 main+0x84cd40, same 15 words): the null +0x150
+# block guards of patches-dkb100.txt (issues 157, 206, 173), placed by hand because tools/port_patches.py does not
+# port guards. Opt-out: DKB_FIX_FLCT_GUARD=0.
+set flctguard DKB_FIX_FLCT_GUARD 1
+guard flctguard main 86d858 86d868 ptr x8 bd000100
+guard flctguard main 86d870 86d880 ptr x8 bd000500
+
+# Parallel pool-entry loop main+0x429480 (1.0.0 main+0x410680, the same code shifted by 0x18e00; the words differ
+# only in adrp, page offsets and bl targets): the stale layer record and cell guards of patches-dkb100.txt
+# (issue 126), placed by hand. The same faults at 429bf0 and 42956c closed the game with code 71 in issue 218.
+# Opt-out: DKB_FIX_POOL_GUARD=0.
+set poolguard DKB_FIX_POOL_GUARD 1
+guard poolguard main 429bf0 429b4c ptr x9 f9401927 st32 x29 -2c ffffffff
+guard poolguard main 42955c 429b4c vcall x9 b940028a
+guard poolguard main 429ce0 42a44c ptr x20 aa1403e0
+guard poolguard main 429594 429c54 ptr x10 f875794a

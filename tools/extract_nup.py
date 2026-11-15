@@ -370,6 +370,48 @@ def install_plan(nup, select='latest'):
     return {'exefs': exefs, 'romfs': romfs, 'update': update}
 
 
+AOC_BASE = 0x1000   # the first add-on content's title id is the application id plus this
+AOC_MAX = 32        # runtime/aoc_romfs.c looks at aoc-0 .. aoc-31
+
+
+def aoc_packs(nup):
+    """(index, package) of each add-on content package that has a RomFS: the index is the title id minus the
+    application id plus AOC_BASE, the number runtime/aoc_romfs.c finds as aoc-<index>. The application id is the base
+    (or update) package's title id with the low 12 bits cleared. Packages outside 0..AOC_MAX-1, and any container
+    without a program package, give nothing. When two packages share an index the higher version wins."""
+    program = next((p for p in nup.packages if p.kind in (0, 1)), None)
+    if program is None:
+        return []
+    first = (program.title_id & ~0xFFF) + AOC_BASE
+    best = {}
+    for pkg in nup.packages:
+        index = pkg.title_id - first
+        if pkg.kind == 2 and pkg.romfs_dir != NO_DIR and 0 <= index < AOC_MAX:
+            if index not in best or pkg.version > best[index].version:
+                best[index] = pkg
+    return sorted(best.items())
+
+
+def write_aoc(nup, zstd, out_dir, verify, quiet):
+    """Pack each add-on content's RomFS into out_dir/aoc-<index>/romfs.bin plus aoc-index.bin (the TOTKRFS1 index of
+    tools/romfs_index.py), the folders runtime/aoc_romfs.c reads. A package that fails is reported and skipped; it
+    never fails the extraction. Returns the number written."""
+    import romfs_index
+    written = 0
+    for index, pkg in aoc_packs(nup):
+        folder = out_dir / f'aoc-{index}'
+        try:
+            count, _ = pack_romfs(nup, zstd, merged_entries(nup, [pkg], 'romfs'), folder, verify, True)
+            (folder / 'aoc-index.bin').write_bytes(
+                romfs_index.build_index(json.loads((folder / 'index.json').read_text(encoding='utf-8'))))
+            print(f'aoc: index {index}: {count} files')
+            written += 1
+        except (NupError, OSError, SystemExit, ValueError) as e:
+            print(f'warning: add-on content {index} skipped: {e}', file=sys.stderr)
+            shutil.rmtree(folder, ignore_errors=True)
+    return written
+
+
 def packed_entries(entries):
     """The entries tools/dkb_pack_romfs.py would pack from the same loose tree: it skips files whose name starts with
     a dot (the .listing files dump tools leave)."""
@@ -475,6 +517,9 @@ def main(argv=None):
     ap.add_argument('--pack', action='store_true',
                     help='write the RomFS as <out>\\romfs\\romfs.bin and index.json (tools/dkb_pack_romfs.py layout) '
                          'instead of loose files')
+    ap.add_argument('--aoc', action='store_true',
+                    help='with --select, also pack each add-on content package as <out>\aoc\aoc-<index>\romfs.bin '
+                         'and aoc-index.bin')
     ap.add_argument('--check-zstd', action='store_true',
                     help='exit 0 when a zstd backend is available, 1 otherwise, and do nothing else')
     ap.add_argument('--no-verify', action='store_true', help='skip the per-file SHA-256 check')
@@ -488,6 +533,8 @@ def main(argv=None):
         ap.error('the .nup file is required')
     if args.pack and not args.select:
         ap.error('--pack needs --select')
+    if args.aoc and not args.select:
+        ap.error('--aoc needs --select')
     try:
         nup = Nup(args.nup)
         if args.list or args.out is None:
@@ -512,6 +559,8 @@ def main(argv=None):
                                                          not args.no_verify, args.quiet, entries)
                     print(f'  {which}: {count} files, {total / 1e9:.2f} GB'
                           f'{f" ({skipped} already there)" if skipped else ""}')
+            if args.aoc:
+                write_aoc(nup, zstd, args.out / 'aoc', not args.no_verify, args.quiet)
             return 0
         packages = [pick(nup, args.package)]
         if args.overlay_update:

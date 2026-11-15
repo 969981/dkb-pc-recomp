@@ -121,7 +121,7 @@
 #define NVN_STAGE_CS 5
 #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_SKIP_VS, W_SKIP_FS, W_RESET, W_GEOMETRY, W_LIST_RESTART, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_SKIP_VS, W_SKIP_FS, W_SKIP_CS, W_RESET, W_GEOMETRY, W_LIST_RESTART, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -404,7 +404,7 @@ typedef struct DrawCtx {
     TexPend bind_tp[MAX_BINDINGS];
     // descriptor_state: the descriptor tables, mappings and slot generation the descriptor serial was last bumped for.
     struct { const VkExec *ex; dpool_ref tex, samp; uint64_t pool_gen; uint32_t slots_gen; int keep; } desc_last;
-    SkipList skip_vs, skip_fs;
+    SkipList skip_vs, skip_fs, skip_cs;
     uint64_t wait_frame, wait_left_ns;   // prepare_draw: the frame the full-screen wait budget belongs to, what is left
     struct { int on, filtered; uint64_t filter; unsigned records; } GCL;   // geometry_context_log; on -1: not read yet
     // token_of: slot tokens by texture id, with the pool, slot generation and memory generation they were read under.
@@ -2281,8 +2281,14 @@ static void twin_prepare(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
 }
 
 #ifndef VK_EXEC_DRAW_HELPER   // draw_main's counts
+#define SLICE_THREADS 16
+static DrawCtx *slice_ctx[SLICE_THREADS];   // the slice threads' contexts (vk_exec_draw_slices_begin)
 void vk_exec_pool_counts(uint64_t *created, uint64_t *taken) {   // TOTK_TRACE=perf, replay thread
     *created = draw_main.pools_created, *taken = draw_main.pools_taken;
+    for (int k = 0; k < SLICE_THREADS; k++)   // and the slice threads' (read while they may record: a trace count)
+        if (slice_ctx[k])
+            *created += __atomic_load_n(&slice_ctx[k]->pools_created, __ATOMIC_RELAXED),
+            *taken += __atomic_load_n(&slice_ctx[k]->pools_taken, __ATOMIC_RELAXED);
 }
 #endif
 
@@ -2949,7 +2955,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             // TOTK_DYN_UBO=ab: the layouts keep their dynamic buffers, and in the A blocks the offsets stay in the
             // descriptors (dynamic offsets 0), so each set is written anew as before: the reuse alone is measured.
             static int dyn_mode = -1;
-            if (dyn_mode < 0) dyn_mode = rt_knob("DYN_UBO", "0");   // off by default, as in vk_pipeline.c ensure_init
+            if (dyn_mode < 0) dyn_mode = rt_knob("DYN_UBO", vk_caps.intel ? "0" : "1");   // same default as vk_pipeline.c ensure_init
             int dyn_split = RT_KNOB_ON(dyn_mode);
             uint32_t dyn[VK_DYN_UBO_MAX], ndyn = 0;
             for (uint32_t i = i0, j = d0[s]; i < i1; i++) {
@@ -3179,12 +3185,23 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
         // 0: Bananza. TOTK_FIX_VS_FAULT=all runs the skip on every vendor, to A/B the AMD device loss against it.
         int nv = vk_ctx()->props.vendorID == 0x10de;
         on = !rt_game_version && cfg_bool("TOTK_FIX_VS_FAULT") && (nv || !strcasecmp(cfg_value("TOTK_FIX_VS_FAULT"), "all"));
-        if (on && !nv) rt_log("vk: TOTK_FIX_VS_FAULT=all: the light quad skip (#9) also runs on this non-NVIDIA GPU");
+        if (on && !nv) rt_log("vk: TOTK_FIX_VS_FAULT=all: the light quad skip (#196, #197) also runs on this non-NVIDIA GPU");
     }
     if (!on || !vs || !fs) return 0;
     const uint64_t vs_origin = stage_origin(dc, ex->prog, NVN_STAGE_VS);
-    if (vs_origin == 0xcae0ef8e9fe9147full || vs_origin == 0xba1dd1e7ae8abb33ull) {
-        warn_once(W_FAULT_SKIP2, "the light quads of NVN 2 vertex stages cae0ef8e9fe9147f and ba1dd1e7ae8abb33 are skipped (#9, #196, #197)");
+    if (vs_origin == 0xba1dd1e7ae8abb33ull) {
+        warn_once(W_FAULT_SKIP2, "the light quads of NVN 2 vertex stage ba1dd1e7ae8abb33 are skipped (#196, #197)");
+        return 1;
+    }
+    // The #9 part (cae0ef8e9fe9147f and the c0+0x530 family) is off unless TOTK_FIX_VS_FAULT=9: on current builds the
+    // #9 route (new game, first guide movie, mining tunnel, 600 s) ran twice without a fault here with those quads
+    // drawn (RTX 5060 Ti), and a player's runs drew them past the first guide movie and later layers on Turing, Ada
+    // and Blackwell (#62). Skipping them hid the particles they draw.
+    static int nine = -1;
+    if (nine < 0) nine = !strcasecmp(cfg_value("TOTK_FIX_VS_FAULT"), "9");
+    if (!nine) return 0;
+    if (vs_origin == 0xcae0ef8e9fe9147full) {
+        warn_once(W_FAULT_SKIP2, "the light quads of NVN 2 vertex stage cae0ef8e9fe9147f are skipped (#9)");
         return 1;
     }
     const GfxShaderRes *r;
@@ -3196,7 +3213,7 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     return 1;
 }
 
-// DKB_SKIP_VS / DKB_SKIP_FS (debug only, for bisecting the device loss of #75): comma-separated 16-digit hex NVN 2
+// DKB_SKIP_VS / DKB_SKIP_FS / DKB_SKIP_CS (debug only, for bisecting the device loss of #75): comma-separated 16-digit hex NVN 2
 // stage origins. A draw whose vertex (fragment) stage is listed in the matching variable is skipped, so a run that
 // stops faulting names the culprit shader. Parsed once; unset costs one flag test per draw.
 static int skip_listed(const VkExec *ex, int stage, SkipList *sl, const char *var, int warn, const char *msg) {
@@ -3222,6 +3239,11 @@ static int skip_listed(const VkExec *ex, int stage, SkipList *sl, const char *va
 
 static int skip_vs_listed(const VkExec *ex) {
     return skip_listed(ex, NVN_STAGE_VS, &DC_OF(ex)->skip_vs, "TOTK_SKIP_VS", W_SKIP_VS, "DKB_SKIP_VS is active: draws of the listed NVN 2 vertex stages are skipped");
+}
+
+// DKB_SKIP_CS covers direct dispatches only (op_dispatch), not indirect ones.
+static int skip_cs_listed(const VkExec *ex) {
+    return skip_listed(ex, NVN_STAGE_CS, &DC_OF(ex)->skip_cs, "TOTK_SKIP_CS", W_SKIP_CS, "DKB_SKIP_CS is active: direct dispatches of the listed NVN 2 compute stages are skipped");
 }
 
 static int skip_fs_listed(const VkExec *ex) {
@@ -3904,6 +3926,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (skip < 0) skip = getenv("DKB_SKIP_COMPUTE") != NULL;
     if (skip) return;
     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
+    if (skip_cs_listed(ex)) return;
     cb_res(ex);
     dummies_init();
     int present;
@@ -3913,6 +3936,10 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);   // ends the pass; earlier writes are visible to the shader
+    // DLSS's one-time warm-up (vk_dlss.c vk_dlss_warm) records NGX's own work into the command buffer, so it goes before
+    // the dispatch's binds, and the bound state is forgotten when it recorded. The replay thread's copy only: a
+    // TOTK_REPLAY_PAR helper translating a dispatch leaves it to the replay thread.
+    if (!OFF_MAIN(dc) && vk_dlss_wanted() && vk_dlss_warm(ex->cb, ex->fence)) vk_exec_draw_new_cb(ex), ex->dirty = VK_EXEC_DIRTY_ALL;
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     dc->c0_dim[0] = (uint32_t)d->x, dc->c0_dim[1] = (uint32_t)d->y, dc->c0_dim[2] = (uint32_t)d->z;
     c0_lay_set(ex, cs);
@@ -4294,7 +4321,7 @@ struct DrawCtx *vk_exec_draw_main(void) {
         ready = 1;
         draw_main.bind_gen = 1, draw_main.descriptor_serial = 1, draw_main.frame = &vk_exec_frame;
         draw_main.BS.on = draw_main.RS.on = draw_main.DP.on = draw_main.SM.on = draw_main.PM.on = -1;
-        draw_main.skip_vs.n = draw_main.skip_fs.n = -1, draw_main.GCL.on = -1;
+        draw_main.skip_vs.n = draw_main.skip_fs.n = draw_main.skip_cs.n = -1, draw_main.GCL.on = -1;
     }
     return &draw_main;
 }
@@ -4350,9 +4377,6 @@ VkExecFrame *vk_exec_draw_helper_frame(int k) { return &helper_ctx[k]->helper_fr
 // translator and a context of its own, made from the replay thread's like a helper's. Each slice starts from a copy of
 // the replay state (vk_exec_draw_rebase forgets what the context derived from the one before). The submitting thread
 // makes and refreshes the contexts while no slice is recorded.
-#define SLICE_THREADS 16
-static DrawCtx *slice_ctx[SLICE_THREADS];
-
 // Submitting thread, at the start of a sliced pass: contexts for threads 0 to threads-1 (made the first time), each
 // with the inline uniform updates noted so far (no update op is collected into a sliced pass, so they hold for it).
 // The spare descriptor pools grow with the threads that record: each takes pools of its own for every submission.

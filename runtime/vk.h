@@ -61,6 +61,7 @@ typedef struct {
     VkShaderStageFlags sg_pin_stages;  // 0: no pin, stages run at the device's subgroupSize
     int gpl;                           // VK_EXT_graphics_pipeline_library enabled with fast linking (TOTK_GPL=0: off)
     int amd;                           // an AMD GPU (vendor 0x1002), any driver
+    int intel;                         // an Intel GPU (vendor 0x8086), any driver
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
     int moltenvk;                      // the driver is MoltenVK (VK_DRIVER_ID_MOLTENVK)
     int radv;                          // Mesa's RADV (VK_DRIVER_ID_MESA_RADV)
@@ -492,6 +493,8 @@ int vk_dlss_wanted(void);
 int vk_dlss_instance_exts(const char **out, int max);
 int vk_dlss_device_exts(const char **out, int max);
 int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, const VkTexImage *out);
+int vk_dlss_warm(VkCommandBuffer cb, uint64_t fence);   // once, at the first compute dispatch: NGX and the model
+                                                      // load; 1 when it recorded into cb (rebind after it)
 void vk_dlss_release(void);   // device idle, before it goes away
 
 // ---- submission, synchronisation, completion (vk_sync.c, vk_backend.c)

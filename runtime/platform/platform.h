@@ -97,6 +97,7 @@ uint64_t plat_now_ns(void);               // monotonic, high resolution, arbitra
 uint64_t plat_counter(void);              // the OS's raw monotonic counter (QPC on Windows), plat_counter_hz per second
 uint64_t plat_counter_hz(void);
 void plat_timer_1ms(void);                // asks the OS for timed waits accurate to 1 ms or better (call before threads)
+void plat_console_hide(void);             // hides the console window when this process opened it (Windows); else nothing
 // t * num / den for a fixed num / den without a 128-bit division per call (__udivti3 took 5% of the game's running
 // samples through plat_now_ns and rt_ticks): t * q + (t * f >> 64) with q = num / den and f = (num % den) * 2^64 / den.
 // Monotonic in t and at most one below the exact quotient while t * (num % den) / den fits 64 bits.
@@ -145,6 +146,7 @@ void plat_cond_broadcast(PlatCond *c);
 typedef struct { PlatMutex m; uint32_t owner, depth; } PlatRMutex;
 #define PLAT_RMUTEX_INIT {PLAT_MUTEX_INIT, 0, 0}
 void plat_rmutex_lock(PlatRMutex *m);
+int plat_rmutex_trylock(PlatRMutex *m);   // 1 when acquired (or held by this thread already)
 void plat_rmutex_unlock(PlatRMutex *m);
 
 // One-time initialisation: the first caller runs fn(arg), every other caller waits until it returned. Zero-initialised

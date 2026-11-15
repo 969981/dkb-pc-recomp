@@ -34,6 +34,7 @@ static struct { VkBufferView zview; } standins;
 void rt_fatal(const char *fmt,...) { (void)fmt; abort(); }
 VkCtx *vk_ctx(void) { return &context; }
 int rt_knob(const char *name,const char *def) { (void)name; (void)def; return 0; } // dynamic uniform buffers off
+VkCaps vk_caps;  // bind_resources reads vk_caps.intel for the TOTK_DYN_UBO default
 int rt_ab(void) { return 0; }
 static void bind_stats(DrawCtx *dc,const VkPipeInfo *info) { (void)dc; (void)info; }
 static int bind_skip_on(DrawCtx *dc) { (void)dc; return 0; } // exercise every descriptor build

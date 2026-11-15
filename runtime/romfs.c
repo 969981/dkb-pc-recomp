@@ -14,7 +14,10 @@
 // Overlays: files listed in a directory's manifest.tsv are served in place of the originals. Each line names a RomFS
 // path, the overlay's size and SHA-256 and the original's SHA-256 ("-" adds a file the RomFS lacks; it is numbered
 // after the RomFS's own files, file_count + k in path order). The directories, in this order: TOTK_ROMFS_PATCHES and
-// TOTK_ROMFS_MODS; unset or "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
+// TOTK_ROMFS_MODS; "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
+// A folder without manifest.tsv is read as loose files (mods_scan.h): each file's path below the folder is its RomFS
+// path, a known one replaces the original and an unknown one is added; nothing is hashed. TOTK_ROMFS_MODS unset =
+// the "mods" folder next to the executable.
 // An overlay file is opened when the game opens it; its identity (volume, file id, size, last write) is kept from the
 // start check, and an open that finds another file there stops the game.
 #include <stdio.h>
@@ -25,6 +28,7 @@
 #include "fs.h"
 #include "host.h"
 #include "input.h"
+#include "mods_scan.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
 #include "platform/platform.h"
@@ -39,7 +43,7 @@ typedef struct { uint64_t offset, size; uint32_t name, len; } Entry;
 _Static_assert(sizeof(Entry) == 24, "index entry layout");
 
 typedef struct { uint32_t volume, pad; uint64_t file_id, size, write_time, create_time; } Identity;   // no padding
-typedef struct { uint64_t index, size; char *path, *name; Identity id; } Overlay;
+typedef struct { uint64_t index, size; char *path, *name; Identity id; int loose; } Overlay;   // loose: from a folder without manifest.tsv
 
 static uint8_t *index_bytes;
 static size_t index_size;
@@ -204,6 +208,60 @@ static uint32_t overlay_slot(uint64_t i) {
 }
 
 // ---- overlays
+static void overlay_push(uint64_t i, uint64_t size, const char *file, const char *name, Identity id, int loose) {
+    if (noverlay == overlay_cap) {
+        overlay_cap = overlay_cap ? overlay_cap * 2 : 16;
+        overlays = realloc(overlays, overlay_cap * sizeof *overlays);
+        need(overlays != NULL, "overlay table");
+    }
+    char *copy = strdup(file), *rel = strdup(name);
+    need(copy && rel, "overlay path copy");
+    overlays[noverlay++] = (Overlay){i, size, copy, rel, id, loose};
+}
+
+// A folder of loose files (no manifest.tsv): see the comment at the top of the file.
+typedef struct { size_t replace, add; } LooseScan;
+
+static int loose_file(const char *name, const char *file, uint64_t size, void *ctx) {
+    LooseScan *s = ctx;
+    if (!romfs_path_valid_relative(name)) {
+        rt_log("RomFS mods: skipped %s (not a valid RomFS path)", file);
+        return 1;
+    }
+    uint64_t i = lower(name);
+    int known = i < file_count && !strcmp(entry_name(entry(i)), name);
+    if (!known) {   // Windows lists the case on disk: a RomFS path that differs only in case is that file
+        for (uint64_t k = 0; k < file_count && !known; k++)
+            if (!strcasecmp(entry_name(entry(k)), name)) {
+                rt_log("RomFS mods: %s matches %s in another case; using the RomFS's", name, entry_name(entry(k)));
+                i = k, name = entry_name(entry(k)), known = 1;
+            }
+    }
+    PlatFile *f = open_read(file);
+    if (!f) {
+        rt_log("RomFS mods: skipped %s (cannot open it)", file);
+        return 1;
+    }
+    Identity id = identity_of(f);
+    plat_file_close(f);
+    overlay_push(known ? i : ADDED, id.size, file, name, id, 1);
+    if (known) s->replace++;
+    else s->add++;
+    if (s->replace + s->add <= 16) rt_log("RomFS mods: %s (%llu bytes) %s", name, (unsigned long long)size,
+                                          known ? "replaces the original" : "is added");
+    return 1;
+}
+
+static void overlay_load_loose(const char *dir) {
+    LooseScan s = {0, 0};
+    if (!mods_walk(dir, loose_file, &s)) {
+        rt_log("RomFS mods: none (%s)", dir);
+        return;
+    }
+    if (s.replace + s.add)
+        rt_log("RomFS mods: %zu files from %s (%zu replace, %zu add)", s.replace + s.add, dir, s.replace, s.add);
+}
+
 // Loads and checks one overlay folder. A failed check stops the game, except with optional set (the Xbox prompts
 // folder): the folder is dropped, the reason logged, and 0 returned. Returns 1 when the folder is loaded or has no
 // manifest.
@@ -213,7 +271,8 @@ static int overlay_load(const char *dir, int optional) {
     need(snprintf(path, sizeof path, "%s/manifest.tsv", dir) < (int)sizeof path, "overlay path");
     FILE *m = fopen(path, "rb");
     if (!m) {
-        rt_log("RomFS overlay: none (%s)", path);
+        if (plat_fs_kind(dir) == PLAT_FS_DIR) overlay_load_loose(dir);
+        else rt_log("RomFS overlay: none (%s)", path);
         return 1;
     }
     char line[8192];
@@ -257,14 +316,7 @@ static int overlay_load(const char *dir, int optional) {
         plat_file_close(f);
         if (strcmp(hex, sha)) BAD("RomFS overlay: %s has SHA-256 %s, its manifest says %s", file, hex, sha);
         hashed += e.size + size;
-        if (noverlay == overlay_cap) {
-            overlay_cap = overlay_cap ? overlay_cap * 2 : 16;
-            overlays = realloc(overlays, overlay_cap * sizeof *overlays);
-            need(overlays != NULL, "overlay table");
-        }
-        char *copy = strdup(file), *rel = strdup(name);
-        need(copy && rel, "overlay path copy");
-        overlays[noverlay++] = (Overlay){i, size, copy, rel, id};
+        overlay_push(i, size, file, name, id, 0);
         if (noverlay - first <= 16)
             rt_log("RomFS overlay: %s (%llu bytes) %s", name, size, add ? "is added" : "replaces the original");
     }
@@ -438,16 +490,36 @@ static void overlay_init(void) {
         def[strlen(def) - strlen("/manifest.tsv")] = 0;
         patches = def;
     }
-    const char *dirs[2] = {patches, cfg_get("TOTK_ROMFS_MODS")};
+    const char *mods = cfg_get("TOTK_ROMFS_MODS");
+    char mods_def[PLAT_PATH_MAX + 8], *cut;
+    if (!mods || !*mods) {   // unset: the mods folder next to the executable
+        int len = plat_exe_path(mods_def, PLAT_PATH_MAX);
+        if (len > 0 && len < PLAT_PATH_MAX && (cut = plat_last_sep(mods_def))) {
+            strcpy(cut, "/mods");
+            mods = mods_def;
+        }
+    }
+    const char *dirs[2] = {patches, mods};
     for (int i = 0; i < 2; i++)
         if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], 0);
     heapdef_overlay();
     added_init();
     if (noverlay) qsort(overlays, noverlay, sizeof *overlays, overlay_order);
     for (size_t k = 1; k < noverlay; k++)
-        if (overlays[k].index == overlays[k - 1].index)
+        if (overlays[k].index == overlays[k - 1].index) {
+            if (overlays[k].loose != overlays[k - 1].loose) {   // a loose mod wins over the port's own patched file
+                size_t drop = overlays[k].loose ? k - 1 : k;
+                rt_log("RomFS mods: %s replaces the port's own patched file", overlays[k].name);
+                free(overlays[drop].path);
+                free(overlays[drop].name);
+                memmove(&overlays[drop], &overlays[drop + 1], (noverlay - drop - 1) * sizeof *overlays);
+                noverlay--;
+                k--;
+                continue;
+            }
             rt_fatal("RomFS overlay: %s and %s replace the same file %s", overlays[k - 1].path, overlays[k].path,
                      overlays[k].name);
+        }
 }
 
 // ---- start

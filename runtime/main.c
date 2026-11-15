@@ -547,6 +547,8 @@ int main(int argc, char **argv) {
     if (cfg.seconds && mode) return usage(argv[0]);
     log_open(!mode);
     if (!mode) {
+        // console = 0: a frontend that starts the game gets no console window in front of the game's (#238).
+        if (!cfg_bool("TOTK_CONSOLE")) plat_console_hide();
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         rt_boot();
         return 0;

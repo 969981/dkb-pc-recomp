@@ -96,6 +96,12 @@ cmd = ["{python}", "tests/perf_evidence_test.py"]
 # ------------------------------------------------------------------ tier 1
 
 [[test]]
+name = "romfs-image"
+tier = 1
+area = "tools"
+cmd = ["{python}", "tests/romfs_image_test.py"]
+
+[[test]]
 name = "flags-check"
 tier = 1
 area = "cpu"
@@ -377,6 +383,12 @@ area = "os"
 cmd = ["{python}", "tests/aoc_romfs_test.py", "--cc", "{cc}", "--out", "{out}"]
 
 [[test]]
+name = "mods-scan"
+tier = 1
+area = "os"
+cmd = ["{python}", "tests/mods_scan_test.py", "--cc", "{cc}", "--out", "{out}"]
+
+[[test]]
 name = "call-fallthrough"
 tier = 1
 area = "shaders"
@@ -468,6 +480,18 @@ area = "os"
 cmd = ["{python}", "tests/input_script_test.py", "--cc", "{cc}"]
 
 [[test]]
+name = "controller-hold"
+tier = 1
+area = "os"
+cmd = ["{python}", "tests/controller_hold_test.py", "--cc", "{cc}"]
+
+[[test]]
+name = "controller-devices"
+tier = 1
+area = "os"
+cmd = ["{python}", "tests/controller_devices_test.py", "--cc", "{cc}"]
+
+[[test]]
 name = "jcms-abi"
 tier = 1
 area = "os"
@@ -478,6 +502,12 @@ name = "msort"
 tier = 1
 area = "tools"
 cmd = ["{python}", "tests/msort_test.py", "--cc", "{cc}", "--out", "{out}"]
+
+[[test]]
+name = "usnap-prune"
+tier = 1
+area = "gfx"
+cmd = ["{python}", "tests/usnap_prune_test.py", "--cc", "{cc}", "--out", "{out}"]
 
 [[test]]
 name = "nan-guard-spirv"
@@ -758,3 +788,9 @@ name = "runtime-sources"
 tier = 0
 area = "tools"
 cmd = ["{python}", "tests/runtime_sources_test.py"]
+
+[[test]]
+name = "nup-aoc"
+tier = 1
+area = "tools"
+cmd = ["{python}", "tests/nup_aoc_test.py"]

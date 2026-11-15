@@ -125,6 +125,9 @@
 # in front again. 0: it pauses when its window loses focus, as it does on the Switch when Home is pressed; a load
 # interrupted that way can stop for good. Read at each focus change.
 # assume_focus = 1
+# 0 hides the console window the game opens next to its own, for frontends such as Playnite; the log still goes to
+# logs/dkb.log. A command prompt the game was started from stays as it is. Changing this needs a restart.
+# console = 1
 # Performance overlay in the top right corner: off, fps, or full (frame rate, mean and longest frame time). F10
 # cycles the modes in game, as do both stick clicks (L3 + R3) on a controller.
 # perf_overlay = off
@@ -224,6 +227,13 @@
 # audio_channels = auto
 
 [input]
+# Choose the controller in F1 > Controls > Controller Device. The saved device key is opaque.
+# Saved manual choices apply at startup, with first-available fallback. New connections take over automatically.
+# Disconnecting the active controller falls back to another device. Automatic changes do not overwrite this preference.
+# pad_device = auto
+# Default: Plus + Minus opens settings. Opt in to a physical Start + Back fullscreen hold instead (0.5 s).
+# Guide/Home and keyboard F1 still open settings in either mode.
+# pad_fullscreen_hold = 0
 # Gamepad motion controls (0 = off) and vibration (0 = off).
 # motion = 1
 # rumble = 1
@@ -264,7 +274,8 @@
 # bind_Y = pad:north, key:mouse_l
 
 [files]
-# Folder with RomFS mod files that replace or add game files. Default: none.
+# Folder with RomFS mod files that replace or add game files (docs/dkb-testing.md, "Mods"). Default: the mods folder next
+# to dkb.exe; 0 turns mods off.
 # romfs_mods =
 
 [diagnostics]
