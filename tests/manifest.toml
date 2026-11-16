@@ -571,6 +571,12 @@ area = "shaders"
 cmd = ["{python}", "tests/spirv_screen_uv_test.py", "--cc", "{cc}", "--spirv-val", "{spirv_val}", "--out", "{out}"]
 
 [[test]]
+name = "spirv-instance-c4"
+tier = 1
+area = "shaders"
+cmd = ["{python}", "tests/spirv_instance_c4_test.py", "--cc", "{cc}", "--spirv-val", "{spirv_val}", "--out", "{out}"]
+
+[[test]]
 name = "system-services"
 tier = 1
 area = "os"

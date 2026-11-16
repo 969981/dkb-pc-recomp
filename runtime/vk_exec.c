@@ -2069,7 +2069,12 @@ static void par_record(int i, ParPool *pp, VkExec *w, struct DrawCtx *dc) {
     vk_usnap_view(par_usd[PC.supd[i]] + 1);   // the drops made before the pass began
     par_slice = 1, par_hazard = 0;
     vk_mem_count_quiet(1), vk_usnap_quiet(1);
-    for (int k = PC.start[i], end = PC.end[i]; k < end; k++) par_op(w, PC.ops[k]->op, nvn_op_payload(PC.ops[k]));
+    int merge = vk_exec_draw_merge_on();   // TOTK_DRAW_MERGE: runs of draws that differ only in c4 go as instances
+    for (int k = PC.start[i], end = PC.end[i]; k < end; k++) {
+        int draws, used = merge && PC.ops[k]->op == OP_DRAW_IDX ? vk_exec_draw_merge(w, PC.ops + k, end - k, &draws) : 0;
+        if (used) k += used - 1;   // the collection counted the run's draws (par_take)
+        else par_op(w, PC.ops[k]->op, nvn_op_payload(PC.ops[k]));
+    }
     par_slice = 0;
     vk_mem_count_quiet(0), vk_usnap_quiet(0), vk_usnap_view(0);
     if (vkEndCommandBuffer(cb) != VK_SUCCESS) rt_fatal("vk: secondary command buffer end failed");
@@ -2521,6 +2526,34 @@ static void par_hazards(int hazard, uint64_t sig) {
                PAR_BAN_AFTER);
 }
 
+// TOTK_DRAW_MERGE in a pass that is not sliced: the run of draws at *hp, when vk_exec_draw_merge replays it, with the
+// walk's counts of its draws; *hp then is the op after it. Only in a pass par_start has looked at, so that no draw of
+// the run would have started a sliced pass, and without helper parts or their comparison, whose ranges are counted
+// in draws (par_watch). The ops looked at are those the run can hold: indexed draws and uniform block binds, up to the
+// first draw whose arguments differ from the first one's, which ends any run. Without that bound, a stretch of
+// different draws with only uniform binds between them would be gathered again from each of its draws.
+#define MERGE_OPS 2048
+static int merge_walk(VkExec *ex, const op_hdr **hp) {
+    static const op_hdr *ops[MERGE_OPS];
+    if (ex != &X || P.next || P.slot || par_no_split || (par_mode && !(ex->in_pass && pass_tried)) || !vk_exec_draw_merge_on())
+        return 0;
+    const op_hdr *h = *hp;
+    const p_draw_idx *d0 = nvn_op_payload(h);
+    int n = 0;
+    while (n < MERGE_OPS && h->size >= sizeof *h && !(h->size & 7) && (h->op == OP_DRAW_IDX || h->op == OP_BIND_UBO)) {
+        if (n && h->op == OP_DRAW_IDX && memcmp(nvn_op_payload(h), d0, sizeof *d0)) break;
+        ops[n++] = h, h = nvn_op_next(h);
+    }
+    int draws, used = vk_exec_draw_merge(ex, ops, n, &draws);
+    if (!used) return 0;
+    vk_exec_frame.draws_seen += (uint64_t)draws, split_draws += draws, draws_total += draws;
+    if (ex->in_pass) pass_draws += draws;
+    if (pd_n) par_settle_ready(ex);   // as walk does after every op, so a held part does not wait out the run
+    if (split_draws >= split_n) maybe_split(ex);
+    *hp = nvn_op_next(ops[used - 1]);
+    return 1;
+}
+
 static void walk(VkExec *ex, const op_hdr *h, int depth) {
     for (;;) {
         while (h == P.next && !depth) h = par_step(ex, h);
@@ -2556,6 +2589,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_BARRIER: vk_exec_barrier(ex); break;
         case OP_WAIT_SYNC: break;   // submit preparation waited before any replay/snapshot; source may be gone
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
+            if (h->op == OP_DRAW_IDX && merge_walk(ex, &h)) continue;
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) {
                 vk_exec_frame.draws_seen++, split_draws++;
                 if (P.slot) par_watch();

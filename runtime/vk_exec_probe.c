@@ -841,8 +841,52 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
     CHECK(xf_submit(b, stream, p), "fence_wait of the third mirror submission timed out");
     for (int i = 0; i < 0x800; i++) CHECK(m[0x4000 + i] == 0x11, "CPU byte %#x beside a fill is %02x", i, m[0x4000 + i]);
     for (int i = 0; i < 0x800; i++) CHECK(m[0x4800 + i] == 0x77, "fill byte %#x is %02x", i, m[0x4800 + i]);
+    // 4: a uniform update through the mirror, reported at its fence (vk_gpu_written_into), is its page's newest write, so
+    // the next sync leaves the page out (vk_memory.c mirror_sync). The probe then changes a guest byte of the page and
+    // takes the write-watch bit itself, so no stamp records the change: a copy from the page reads the mirror's byte,
+    // and with TOTK_MIRROR_OWN=0, which copies the page in again, the guest's.
+    int skip_own = RT_KNOB_ON(rt_knob("MIRROR_OWN", "1"));
+    memset(m + 0x5000, 0x21, 0x4000);
+    static _Alignas(8) uint8_t ub[sizeof(p_update_ub) + 256];
+    p_update_ub uh = {a + 0x5000, 256};
+    memcpy(ub, &uh, sizeof uh);
+    memset(ub + sizeof uh, 0x42, 256);
+    p = put(stream, OP_BEGIN, NULL, 0);
+    p = put(p, OP_UPDATE_UB, ub, sizeof ub);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the fourth mirror submission timed out");
+    for (int i = 0; i < 256; i++) CHECK(m[0x5000 + i] == 0x42, "uniform update byte %d is %02x", i, m[0x5000 + i]);
+    m[0x5900] = 0x99;
+    uint64_t pages[4];
+    mem_written_pages(a + 0x5000, 0x1000, pages, 4);
+    p = put(stream, OP_BEGIN, NULL, 0);
+    const p_copy_b2b c4 = {a + 0x5000, a + 0x6000, 4096};
+    p = put(p, OP_COPY_B2B, &c4, sizeof c4);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the fifth mirror submission timed out");
+    for (int i = 0; i < 256; i++) CHECK(m[0x6000 + i] == 0x42, "B2B of the updated bytes: byte %d is %02x", i, m[0x6000 + i]);
+    CHECK(m[0x6900] == (skip_own ? 0x21 : 0x99), "B2B from a page the mirror wrote last read %02x, expected %02x (%s)",
+          m[0x6900], skip_own ? 0x21 : 0x99, skip_own ? "the sync copied the page in again" : "TOTK_MIRROR_OWN=0");
+    // 5: a CPU write to the page after the sync of the submission that updates it, stamped before that update's fence
+    // (here by a check as the texture cache makes), is newer than the mirror: the fence's stamp is not the mirror's own,
+    // and the next sync copies the page, the CPU byte and the probe's unstamped one included.
+    memset(ub + sizeof uh, 0x43, 256);
+    p = put(stream, OP_BEGIN, NULL, 0);
+    p = put(p, OP_UPDATE_UB, ub, sizeof ub);
+    p = put(p, OP_END, NULL, 0);
+    uint64_t handle = (uint64_t)(uintptr_t)stream;
+    uint64_t f5 = b->submit(&handle, 1, rt_ticks());
+    m[0x5800] = 0x77;
+    uint32_t now;
+    vk_mem_changed(a + 0x5000, 0x1000, 0, &now);
+    CHECK(b->fence_wait(f5, 5000000000ull), "fence_wait of the sixth mirror submission timed out");
+    p = put(stream, OP_BEGIN, NULL, 0);
+    const p_copy_b2b c5 = {a + 0x5000, a + 0x8000, 4096};
+    p = put(p, OP_COPY_B2B, &c5, sizeof c5);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the seventh mirror submission timed out");
+    for (int i = 0; i < 256; i++) CHECK(m[0x8000 + i] == 0x43, "B2B of the second update: byte %d is %02x", i, m[0x8000 + i]);
+    CHECK(m[0x8800] == 0x77, "a CPU write stamped before the update's fence did not reach the mirror (%02x)", m[0x8800]);
+    CHECK(m[0x8900] == 0x99, "the page copied in after the CPU write lacks the guest byte (%02x)", m[0x8900]);
     b->pool_fini(&pool);
-    *bytes = 4096 + 0x1000 + 4096 + 0x1000;
+    *bytes = 4096 + 0x1000 + 4096 + 0x1000 + 257 + 258;
     return 0;
 }
 

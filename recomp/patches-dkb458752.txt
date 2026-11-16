@@ -167,6 +167,9 @@ guard poolguard main 429594 429c54 ptr x10 f875794a
 # the guard continues the id loop at 11ac28.
 guard poolguard main 11acd0 11ac28 ptr x8 f9400909
 
+# #136 (1.0.0 main+0x1692c00): the call to f_7000474574 (1.0.0 f_7000534324) in the 3.2.0 walk, skipped to the loop tail at 1887e4c.
+guard poolguard main 1887df0 1887e4c ptr x0 97afb1e1
+
 # #229: the per-record table loads of f_7000a55520 (1.0.0 f_7000a37520, -0x1e000): the guards of patches-dkb100.txt.
 # Opt-out: DKB_FIX_RECORD_GUARD=0.
 set recguard DKB_FIX_RECORD_GUARD 1

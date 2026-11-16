@@ -49,6 +49,7 @@
 #include "host.h"
 #include "nvn_geometry_control.h"
 #include "platform/platform.h"
+#include "spirv_instance_c4.h"
 
 #define CONTROL_SIZE 0x880
 // NVN 2 compute c0: a 16-byte driver head, eight root tables padded separately to 16 bytes (word counts +0xa9..0xb0),
@@ -114,6 +115,11 @@ struct GfxShader {
     int has_c0;
     uint64_t origin;                                       // NVN 2 stage origin: note_origin, or nvn2-origins.bin by iid
     uint64_t spirv_fnv;                                    // FNV-1a 64 of spirv; 0 until gfx_shader_spirv_fnv fills it
+    // gfx_shader_instance_c4: the copy that reads c4 per instance (made on first use, freed with this shader), whether
+    // it was tried (0 not yet, 1 made, 2 the stage cannot be rewritten), and on a copy the shader it was made from
+    struct GfxShader *inst_c4;
+    int inst_c4_state;
+    const struct GfxShader *variant_of;
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -552,6 +558,7 @@ static GfxShader *mem_find(const uint8_t key[32]) {
 }
 
 static void shader_free(GfxShader *s) {
+    if (s->inst_c4) free(s->inst_c4->spirv), free(s->inst_c4);   // the copy shares the reflection
     for (int k = 0; k < GFX_RES_KINDS; k++) free(s->res[k]);
     free(s->spirv), free(s->reflection), free(s);
 }
@@ -2513,6 +2520,52 @@ uint64_t gfx_shader_spirv_fnv(const GfxShader *s) {
 }
 
 int gfx_shader_stage(const GfxShader *s) { return s->stage; }
+
+// The copy shares s's reflection and keys: only its SPIR-V and the varying at GFX_INSTANCE_C4_LOC differ. Pipelines
+// key on the shader pointer, so the copy's pipelines are its own; vk_pipeline.c keys_note leaves them out of the
+// pipeline records, which name shaders by input id. Made under variant_lock: two threads asking at once get one copy.
+static PlatMutex variant_lock = PLAT_MUTEX_INIT;
+const GfxShader *gfx_shader_instance_c4(const GfxShader *s) {
+    if (!s || s->variant_of) return NULL;
+    int st = __atomic_load_n(&s->inst_c4_state, __ATOMIC_ACQUIRE);
+    if (st) return st == 1 ? s->inst_c4 : NULL;
+    GfxShader *m = (GfxShader *)s;
+    plat_mutex_lock(&variant_lock);
+    if (!m->inst_c4_state) {
+        int vertex = s->stage == GFX_STAGE_VS;
+        uint32_t set = ~0u, binding = ~0u, loc = GFX_INSTANCE_C4_LOC;
+        int ok = vertex || s->stage == GFX_STAGE_FS;
+        for (int i = 0; ok && i < s->nres[GFX_RES_UBO]; i++) {
+            const GfxShaderRes *r = &s->res[GFX_RES_UBO][i];
+            int n = r->count ? r->count : 1;
+            if (r->slot <= 4 && r->slot + n > 4) {
+                if (n > 1) ok = 0;   // c4 inside an array of blocks: not the layout the rewrite knows
+                else set = r->set, binding = r->binding;
+            }
+        }
+        if (ok && ((vertex ? s->out_mask : s->in_mask) >> loc & 1)) ok = 0;
+        uint64_t words = 0;
+        unsigned chains = 0;
+        uint32_t *w = ok ? spirv_instance_c4(s->spirv, s->words, vertex, set, binding, loc, &words, &chains) : NULL;
+        GfxShader *v = w ? malloc(sizeof *v) : NULL;
+        if (v) {
+            *v = *s;
+            v->next = NULL, v->spirv = w, v->words = words, v->spirv_fnv = 0;
+            v->inst_c4 = NULL, v->inst_c4_state = 2, v->variant_of = s;
+            GfxShaderIo io = {GFX_TYPE_SINT, 1, 0, 32};
+            if (vertex) v->out[loc] = io, v->out_mask |= 1u << loc;
+            else v->in[loc] = io, v->in_mask |= 1u << loc;
+            m->inst_c4 = v;
+        } else {
+            free(w);
+        }
+        __atomic_store_n(&m->inst_c4_state, v ? 1 : 2, __ATOMIC_RELEASE);
+    }
+    plat_mutex_unlock(&variant_lock);
+    return s->inst_c4_state == 1 ? s->inst_c4 : NULL;
+}
+
+int gfx_shader_is_variant(const GfxShader *s) { return s && s->variant_of; }
 const GfxShaderGeometry *gfx_shader_geometry(const GfxShader *s) { return s->stage == GFX_STAGE_GS ? &s->geometry : NULL; }
 
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res) {

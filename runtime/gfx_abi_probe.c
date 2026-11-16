@@ -42,6 +42,10 @@ static void check_write_watch(void) {
     const RtGuestLayout *g = mem_layout();
     uint64_t heap = 0, pages[8], n;
     CHECK(mem_set_heap_size(0x200000, &heap) == 0 && heap == g->heap.base, "SetHeapSize 2 MiB");
+    // With TOTK_HEAP_LAZY (the Windows default) the new heap is only reserved, and memory.c freeze_locked never freezes
+    // a heap region with reserved pages. Commit it the way vk_memory.c does before the driver imports guest memory, so
+    // the region below is the kind that gets frozen: committed and idle.
+    mem_touch(heap, 0x200000);
     mem_written_pages(heap, 0x200000, pages, 8);   // drop whatever the commit itself marked
     volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)heap;
     p[0x5000] = 1;

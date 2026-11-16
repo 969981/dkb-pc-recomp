@@ -528,6 +528,9 @@ class Check(Step):
             command += ['-I', ctx.layout.deps / 'include']
         if os.name != 'nt':
             command += ['-ldl']
+        if ctx.layout.sysroot:
+            # The release's clang has no system headers of its own: build against the sysroot, as the game does (#293)
+            command += ['--target=x86_64-linux-gnu', f'--sysroot={ctx.layout.sysroot}']
         run_tool(ctx, self.id, command)
         result = subprocess.run([str(exe)], capture_output=True, text=True)
         try:

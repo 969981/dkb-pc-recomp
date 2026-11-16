@@ -42,6 +42,7 @@ unsigned rt_trace;
 int vk_mirror_on;
 static unsigned checks, failures, wrote, dropped, noted, copies;
 static uint64_t last_note_addr, last_note_size;
+static VkBuffer last_note_buf;
 #define CHECK(c, message) do { checks++; if (!(c)) { failures++; fprintf(stderr, "FAIL: %s\n", message); } } while (0)
 void rt_fatal(const char *fmt, ...) { (void)fmt; abort(); }
 static void warn_once(int id, const char *fmt, ...) { (void)id; (void)fmt; }
@@ -60,8 +61,8 @@ int vk_mem_gpu_kept(const VkMemSpan *span, uint64_t n) { (void)span; (void)n; wr
 void vk_usnap_drop(uint64_t addr, uint64_t n) { (void)addr; (void)n; dropped++; }
 int vk_usnap_covers(uint64_t addr, uint64_t n) { (void)addr; (void)n; return 0; }
 void vk_exec_par_order_hazard(void) {}
-static void note_written(VkExec *ex, uint64_t addr, uint64_t n) {
-    (void)ex; noted++; last_note_addr=addr; last_note_size=n;
+static void note_written(VkExec *ex, uint64_t addr, uint64_t n, VkBuffer buf) {
+    (void)ex; noted++; last_note_addr=addr; last_note_size=n; last_note_buf=buf;
 }
 static uint8_t scratch_data[4096];
 static uint8_t *scratch(VkExec *ex, uint64_t n, VkBuffer *buffer, VkDeviceSize *offset) {
@@ -163,7 +164,8 @@ int main(void) {
     info=ssbo_info(&ex,NVN_STAGE_CS,&typed,1);
     CHECK(info.range==16 && wrote==1 && dropped==1 && noted==1,
           "valid guarded output keeps mirror/snapshot/write accounting");
-    CHECK(last_note_addr==a && last_note_size==16,"written range is the exact bound range");
+    CHECK(last_note_addr==a && last_note_size==16 && last_note_buf==info.buffer,
+          "written range is the exact bound range, with the buffer the shader writes");
     wrote=dropped=noted=0;
     memcpy(&ex.push[1][0][0],&scalar,8);
     info=ssbo_info(&ex,NVN_STAGE_CS,&root,1);

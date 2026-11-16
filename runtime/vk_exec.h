@@ -230,6 +230,12 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
 // vk_exec_draw.c: OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BIND_* (program, state, vattr, vstream, vbuf, ubo, ssbo, tex,
 // samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
+// TOTK_DRAW_MERGE (vk_exec_draw.c): ops[0..n) are the ops from an indexed draw on, in replay order. When they start a
+// run of draws that differ only in uniform block c4, the run is replayed here, as one instanced draw when it can be,
+// and the return is the ops replayed (*draws: the draws among them); 0: the caller replays ops[0]. merge_on: the
+// knob is on for this draw (TOTK_DRAW_MERGE=ab alternates it), so that callers gather the ops only then.
+int vk_exec_draw_merge(VkExec *ex, const op_hdr *const *ops, int n, int *draws);
+int vk_exec_draw_merge_on(void);
 // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
 VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,

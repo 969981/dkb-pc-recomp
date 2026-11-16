@@ -128,6 +128,10 @@ guard poolguard main 410794 410e54 ptr x10 f875794a
 # loop instead (108468): the id is not cached and may come back on a later pass.
 guard poolguard main 108510 108468 ptr x8 f9400909
 
+# #136: the walk in main+0x1692ac4 passes a null slot to f_7000534324 (the call at 1692c00); the guard sits on the
+# bl and skips it to 1692c5c, the loop tail that reloads x8 from [x20] and uses no result of the call.
+guard poolguard main 1692c00 1692c5c ptr x0 97ba85c9
+
 # Text box per-character transform setter main+0x84cd40 (issues 157, 206, 173). The layout animation reader
 # main+0x82fee0 calls it for each entry of an FLCT section (per-character transform) with x1 = 0 or 1; it stores
 # the float in s0 through the object's +0x150 block (at +0 or +4) and sets bit 0x4 of the u16 at +0x114. The block

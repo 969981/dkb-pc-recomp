@@ -254,8 +254,9 @@ int main(int argc,char **argv) {
     CHECK((uintptr_t)out.buffer==22 && out.offset==256 && out.range==sizeof output_words && uses==1 && gpu_writes==0 && kept_writes==1 &&
           drops==1 && counts==1 && last_use==VK_MUSE_SSBO,"GS storage resolves user-c3 pointer, stays in VRAM and drops snapshots");
     CHECK(callback_resources.nwritten==1 && pending_writes==1 && pending_addr==(uintptr_t)output_words &&
-          pending_size==sizeof output_words,"GS write range is retained for fence completion");
-    note_written(&ex,(uintptr_t)output_words,sizeof output_words);CHECK(pending_writes==1,"same write range retained once");
+          pending_size==sizeof output_words && callback_resources.written[0].buf==out.buffer,
+          "GS write range is retained for fence completion with the VRAM buffer the shader wrote");
+    note_written(&ex,(uintptr_t)output_words,sizeof output_words,out.buffer);CHECK(pending_writes==1,"same write range retained once");
     Nvn2C0Layout compute_layout={0};ctx.c0_lay=&compute_layout;
     p_bind_buf guarded=guarded_storage_binding(&ex,NVN_STAGE_GS,&buffer);
     CHECK(!guarded.addr && !guarded.size,"guarded compute candidates cannot inherit an ordinary GS pointer block");

@@ -36,7 +36,8 @@ patches.h (set names, switches, the page address) next to layout.h for the runti
 A `guard` line adds a check before an instruction and a branch to an instruction of the same function, for game code
 that would follow a bad pointer: the check is a runtime function of one register (runtime/patches.c rt_guard_<kind>),
 and the branch is an edge of the function's flow like any other, so the register and flag plans see it. The guarded
-instruction must be an unpatched op that writes no flags and does not escape (no rt_svc/rt_brk/rt_udf call): the guard
+instruction must be an unpatched op that writes no flags and does not escape (no rt_svc/rt_brk/rt_udf call), or an
+unpatched bl, whose target then must not read flags set before the call (the flag plan sends the call's state): the guard
 branches away before it, so its register and flag state at the target is the one of the instruction before it. The
 generator refuses a guarded instruction that is not. The optional st32 action writes guest memory on the failing path
 only, for game state the target would otherwise read stale (a cached key, say).

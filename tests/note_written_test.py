@@ -2,7 +2,8 @@
 
 The actual note_written, its hash and grow run against a plain list that searches every entry, the behaviour the table
 replaced. Each call must give the same answer as that list: every distinct address and size once, in first-write order,
-with one vk_mem_gpu_pending for each. No Vulkan, guest memory or driver is used.
+with one vk_mem_gpu_pending for each, and the buffer the GPU wrote kept only while every write of the range named the
+same one. No Vulkan, guest memory or driver is used.
 """
 import argparse
 import os
@@ -30,7 +31,9 @@ typedef struct DrawCtx { char none; } DrawCtx;
 typedef struct VkExec { DrawCtx *draw; } VkExec;
 static DrawCtx ctx;
 static VkExec exec = {&ctx};
-typedef struct { uint64_t addr, size; } Range;
+typedef struct VkBuffer_T *VkBuffer;
+#define VK_NULL_HANDLE NULL
+typedef struct { uint64_t addr, size; VkBuffer buf; } Range;
 typedef struct {
     Range *written;
     int nwritten, cwritten;
@@ -50,29 +53,39 @@ static CbRes *cb_res(VkExec *ex) { (void)ex; return &res; }
 @GROW@
 static void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
     if (npending == cpending) pending = grow(pending, &cpending, sizeof *pending);
-    pending[npending++] = (Range){addr, size};
+    pending[npending++] = (Range){addr, size, VK_NULL_HANDLE};
 }
 @NOTE@
 
 static Range *model;
 static int nmodel, cmodel;
 
-static void note_model(uint64_t addr, uint64_t size) {
+static void note_model(uint64_t addr, uint64_t size, VkBuffer buf) {
     for (int i = 0; i < nmodel; i++)
-        if (model[i].addr == addr && model[i].size == size) return;
+        if (model[i].addr == addr && model[i].size == size) {
+            if (model[i].buf != buf) model[i].buf = VK_NULL_HANDLE;
+            return;
+        }
     if (nmodel == cmodel) model = grow(model, &cmodel, sizeof *model);
-    model[nmodel++] = (Range){addr, size};
+    model[nmodel++] = (Range){addr, size, buf};
 }
 
-static void note(uint64_t addr, uint64_t size) {
-    note_written(&exec, addr, size);
-    note_model(addr, size);
+// Two buffers the GPU may write a range through; note uses the first.
+static char buffer_a, buffer_b;
+#define BUF_A ((VkBuffer)(void *)&buffer_a)
+#define BUF_B ((VkBuffer)(void *)&buffer_b)
+
+static void note_buf(uint64_t addr, uint64_t size, VkBuffer buf) {
+    note_written(&exec, addr, size, buf);
+    note_model(addr, size, buf);
 }
+static void note(uint64_t addr, uint64_t size) { note_buf(addr, size, BUF_A); }
 
 static void check(const char *name) {
-    int same = res.nwritten == nmodel && npending == nmodel &&
-               !memcmp(res.written, model, sizeof *model * (size_t)nmodel) &&
-               !memcmp(pending, model, sizeof *model * (size_t)nmodel);
+    int same = res.nwritten == nmodel && npending == nmodel;
+    for (int i = 0; same && i < nmodel; i++)
+        same = res.written[i].addr == model[i].addr && res.written[i].size == model[i].size &&
+               res.written[i].buf == model[i].buf && pending[i].addr == model[i].addr && pending[i].size == model[i].size;
     int table = res.written_slots && !(res.written_slots & (res.written_slots - 1)) &&
                 (uint32_t)res.nwritten < res.written_slots;
     if (!same || !table) failures++, fprintf(stderr, "FAIL %s: %d ranges, %d in the model\n", name, res.nwritten, nmodel);
@@ -98,6 +111,17 @@ int main(void) {
     check("address and size each tell ranges apart");
     note(0, 0), note(0, 0), note(UINT64_MAX, UINT64_MAX), note(UINT64_MAX, UINT64_MAX);
     check("the extreme values are ordinary keys");
+    reset();
+
+    // The buffer stays while every write of a range names it; one write through another buffer, or through none, drops
+    // it for good, since the range then holds bytes the first buffer did not write.
+    note_buf(0x3000, 0x40, BUF_A), note_buf(0x3000, 0x40, BUF_A);
+    note_buf(0x4000, 0x40, BUF_A), note_buf(0x4000, 0x40, BUF_B), note_buf(0x4000, 0x40, BUF_A);
+    note_buf(0x5000, 0x40, BUF_B), note_buf(0x5000, 0x40, VK_NULL_HANDLE);
+    note_buf(0x6000, 0x40, VK_NULL_HANDLE), note_buf(0x6000, 0x40, BUF_A);
+    check("the written buffer");
+    if (res.nwritten != 4 || res.written[0].buf != BUF_A || res.written[1].buf || res.written[2].buf || res.written[3].buf)
+        failures++, fprintf(stderr, "FAIL the written buffer: a range kept a buffer another write did not name\n");
     reset();
 
     // Around each table growth, then every entry again: an entry lost while the table was rebuilt would be added twice.

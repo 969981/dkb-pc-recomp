@@ -566,8 +566,8 @@ static int copy_decoded_astc(VkExec *ex, const p_copy_t2t *p) {
     if (!p->src || p->src->d.format < 0x79 || p->src->d.format > 0x94) return 0;
     TexVkFormat f;
     if (!tex_vk_format(p->src->d.format, &f) || !f.astc_bw) return 0;
-    if (!p->dst || p->src->d.format != p->dst->d.format || f.astc_bc || p->flags ||
-        (f.vk != VK_FORMAT_R8G8B8A8_UNORM && f.vk != VK_FORMAT_R8G8B8A8_SRGB)) {
+    if (!p->dst || p->src->d.format != p->dst->d.format || p->flags ||
+        (!f.astc_bc && f.vk != VK_FORMAT_R8G8B8A8_UNORM && f.vk != VK_FORMAT_R8G8B8A8_SRGB)) {
         warn_once(W_COPY, "decoded ASTC copy requires matching RGBA8 formats and no copy flags: skipped");
         return 1;
     }
@@ -581,7 +581,11 @@ static int copy_decoded_astc(VkExec *ex, const p_copy_t2t *p) {
     Sub s, d;
     if (!decoded_astc_sub(p->src, &p->sv, p->has_sv, &p->sr, &f, si, &s) ||
         !decoded_astc_sub(p->dst, &p->dv, p->has_dv, &p->dr, &f, di, &d) || si->image == di->image ||
-        s.w != d.w || s.h != d.h || s.nz != d.nz) {
+        s.w != d.w || s.h != d.h || s.nz != d.nz ||
+        // BC3 images keep the ASTC texel extents, so the copy must also sit on BC3's 4x4 grid (or end at the mip edge).
+        (f.astc_bc && (((s.x | s.y | d.x | d.y) & 3) ||
+                       ((s.w & 3) && (s.x + s.w != max1(si->width >> s.level) || d.x + d.w != max1(di->width >> d.level))) ||
+                       ((s.h & 3) && (s.y + s.h != max1(si->height >> s.level) || d.y + d.h != max1(di->height >> d.level)))))) {
         warn_once(W_COPY, "decoded ASTC copy requires distinct non-bound 2D images, valid views/block regions and equal extents: skipped");
         return 1;
     }

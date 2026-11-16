@@ -3,6 +3,7 @@
 // VkExec whose draw context is a helper's on to them (ON_HELPER), and nothing else calls them.
 #pragma once
 #include <stdint.h>
+#include "nvn_obj.h"
 
 struct VkExec;
 void vk_exec_draw_h_op_draw(struct VkExec *ex, uint32_t op, const void *payload);
@@ -11,5 +12,6 @@ void vk_exec_draw_h_rebase(struct VkExec *ex);
 void vk_exec_draw_h_digest_begin(const struct VkExec *ex);
 void vk_exec_draw_h_digest_draw(const struct VkExec *ex);
 uint32_t vk_exec_draw_h_digest_end(const struct VkExec *ex, const uint64_t **d);
+int vk_exec_draw_h_merge(struct VkExec *ex, const op_hdr *const *ops, int n, int *draws);
 int vk_exec_draw_h_reset_indirect(struct VkExec *ex, uint64_t list_addr, uint32_t descriptor_bytes, int64_t first,
                                   int64_t count);

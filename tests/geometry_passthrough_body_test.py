@@ -228,7 +228,7 @@ class BodyInputs(unittest.TestCase):
         platform = 'win32.c' if os.name == 'nt' else 'linux.c'
         libraries = ['-lbcrypt', '-lpdh', '-lpsapi', '-lrstrtmgr', '-lshell32', '-lwinmm'] if os.name == 'nt' else ['-ldl', '-pthread']
         command = [str(args.cc), '-std=gnu11', '-O2', '-ffunction-sections', '-fdata-sections', '-I', str(runtime),
-                   str(path), str(runtime / 'sha256.c'), str(runtime / 'platform' / platform),
+                   str(path), str(runtime / 'sha256.c'), str(runtime / 'spirv_instance_c4.c'), str(runtime / 'platform' / platform),
                    str(runtime / 'platform/common.c'), '-Wl,--gc-sections', *libraries, '-o', str(cls.runtime)]
         run = subprocess.run(command, capture_output=True, text=True, timeout=90)
         (args.out / 'runtime-compile.log').write_text(run.stdout + run.stderr, encoding='utf-8')

@@ -16,6 +16,9 @@
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
 // with TOTK_REPLAY_ASYNC. TOTK_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (TOTK_AB).
+// TOTK_USNAP_FAST=0 runs collect, sort, drop and copy as they were; by default each step takes a shortcut (repeated
+// ranges skipped, fewer radix passes, repeated GPU writes merged, and with a CPU copy one copy into the arena), and its
+// comment says why the result is the same.
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,9 +49,11 @@ typedef struct { uint64_t lo, hi, fence; } Wrote;
 static struct {
     int mode;                   // rt_knob: 0 off, 1 on, 2 ab
     int on;                     // this submission has a snapshot
+    int fast;                   // this submission takes the USNAP_FAST shortcuts (set in vk_usnap_begin)
     uint64_t fence, gen;
     uint64_t dseq;              // drops made so far (vk_usnap_drops)
     Arena *arena;
+    uint8_t *cpu;               // this submission's copy for the CPU (vk_usnap_cpu_reads), as laid out in the arena
     Rng *col;                   // collected ranges
     int ncol, ccol;
     Reg *reg;                   // merged, sorted by lo, disjoint
@@ -59,6 +64,8 @@ static struct {
     uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs;
     uint64_t cols, t_collect, t_sort, t_merge, t_copy;   // ranges collected, and the time of each step (summary)
     uint64_t wr_added;   // GPU write ranges added to wr (vk_usnap_drop), for the summary
+    uint64_t wr_coalesced;   // GPU writes that raised the newest tail entry's fence instead (drop, USNAP_FAST)
+    uint64_t repeats;    // collected ranges that repeated one collected earlier in the submission (add_range, USNAP_FAST)
 } U;
 
 // The helper threads (vk_spec.h) look regions up in vk_usnap_find while the replay thread drops some of them
@@ -66,6 +73,17 @@ static struct {
 // region before it was dropped is itself dropped, because the generation moved (vk_exec.c par_join). The rest of U
 // changes only in vk_usnap_begin and vk_usnap_end, where no helper part is out.
 static void gen_bump(void) { __atomic_add_fetch(&U.gen, 1, __ATOMIC_RELEASE); }
+
+// The arena is written once, in order, and lives in device-local memory through the BAR where the device has it: for
+// the CPU it is uncached, and reading a 256-byte block back takes microseconds. A caller that reads many copied blocks
+// (vk_exec_draw.c merge_pick, TOTK_DRAW_MERGE) asks for a second copy in cached host memory, made from the first
+// submission that begins after the call; vk_usnap_bytes reads that one. One submission records at a time
+// (vk_exec_record), so the one buffer, grown as needed, serves every submission.
+static int cpu_reads;
+static uint8_t *cpu_buf;
+static uint64_t cpu_cap;
+
+void vk_usnap_cpu_reads(void) { __atomic_store_n(&cpu_reads, 1, __ATOMIC_RELAXED); }
 
 static Arena *free_arenas;
 static PlatMutex free_lock = PLAT_MUTEX_INIT;
@@ -120,6 +138,27 @@ static void arena_done(void *arg) {   // completion thread: the GPU has read it
     plat_mutex_unlock(&free_lock);
 }
 
+// Ranges collected this submission, through a direct-mapped cache on lo (hashed, so ranges a power of two apart do not
+// share a slot). Under USNAP_FAST a range the cache still holds was collected earlier in this submission, and is not
+// appended again. The merge in vk_usnap_begin takes the union of the ranges and a repeat adds nothing to it, so the
+// merged regions are the same. An empty slot has hi 0, which no collected range has: a range ends above its address,
+// and the address is not 0.
+#define SEEN_BITS 8
+static Rng seen[1 << SEEN_BITS];
+
+static void add_range(Rng r) {
+    if (U.fast) {
+        Rng *s = &seen[((r.lo / ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - SEEN_BITS)];
+        if (s->lo == r.lo && s->hi == r.hi) {
+            U.repeats++;
+            return;
+        }
+        *s = r;
+    }
+    if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
+    U.col[U.ncol++] = r;
+}
+
 static void collect(const op_hdr *h, int depth) {
     for (;;) {
         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
@@ -134,9 +173,9 @@ static void collect(const op_hdr *h, int depth) {
         if (h->op == OP_BIND_UBO) {
             const p_bind_buf *b = a;
             if (b->addr && b->size) {
-                if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
                 uint64_t n = b->size < MAX_RANGE ? b->size : MAX_RANGE;
-                U.col[U.ncol++] = (Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + n};
+                U.cols++;
+                add_range((Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + n});
             }
         }
         h = nvn_op_next(h);
@@ -150,10 +189,21 @@ static int by_lo(const void *a, const void *b) {
 #define WROTE_LESS(x, y) ((x)->lo < (y)->lo)
 MSORT_DEFINE(sort_wrote, Wrote, WROTE_LESS)   // by lo, without a call per comparison (msort.h)
 
-// Sorts the collected ranges by lo. A town frame binds about 10,000 uniform ranges and qsort took half a millisecond
-// of the copy's 0.96 ms on the game thread, so they go through an LSD radix sort on (lo - lowest) / ALIGN, three
-// passes of 11 bits; qsort is left for a span that does not fit in 33 bits (2 TiB).
 #define RADIX_BITS 11
+// The number of passes of the LSD radix sorts below (sort_col, sort_new_writes), 11 bits of the key a pass, for keys
+// in [0, span]: as many passes as the span has 11-bit digits (at least one) under USNAP_FAST, three always without
+// it. The skipped passes would each see one digit, 0, for every key, and a stable pass on one digit keeps the order,
+// so the result is the same either way.
+static int radix_passes(uint64_t span) {
+    if (!U.fast) return 3;
+    int p = 1;
+    while (p < 3 && span >> (p * RADIX_BITS)) p++;
+    return p;
+}
+
+// Sorts the collected ranges by lo. A town frame binds about 10,000 uniform ranges and qsort took half a millisecond
+// of the copy's 0.96 ms on the game thread, so they go through an LSD radix sort on (lo - lowest) / ALIGN, 11 bits a
+// pass; qsort is left for a span that does not fit in 33 bits (2 TiB).
 static void sort_col(void) {
     static Rng *tmp;
     static int ctmp;
@@ -173,8 +223,9 @@ static void sort_col(void) {
         ctmp = U.ccol;
         if (!(tmp = malloc((size_t)ctmp * sizeof *tmp))) rt_fatal("vk_usnap: out of memory");
     }
+    int passes = radix_passes((hi - lo) / ALIGN);
     Rng *src = U.col, *dst = tmp;
-    for (int pass = 0; pass < 3; pass++) {
+    for (int pass = 0; pass < passes; pass++) {
         int shift = pass * RADIX_BITS, count[1 << RADIX_BITS] = {0};
         for (int i = 0; i < n; i++) count[(src[i].lo - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++;
         for (int k = 0, sum = 0; k < 1 << RADIX_BITS; k++) {
@@ -185,7 +236,7 @@ static void sort_col(void) {
         Rng *t = src;
         src = dst, dst = t;
     }
-    if (src != U.col) memcpy(U.col, src, (size_t)n * sizeof *src);   // three passes end in tmp
+    if (src != U.col) memcpy(U.col, src, (size_t)n * sizeof *src);   // an odd number of passes ends in tmp
 }
 
 // Keeps the GPU writes of submissions that are not done, merged into disjoint ranges sorted by lo (the terrain rewrites
@@ -211,8 +262,9 @@ static void sort_new_writes(Wrote *a, int n, Wrote **tmp, size_t *cap) {
         sort_wrote(a, (size_t)n, tmp, cap);
         return;
     }
+    int passes = radix_passes((hi - lo) / 16);
     Wrote *src = a, *dst = *tmp;
-    for (int pass = 0; pass < 3; pass++) {
+    for (int pass = 0; pass < passes; pass++) {
         int shift = pass * RADIX_BITS, count[1 << RADIX_BITS] = {0};
         for (int i = 0; i < n; i++) count[(src[i].lo - lo) / 16 >> shift & ((1 << RADIX_BITS) - 1)]++;
         for (int k = 0, sum = 0; k < 1 << RADIX_BITS; k++) {
@@ -223,7 +275,7 @@ static void sort_new_writes(Wrote *a, int n, Wrote **tmp, size_t *cap) {
         Wrote *t = src;
         src = dst, dst = t;
     }
-    if (src != a) memcpy(a, src, (size_t)n * sizeof *a);   // three passes end in tmp
+    if (src != a) memcpy(a, src, (size_t)n * sizeof *a);   // an odd number of passes ends in tmp
     // The buckets are 16 bytes wide, and GPU write ranges need not be 16-byte aligned (inline uniform updates, buffer
     // copies, query results): two ranges in one bucket keep the order they were added in, and the merge in wr_prune,
     // which wants them by lo, then dropped the lower one. An insertion pass puts them in order; the array is sorted but
@@ -280,32 +332,41 @@ static void summary(void) {
     double s = U.subs ? (double)U.subs : 1.0;
     rt_log("vk_usnap: %llu submissions with a snapshot, %llu without; per submission %.0f ranges, %.1f KiB copied in "
            "%.3f ms, %.0f uniform bindings from the copy, %.1f dropped by GPU writes, %.1f left out (GPU writes in "
-           "flight), %.1f refused (not an imported pool); %.0f bindings collected, %.0f GPU write ranges added; ms: collect %.3f, sort and prune %.3f, "
+           "flight), %.1f refused (not an imported pool); %.0f bindings collected (%.0f repeats skipped), %.0f GPU write "
+           "ranges added (%.0f coalesced); ms: collect %.3f, sort and prune %.3f, "
            "merge %.3f, copy %.3f",
            (unsigned long long)U.subs, (unsigned long long)U.off_subs, U.regions / s, U.bytes / s / 1024.0,
-           U.copy_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s, U.cols / s, U.wr_added / s, U.t_collect / s / 1e6,
+           U.copy_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s, U.cols / s, U.repeats / s,
+           U.wr_added / s, U.wr_coalesced / s, U.t_collect / s / 1e6,
            U.t_sort / s / 1e6, U.t_merge / s / 1e6, U.t_copy / s / 1e6);
     U.subs = U.off_subs = U.regions = U.bytes = U.copy_ns = U.hits = U.drops = U.inflight = U.refused = 0;
     U.cols = U.t_collect = U.t_sort = U.t_merge = U.t_copy = U.wr_added = 0;
+    U.repeats = U.wr_coalesced = 0;
 }
 
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     if (!U.mode) U.mode = rt_knob("UBO_SNAPSHOT", "1") + 1;   // stored +1: 0 is "not read yet"
-    U.on = 0, U.fence = fence, gen_bump();
+    U.on = 0, U.fence = fence, U.cpu = NULL, gen_bump();
     summary();
+    // USNAP_FAST is read once; with "ab" it is decided per submission, as the A/B switch is. drop() follows U.fast for
+    // the writes this submission records.
+    static int fast_mode;   // stored +1: 0 is "not read yet"
+    if (!fast_mode) fast_mode = rt_knob("USNAP_FAST", "1") + 1;
+    U.fast = RT_KNOB_ON(fast_mode - 1);
     if (!RT_KNOB_ON(U.mode - 1)) {
         U.off_subs++;
         return;
     }
     uint64_t t0 = kern_now_ns();
     U.ncol = 0;
+    if (U.fast) memset(seen, 0, sizeof seen);   // no range is collected yet in this submission
     for (int i = 0; i < n; i++)
         if (handles[i]) collect(nvn_op_first(handles[i]), 0);
     uint64_t t1 = kern_now_ns();
     sort_col();
     wr_prune();
     uint64_t t2 = kern_now_ns();
-    U.cols += (uint64_t)U.ncol, U.t_collect += t1 - t0, U.t_sort += t2 - t1;
+    U.t_collect += t1 - t0, U.t_sort += t2 - t1;
     // merge, keeping only what lies wholly in one imported pool and no GPU write in flight touches
     U.nreg = 0;
     uint64_t total = 0;
@@ -332,8 +393,25 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     U.t_merge += t3 - t2;
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
-    for (int i = 0; i < U.nreg; i++)
-        memcpy(U.arena->map + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
+    if (__atomic_load_n(&cpu_reads, __ATOMIC_RELAXED) && cpu_cap < total) {
+        free(cpu_buf);
+        cpu_cap = (cpu_buf = malloc(total)) ? total : 0;
+    }
+    U.cpu = cpu_cap >= total && __atomic_load_n(&cpu_reads, __ATOMIC_RELAXED) ? cpu_buf : NULL;
+    if (U.cpu && U.fast) {
+        // Each region is read from guest memory once, into the CPU copy at its offset; the arena then takes the whole
+        // span in one copy. Every byte a binding can read ends up at the offset the per-region copy gave it. The padding
+        // between regions is never bound (a binding lies inside one region, vk_usnap_find), so what it holds is unused.
+        for (int i = 0; i < U.nreg; i++)
+            memcpy(U.cpu + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
+        memcpy(U.arena->map, U.cpu, total);
+    } else {
+        for (int i = 0; i < U.nreg; i++) {
+            const void *src = (const void *)(uintptr_t)U.reg[i].lo;
+            if (U.cpu) src = memcpy(U.cpu + U.reg[i].off, src, U.reg[i].hi - U.reg[i].lo);   // the guest's bytes once
+            memcpy(U.arena->map + U.reg[i].off, src, U.reg[i].hi - U.reg[i].lo);
+        }
+    }
     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
     U.on = 1;
     uint64_t t4 = kern_now_ns();
@@ -343,7 +421,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
 
 void vk_usnap_end(uint64_t fence) {
     if (U.arena) vk_completion_add(fence, arena_done, U.arena), U.arena = NULL;
-    U.on = 0, gen_bump();
+    U.on = 0, U.cpu = NULL, gen_bump();
 }
 
 // First region whose end is above a.
@@ -391,7 +469,7 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
 static PlatMutex drop_lock = PLAT_MUTEX_INIT;
 const void *vk_usnap_bytes(uint64_t addr, uint64_t n) {
     VkDescriptorBufferInfo b;
-    return vk_usnap_find(addr, n, 1, &b) ? U.arena->map + b.offset : NULL;
+    return vk_usnap_find(addr, n, 1, &b) ? (U.cpu ? U.cpu : U.arena->map) + b.offset : NULL;
 }
 
 // 1 when a copy made for this submission overlaps [addr, addr+n): only then does a drop of that range change what a
@@ -406,8 +484,17 @@ static void drop(uint64_t addr, uint64_t n, uint64_t fence) {
     if (!U.mode || !n) return;
     plat_mutex_lock(&drop_lock);
     U.wr_added++;
-    if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
-    U.wr[U.nwr++] = (Wrote){addr, addr + n, fence};
+    // The same range as the newest entry of the unsorted tail (U.wr[nwr_sorted, U.nwr); the terrain rewrites one block
+    // before every draw) raises that entry's fence instead of adding a second entry. The newer of the two fences is
+    // above the done fence exactly when either is, so wr_prune builds the same list from the one entry as from two.
+    Wrote *last = U.nwr > nwr_sorted ? &U.wr[U.nwr - 1] : NULL;
+    if (U.fast && last && last->lo == addr && last->hi == addr + n) {
+        if (fence > last->fence) last->fence = fence;
+        U.wr_coalesced++;
+    } else {
+        if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
+        U.wr[U.nwr++] = (Wrote){addr, addr + n, fence};
+    }
     if (U.on)
         for (int i = first_above(addr); i < U.nreg && U.reg[i].lo < addr + n; i++)
             if (!U.reg[i].dropped)

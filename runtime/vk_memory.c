@@ -934,6 +934,10 @@ static uint64_t gen_pages[1024];
 // sync skips regions with nothing newer than its pool's mirror.
 #define REG_SHIFT 21
 static uint32_t reg_max[RT_ADDRESS_LIMIT >> REG_SHIFT];
+// Per page, the generation of the last stamp that reported a GPU write the page's VRAM mirror already holds
+// (vk_gpu_written_into), allocated per chunk on the first such stamp. While a page's generation is still that stamp,
+// mirror_sync leaves the page out of its copies.
+static uint32_t *own_chunk[GEN_CHUNKS];   // gen_lock
 
 // Every write-watch query of the generation table (gen_lock held exclusively): calls, bytes and time since the last
 // mirror summary, all consumers together; the queries that found written pages (they also flush TLBs) apart.
@@ -1371,6 +1375,44 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
     vk_guest_written(addr, size);
 }
 
+// As vk_gpu_written, for a write the GPU made into buffer buf. When buf is the VRAM mirror of the pool holding the range,
+// the mirror has the GPU's bytes, and vk_mem_mirror_end copies them into guest memory (or vk_mem_gpu_kept keeps them in
+// the mirror). The stamp still tells every other reader of guest memory (the texture checks), but the pool's next
+// mirror_sync need not copy those pages in again. In Hilltop those copies were about 57 MiB of the 58 MiB a frame the
+// syncs uploaded, and the copy of a kept page put stale guest bytes over the GPU's. So such a stamp
+// is noted per page (own_chunk) when the mirror already holds every older write of the page: its previous stamp is
+// covered by the mirror's mgen or is itself such a stamp. A page with a newer write the mirror lacks fails that test, and
+// a CPU write stamped later gives the page a newer generation, so mirror_sync copies both as before.
+void vk_gpu_written_into(uint64_t addr, uint64_t size, VkBuffer buf) {
+    if (!buf || !vk_mirror_on || shadow_on || !size || nvn_gpu_only(addr)) {
+        vk_gpu_written(addr, size);
+        return;
+    }
+    pool_lock_shared();
+    const pidx_ent *e = pidx_find(&pool_index, addr, size);
+    PoolRec *r = e ? e->buf : NULL;
+    if (!r || ms_get(r) != MS_ON || r->mbuf != buf || addr < r->import_lo || addr + size > r->import_hi) {
+        plat_mutex_unlock_shared(&pool_lock);
+        vk_guest_written(addr, size);
+        return;
+    }
+    uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
+    plat_mutex_lock(&gen_lock);
+    uint32_t g = ++gen_now, mgen = r->mgen;
+    for (uint64_t a = lo; a < hi; a += 1ull << GEN_PAGE_SHIFT) {
+        uint32_t *s = gen_slot(a, 1);
+        if (!s) continue;
+        uint64_t ci = a >> GEN_CHUNK_SHIFT;
+        if (!own_chunk[ci] && !(own_chunk[ci] = calloc(GEN_PER_CHUNK, sizeof(uint32_t))))
+            rt_fatal("vk: out of memory for page generations");
+        uint32_t *o = &own_chunk[ci][(a >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)], prior = *s;
+        stamp_page(a, g);
+        *o = prior <= mgen || prior == *o ? g : 0;
+    }
+    plat_mutex_unlock(&gen_lock);
+    plat_mutex_unlock_shared(&pool_lock);
+}
+
 static void shadow_log(uint64_t frame) {
     if (!shadow_on) return;
     plat_mutex_lock(&shadow_lock);
@@ -1515,7 +1557,8 @@ static void dirty_frame(uint64_t frame) {
 // the CPU reads and writes; textures and every host path that reads or writes pool bytes keep using it.
 // - CPU -> mirror: the first access of a submission to a mirror syncs it (mirror_sync): the 2 MiB write-watch
 //   snapshots of its regions for this epoch (snap_regions, shared with the texture checks: the OS bits keep one
-//   consumer, the shared page generations) and every page stamped after the mirror's mgen goes into a copy; so do the
+//   consumer, the shared page generations) and every page stamped after the mirror's mgen goes into a copy, unless
+//   that stamp reported a GPU write the mirror already holds (vk_gpu_written_into); so do the
 //   nvnMemoryPoolFlushMappedRange ranges. The first use copies the whole range. The copies run in a prologue command
 //   buffer that vk_sync.c submits right before the part that accessed the mirror first, between full barriers.
 //   vk_mem_mirror_begin snaps the regions of the pools the previous submission accessed in a few merged queries.
@@ -1535,6 +1578,7 @@ int vk_mirror_on;
 static int mirror_verify;
 static int mirror_sparse;
 static int mirror_gap = 2;             // pre-snap: hot pools at most this many 2 MiB regions apart share one query
+static int mirror_own = 1;             // TOTK_MIRROR_OWN: mirror_sync skips the pages own_chunk notes (rt_knob mode)
 static PoolRec **mlist;                // pool_lock: mirrored pools by import_lo
 static int nm, mcap;
 static uint32_t msub;                  // replay: number of the submission being recorded
@@ -1568,7 +1612,7 @@ static void mirror_unlock(int locked) {
 
 typedef struct {
     uint64_t subs, syncs, upload_bytes, upload_copies, first_n, first_bytes, wb_bytes, wb_copies, wb_ranges;
-    uint64_t presnap_queries, sync_queries, presnap_t, sync_t, prologues, presnap_bytes;
+    uint64_t presnap_queries, sync_queries, presnap_t, sync_t, prologues, presnap_bytes, own_bytes;
 } MirrorAcc;
 static MirrorAcc mrep;                 // replay: this submission
 static MirrorAcc macc;                 // mirror_stat_lock: since the last summary
@@ -1598,6 +1642,12 @@ static void mirror_mode(int discrete, uint32_t vendor) {
         rt_log("mem: small write-back ranges are copied by %s (TOTK_SPARSE_MIRROR_COPY=%s)",
                mirror_sparse ? "one compute dispatch a pool" : "copy regions", sparse && *sparse ? sparse : "auto");
     if (mirror_sparse) sparse_cache_open();
+    if (vk_mirror_on) {
+        mirror_own = rt_knob("MIRROR_OWN", "1");
+        if (mirror_own != 1)
+            rt_log("mem: pages the mirrors' own GPU writes stamped are copied in again%s (TOTK_MIRROR_OWN=%s)",
+                   mirror_own == 2 ? " in the A blocks" : "", mirror_own == 2 ? "ab" : "0");
+    }
     const char *g = cfg_get("TOTK_MIRROR_GAP");
     mirror_gap = g && *g ? atoi(g) : 2;
     if (mirror_gap < 0) mirror_gap = 0;
@@ -2075,6 +2125,8 @@ static void mirror_sync(PoolRec *r) {
     }
     uint32_t since = r->mgen;
     int p0 = npend > 0 && pend[npend - 1].r == r ? npend - 1 : npend;   // range_add may extend the last entry
+    uint64_t own = 0;
+    int skip_own = RT_KNOB_ON(mirror_own);
     for (uint64_t k = r0; k <= r1; k++) {
         if (reg_max[k] <= since) continue;
         uint64_t a = k << SNAP_SHIFT, b = a + (1ull << SNAP_SHIFT);
@@ -2082,11 +2134,20 @@ static void mirror_sync(PoolRec *r) {
         if (b > hi) b = hi;
         const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];   // a 2 MiB region lies in one chunk
         if (!ch) continue;
-        for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT)
-            if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since)
-                range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT);
+        const uint32_t *oc = skip_own ? own_chunk[a >> GEN_CHUNK_SHIFT] : NULL;
+        for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT) {
+            uint32_t i = (x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1), v = ch[i];
+            if (v <= since) continue;
+            if (oc && oc[i] == v) {   // the mirror's own GPU write is the page's newest (vk_gpu_written_into)
+                own++;
+                continue;
+            }
+            range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT);
+        }
     }
-    // The pages the CPU rewrote get the guest's bytes in the mirror: they are no longer GPU-only.
+    mrep.own_bytes += own << GEN_PAGE_SHIFT;
+    // The pages the CPU rewrote get the guest's bytes in the mirror: they are no longer GPU-only. A kept page whose
+    // newest stamp is the GPU write that kept it is left out above, so it stays kept.
     if (r->nkept && npend > p0) kept_cut(r, pend + p0, npend - p0);
     r->mgen = gen_now;
     if (excl) plat_mutex_unlock(&gen_lock);
@@ -2375,12 +2436,23 @@ typedef struct { uint32_t sub; int n; VkBuffer buf; VmaAllocation alloc; const u
 static int ver_i;
 static uint64_t ver_off;
 
-// The CPU wrote the page since the mirror's sync that mgen records: stamped later, or its write-watch bit is set.
+// The CPU wrote the page since the mirror's sync that mgen records: stamped later, or its write-watch bit is set. A
+// later stamp that mirror_sync skips as the mirror's own GPU write does not count, so verify compares those pages: the
+// skip is only right while the guest bytes equal the mirror's. Read under gen_lock: a write-watch query (snap_regions,
+// vk_mem_changed) clears the OS bits before it stamps the pages, both under the lock held exclusively, and a page read
+// between the two had neither, so a page the CPU had just rewritten counted as a mismatch.
 static int page_dirty(uint64_t a, uint32_t mgen) {
+    plat_mutex_lock_shared(&gen_lock);
     uint32_t *s = gen_slot(a, 0);
-    if (s && __atomic_load_n(s, __ATOMIC_RELAXED) > mgen) return 1;
+    int dirty = 0;
+    if (s && *s > mgen) {   // s is set, so the chunk index is in range
+        const uint32_t *oc = RT_KNOB_ON(mirror_own) ? own_chunk[a >> GEN_CHUNK_SHIFT] : NULL;
+        dirty = !oc || oc[(a >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] != *s;
+    }
     uint64_t p[1];
-    return mem_written_peek(a, 1ull << GEN_PAGE_SHIFT, p, 1) != 0;   // UINT64_MAX (not watched) counts as written
+    if (!dirty) dirty = mem_written_peek(a, 1ull << GEN_PAGE_SHIFT, p, 1) != 0;   // UINT64_MAX (not watched) counts
+    plat_mutex_unlock_shared(&gen_lock);
+    return dirty;
 }
 
 static int kept_page(PoolRec *r, uint64_t off) {   // completion thread: takes mirror_lock whatever the replay's mode
@@ -2536,12 +2608,14 @@ static void mirror_log(uint64_t frame) {
                  (long long)plat_xchg64(&v_mismatch, 0));
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
-           "first use %.2f pools %.3f MiB, write-back %.3f MiB in %.1f ranges, flush calls %.1f (%.3f MiB), queries "
-           "%.1f pre-snap (%.1f MiB) + %.1f sync, prologues %.2f, tracking cpu %.3f ms (pre-snap %.3f, syncs %.3f)%s",
+           "first use %.2f pools %.3f MiB, own GPU writes not copied in %.3f MiB, write-back %.3f MiB in %.1f ranges, "
+           "flush calls %.1f (%.3f MiB), queries %.1f pre-snap (%.1f MiB) + %.1f sync, prologues %.2f, tracking cpu "
+           "%.3f ms (pre-snap %.3f, syncs %.3f)%s",
            (unsigned long long)frame, (long long)m_live_n, m_live_bytes / M, (long long)m_refused_n[MR_BUDGET],
            m_refused_bytes[MR_BUDGET] / M, (long long)m_refused_n[MR_UNTRACKED], (long long)m_refused_n[MR_OVERLAP],
            (long long)m_refused_n[MR_ALLOC], a.subs / f, a.syncs / f, a.upload_bytes / f / M, a.upload_copies / f,
-           a.first_n / f, a.first_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, fc / f, fb / f / M,
+           a.first_n / f, a.first_bytes / f / M, a.own_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, fc / f,
+           fb / f / M,
            a.presnap_queries / f, a.presnap_bytes / f / M, a.sync_queries / f, a.prologues / f, qpc_ms(a.presnap_t + a.sync_t) / f,
            qpc_ms(a.presnap_t) / f, qpc_ms(a.sync_t) / f, ver);
 

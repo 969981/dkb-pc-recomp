@@ -2255,6 +2255,8 @@ static void rec_fill(KeyRec *r, const VkPipeState *s) {
 // A pipeline was built for a draw: queue its record for the file. Caller holds P.lock.
 static void keys_note(const VkPipeState *s) {
     if (s->gs || !A.on || !K.path[0]) return;             // GS prewarm records need a future explicit format
+    // A draw-merge copy (gfx_shader_instance_c4) has its source's input id: its record would name the source's pipeline
+    if (gfx_shader_is_variant(s->vs) || (s->fs && gfx_shader_is_variant(s->fs))) return;
     KeyRec r;
     rec_fill(&r, s);
     if (!seen_add(rec_hash(&r))) return;

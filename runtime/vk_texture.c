@@ -1809,17 +1809,23 @@ void vk_texture_write_back(uint64_t addr, uint64_t size) {
     if (queued) wb_land();
 }
 
-// ---- asynchronous write-back (TOTK_WB_ASYNC=1; off by default: the replay waits as before)
-// Measured on the Bananza route (RTX 3050 laptop): no FPS gain beyond run-to-run noise, and 30-45% of the late
-// copies found the storage rewritten by the CPU and were dropped, where the waited write-back had landed first.
-// A deferred guest read (TOTK_NX2_READ_NOWAIT) queues a write-back on the replay thread. Done there with
-// vk_texture_write_back, the replay waited for the GPU to finish all the work queued so far (the upload batch is
-// behind it), about a fifth of the replay thread in a dense Bananza area, where the replay is the critical path.
-// Instead the copy image -> staging is recorded and submitted without waiting, and the staging bytes go to the
-// storage at a later vk_texture_wb_poll, once that batch has completed: the GPU's write lands when the GPU gets
-// there, as on the console. A CPU write to the storage after the render (storage_rewritten at completion) keeps the
-// CPU's bytes, so the late copy never overwrites them. gpu_dirty stays set until then: a synchronous read meanwhile
-// still writes the image back itself, and the late copy then sees that write and leaves the storage alone.
+// ---- asynchronous write-back (TOTK_WB_ASYNC, on by default; 0: the replay waits as before)
+// A deferred guest read (TOTK_NX2_READ_NOWAIT, opt-in) queues a write-back on the replay thread; no other read comes
+// here. Done there with vk_texture_write_back, the replay waited for the GPU to finish all the work queued so far
+// (the upload batch is behind it), about a fifth of the replay thread in a dense Bananza area, where the replay is
+// the critical path. Instead the copy image -> staging is recorded and submitted without waiting, and the staging
+// bytes go to the storage at a later vk_texture_wb_poll, once that batch has completed: the GPU's write lands when
+// the GPU gets there, as on the console. gpu_dirty stays set until then: a synchronous read meanwhile still writes
+// the image back itself, and the late copy then sees that write and leaves the storage alone.
+// The read that queued the copy is not affected: it went on without the GPU's bytes either way. Later CPU accesses
+// are: the waited copy landed before the replay took the next submission, the late one lands up to a GPU batch
+// later. A CPU write to the storage in that longer window (storage_rewritten at completion) keeps the CPU's bytes and
+// drops the copy, so that render's texels never reach the storage, where the waited copy would have landed first.
+// Measured on the Bananza route (RTX 3050 laptop, GPU-bound): no FPS gain beyond run-to-run noise, and 30-45% of the
+// late copies dropped that way. That run predates the snap refresh in vk_texture_wb_poll, which stops a landing
+// from making the next render's copy look rewritten; it was not measured again. In Canyon Layer (Ryzen 7 5700X3D,
+// RTX 3060 Ti, replay-bound), in-launch A/B (TOTK_AB=4, two launches, world 45-95 s): the frame interval 1.2 and
+// 1.8 ms shorter, the replay 0.3 and 0.7 ms shorter, and none of 2,000 late copies dropped.
 typedef struct {
     Tex *e;                       // NULL once the entry was destroyed (wb_async_forget)
     Region g;
@@ -1904,8 +1910,8 @@ static int wb_queue(Tex *e) {
 }
 
 void vk_texture_write_back_async(uint64_t addr, uint64_t size) {
-    if (wb_async < 0) {   // TOTK_WB_ASYNC: 0 (default) waited, 1 asynchronous, ab switched with TOTK_AB's blocks
-        wb_async = rt_knob("WB_ASYNC", "0");
+    if (wb_async < 0) {   // TOTK_WB_ASYNC: 1 (default) asynchronous, 0 waited, ab switched with TOTK_AB's blocks
+        wb_async = rt_knob("WB_ASYNC", "1");
         rt_log("vk: deferred-read write-backs %s", wb_async == 2 ? "asynchronous in the B blocks (TOTK_AB)"
                                                     : wb_async ? "asynchronous (TOTK_WB_ASYNC=1)" : "waited for");
     }
@@ -1930,7 +1936,12 @@ void vk_texture_write_back_async(uint64_t addr, uint64_t size) {
     int queue = wb_all_queueable(hit, k);   // else every hit goes back now, in order (wb_all_queueable)
     for (int i = 0; i < k; i++) {
         if (queue && wb_pending(hit[i])) { wb_async_dup++; continue; }
-        if (queue && wb_queue(hit[i])) { wb_async_n++; continue; }
+        int before = nwbp;
+        if (queue && wb_queue(hit[i])) {
+            if (nwbp == before) hit[i]->gpu_dirty = 0;   // no region to copy: as write_back leaves it (wb_copies)
+            else wb_async_n++;
+            continue;
+        }
         write_back(hit[i]);
         perf_count(PERF_CNT_WB);
     }
@@ -1997,6 +2008,12 @@ void vk_texture_wb_poll(void) {
             // their way, must not take it for a CPU write (they would drop their texels).
             uint32_t g2;
             storage_rewritten(e, 0, &g2);
+            // A texture that fills no page compares its bytes with the copy taken at its newest render
+            // (gpu_written_entry). A render recorded before this landing took that copy from the bytes before it, so
+            // a neighbour's later write to the shared page would find them differ and drop that render's copy as
+            // rewritten by the CPU. The waited write-back landed before the next render was recorded; this refresh
+            // gives the late one the same copy.
+            if (e->snap) memcpy(e->snap, (const void *)(uintptr_t)e->pub.addr, e->t.L.size);
             if (e->gpu_seq == wbp[i].gseq) e->gpu_dirty = 0;
             else e->gpu_gen = g2;
             // The same goes for the copies of another texture whose storage overlaps the one just written.

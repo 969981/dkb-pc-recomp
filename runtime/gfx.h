@@ -107,6 +107,16 @@ size_t gfx_shader_warm_list(GfxWarmEnt **out);              // malloc'd; recorde
 const GfxShader *gfx_shader_load_private(const uint8_t iid[32], int *owned);
 void gfx_shader_release_private(const GfxShader *s);
 const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
+// A copy of vertex or fragment stage s that reads uniform block c4 at gl_InstanceIndex * 256 bytes (spirv_instance_c4.c,
+// for vk_exec_draw.c vk_exec_draw_merge). The vertex copy writes the instance to a flat int at Location
+// GFX_INSTANCE_C4_LOC and the fragment copy reads it there. Made on the first call and kept with s; NULL when the
+// stage cannot be rewritten, and for a fragment stage that has no c4 (the vertex copy is then paired with s).
+// Thread-safe. Bananza's stages use Locations up to 28. 29 leaves room under the 128 components of
+// maxVertexOutputComponents and maxFragmentInputComponents for the built-ins, which the validation layer counts too:
+// Location 31 plus gl_Position, gl_PointSize and a clip distance went over (VUID-RuntimeSpirv-Location-06272).
+#define GFX_INSTANCE_C4_LOC 29
+const GfxShader *gfx_shader_instance_c4(const GfxShader *s);
+int gfx_shader_is_variant(const GfxShader *s);              // s is such a copy
 uint64_t gfx_shader_spirv_fnv(const GfxShader *s);          // FNV-1a 64 of the SPIR-V bytes, taken once per shader
 uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
 // Reflection: parsed once per shader from the translator's .res.json and the SPIR-V before it enters the cache.
