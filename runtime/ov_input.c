@@ -305,12 +305,12 @@ static float clamp01(float v) { return v > 0 ? (v < 1 ? v : 1) : 0; }   // NaN -
 // neutral frequency), all at 320 Hz and above (the high band's), log scale between.
 static float light_share(float f) { return f > 160 ? (f < 320 ? log2f(f / 160) : 1) : 0; }
 
-// Switch HD rumble -> SDL_RumbleGamepad. Each side's two bands split by frequency between the heavy (low) and the light
+// Switch HD rumble -> SDL_RumbleGamepad (a Switch Pro Controller or Joy-Con gets both sides' bands as an HD packet instead). Each side's two bands split by frequency between the heavy (low) and the light
 // (high) motor (light_share) and add up as energy per motor (root of the summed squares); the stronger side drives each
 // motor. A side the game has not updated for 250 ms is silent. Each send lasts 250 ms and is renewed every 50 ms while
 // the game streams, so the pad stops by itself when the game stops sending (pause, freeze). Under vib_lock.
 static void rumble_update(uint64_t now) {
-    float heavy = 0, light = 0;
+    float heavy = 0, light = 0, hd[2][4] = {{0, 160, 0, 320}, {0, 160, 0, 320}};   // hd: both sides' VibrationValues
     rumble_cfg();
     for (int s = 0; s < 2 && vib_allowed; s++) {
         if (!vib_at[s] || now - vib_at[s] > RUMBLE_STALE_NS) continue;
@@ -318,13 +318,17 @@ static void rumble_update(uint64_t now) {
         float al = clamp01(v->amp_low), ah = clamp01(v->amp_high), sl = light_share(v->freq_low), sh = light_share(v->freq_high);
         float h = sqrtf(al * (1 - sl) * al * (1 - sl) + ah * (1 - sh) * ah * (1 - sh));
         float l = sqrtf(al * sl * al * sl + ah * sh * ah * sh);
+        hd[s][0] = motor(al) / 65535.0f, hd[s][1] = v->freq_low, hd[s][2] = motor(ah) / 65535.0f, hd[s][3] = v->freq_high;
         if (h > heavy) heavy = h;
         if (l > light) light = l;
     }
     uint16_t lo = motor(clamp01(heavy)), hi = motor(clamp01(light));
-    int changed = lo != sent_low || hi != sent_high, on = lo || hi;
+    static float sent_hd[2][4];
+    int changed = lo != sent_low || hi != sent_high || memcmp(hd, sent_hd, sizeof hd), on = lo || hi;
     if (changed ? on && now - sent_at < RUMBLE_MIN_GAP_NS : !on || now - sent_at < RUMBLE_REFRESH_NS) return;
     input_rumble(lo, hi, on ? RUMBLE_MS : 0);
+    input_rumble_hd(hd, on ? RUMBLE_MS : 0);
+    memcpy(sent_hd, hd, sizeof hd);
     sent_low = lo, sent_high = hi, sent_at = now;
 }
 

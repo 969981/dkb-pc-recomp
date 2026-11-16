@@ -6,6 +6,7 @@
 
 #include "imgui.h"
 #include <SDL3/SDL_gamepad.h>
+#include <SDL3/SDL_version.h>   // SDL_VERSION_ATLEAST (pad_is_steam)
 #include "ui/binds_page.h"
 #include "ui/option_rows.h"
 
@@ -119,12 +120,23 @@ static int shortcut_device_type(void) {
     return remembered;
 }
 
+// SDL_GAMEPAD_TYPE_STEAM first came with SDL 3.4.18. A Linux distribution's SDL can be older (Ubuntu 26.04 ships
+// 3.4.2), and its headers then lack the value, so the build stopped here; no gamepad reports the type there either.
+static bool pad_is_steam(int type) {
+#if SDL_VERSION_ATLEAST(3, 4, 18)
+    return type == SDL_GAMEPAD_TYPE_STEAM;
+#else
+    (void)type;
+    return false;
+#endif
+}
+
 static const char *shortcut_label(int button, int type) {
     bool ps = type == SDL_GAMEPAD_TYPE_PS3 || type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5;
     bool xbox = type == SDL_GAMEPAD_TYPE_XBOX360 || type == SDL_GAMEPAD_TYPE_XBOXONE;
     bool nintendo = type >= SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO && type <= SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
     if (button == PAD_NONE) return "-";
-    if (button == PAD_COUNT) return ps ? "PS" : xbox ? "Xbox" : nintendo ? "Home" : type == SDL_GAMEPAD_TYPE_STEAM ? "Steam" : "Guide/Home";
+    if (button == PAD_COUNT) return ps ? "PS" : xbox ? "Xbox" : nintendo ? "Home" : pad_is_steam(type) ? "Steam" : "Guide/Home";
     if (button == PAD_START) return ps ? (type == SDL_GAMEPAD_TYPE_PS3 ? "Start" : "Options") : type == SDL_GAMEPAD_TYPE_XBOXONE ? "Menu" : nintendo ? "+" : "Start";
     if (button == PAD_BACK) return type == SDL_GAMEPAD_TYPE_PS5 ? "Create" : type == SDL_GAMEPAD_TYPE_PS4 ? "Share" : type == SDL_GAMEPAD_TYPE_PS3 ? "Select" : type == SDL_GAMEPAD_TYPE_XBOXONE ? "View" : nintendo ? "-" : "Back";
     if (button == PAD_LSTICK) return ps ? "L3" : xbox ? "LS" : "L Stick";

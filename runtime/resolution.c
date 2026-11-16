@@ -51,6 +51,7 @@ static struct {
     unsigned ow, oh, sw, sh;   // output and scene
     int scene_set;             // the scene differs from the game's 5/6 of the output
     int heapdef_ok;            // romfs.c serves the grown HeapDef
+    int font_built, font_ok;   // the built table grows Font (fontk); romfs.c serves that table
     int on;                    // res_init switched the patch sets on
 } R;
 
@@ -94,8 +95,18 @@ static int bigger(void) {
     return R.ow != BASE_W || R.oh != BASE_H || R.scene_set;
 }
 
+// Bananza's fontk set (#214, recomp/patches-dkb100.txt) doubles the glyph cache texture each way: 8 -> 32 MiB of R8,
+// plus the 2 MiB raster buffer in place of 512 KiB, both from the "Font" heap (30720 KiB, parent Stationed). It grows
+// by 28 MiB: the 24 MiB and 1.5 MiB those add, with the rest as margin. There is one such engine: both callers of the
+// descriptor default (f_70004739e0) fill the same descriptor in f_70004727a4. Read before rt_patches_init, as memory.c sizes
+// the pool from it.
+#define DKB_FONT_EXTRA_KIB 28672u
+static uint64_t font_extra_kib(void) {
+    return !rt_game_version && rt_patch_wanted(rt_patch_set("fontk")) ? DKB_FONT_EXTRA_KIB : 0;
+}
+
 uint64_t res_heap_extra_kib(void) {
-    if (!rt_game_version) return dkb_wide_heap_extra_kib();   // Bananza: dkb_wide.c
+    if (!rt_game_version) return dkb_wide_heap_extra_kib() + font_extra_kib();   // Bananza: dkb_wide.c and fontk
     if (!bigger()) return 0;
     double grow = fmax(0.0, (double)R.ow * R.oh / (BASE_W * BASE_H) - 1.0) +
                   fmax(0.0, (double)R.sw * R.sh / (SCENE_W * SCENE_H) - 1.0);
@@ -143,13 +154,13 @@ static size_t heap_size_field(const Byml *b, uint32_t heaps, const char *heap) {
 }
 
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
-    uint64_t extra = res_heap_extra_kib();
+    uint64_t font = font_extra_kib(), extra = res_heap_extra_kib() - font;
     // TotK: agl's DynamicTextureAllocatorMem and its parent Graphics. Bananza: GSys, which holds the render-target pool
     // (dkb_wide.c); its parent Stationed takes what is left (-1), and memory.c adds the amount to the application pool.
     const char *tex_heap = rt_game_version ? "DynamicTextureAllocatorMem" : "GSys";
     const char *parent_heap = rt_game_version ? "Graphics" : NULL;
     *out = NULL;
-    if (!extra) return 0;
+    if (!extra && !font) return 0;
     if (ZSTD_getDictID_fromFrame(in, n)) {
         rt_log("resolution: the HeapDef table needs a zstd dictionary; the game keeps its own resolution");
         return 0;
@@ -165,11 +176,12 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
     uint32_t root, heaps = 0;
     uint16_t ver = 0;
     if (!ZSTD_isError(got) && got == b.n && b.n >= 16) memcpy(&ver, b.p + 2, 2);
-    size_t heaps_at = 0, dta_at = 0, gfx_at = 0;
+    size_t heaps_at = 0, dta_at = 0, gfx_at = 0, font_at = 0;
     if (ver >= 2 && ver <= 7 && !memcmp(b.p, "YB", 2) && u32_at(&b, 4, &b.keys) && u32_at(&b, 12, &root) &&
         (heaps_at = field(&b, root, "Heaps", 0xc1)) && u32_at(&b, heaps_at, &heaps)) {
         dta_at = heap_size_field(&b, heaps, tex_heap);
         gfx_at = parent_heap ? heap_size_field(&b, heaps, parent_heap) : 0;
+        font_at = font ? heap_size_field(&b, heaps, "Font") : 0;
     }
     if (!dta_at || (parent_heap && !gfx_at)) {
         rt_log("resolution: the HeapDef table has no %s%s%s size; the game keeps its own resolution", tex_heap,
@@ -177,12 +189,27 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
         free(b.p);
         return 0;
     }
+    if (font && !font_at) {   // GSys still grows; res_init turns fontk off on R.font_ok
+        rt_log("resolution: the HeapDef table has no Font size; fontk stays off");
+        font = 0;
+        if (!extra) {
+            free(b.p);
+            return 0;
+        }
+    }
     int32_t dta, gfx = 0;
     memcpy(&dta, b.p + dta_at, 4);
     if (gfx_at) memcpy(&gfx, b.p + gfx_at, 4);
     int32_t dta2 = dta + (int32_t)extra, gfx2 = gfx + (int32_t)extra;
     memcpy(b.p + dta_at, &dta2, 4);
     if (gfx_at) memcpy(b.p + gfx_at, &gfx2, 4);
+    // Font's parent Stationed has no size (-1, what is left), so the pool's extra reaches it as with GSys.
+    int32_t fnt = 0, fnt2 = 0;
+    if (font_at) {
+        memcpy(&fnt, b.p + font_at, 4);
+        fnt2 = fnt + (int32_t)font;
+        memcpy(b.p + font_at, &fnt2, 4);
+    }
     size_t cap = ZSTD_compressBound(b.n);
     void *z = malloc(cap);
     size_t zn = z ? ZSTD_compress(z, cap, b.p, b.n, 9) : 0;
@@ -193,12 +220,14 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
     }
     *out = z;
     *out_n = zn;
+    R.font_built = font_at != 0;
     if (gfx_at) rt_log("resolution: HeapDef %s %d -> %d KiB, %s %d -> %d KiB", tex_heap, dta, dta2, parent_heap, gfx, gfx2);
-    else rt_log("resolution: HeapDef %s %d -> %d KiB", tex_heap, dta, dta2);
+    else if (extra) rt_log("resolution: HeapDef %s %d -> %d KiB", tex_heap, dta, dta2);
+    if (font_at) rt_log("resolution: HeapDef Font %d -> %d KiB (fontk)", fnt, fnt2);
     return 1;
 }
 
-void res_heapdef_served(void) { R.heapdef_ok = 1; }
+void res_heapdef_served(void) { R.heapdef_ok = 1; R.font_ok = R.font_built; }
 int res_heapdef_grown(void) { return R.heapdef_ok; }
 const char *res_heapdef_path(void) {
     return rt_game_version ? "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
@@ -211,6 +240,13 @@ static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 void res_init(void) {
     if (!rt_game_version) {
         dkb_wide_init();
+        if (font_extra_kib()) {
+            fs_init();   // serves the grown HeapDef (res_heapdef_served)
+            if (!R.font_ok) {   // the 32 MiB glyph cache does not fit the stock Font heap
+                rt_patch_disable(rt_patch_set("fontk"));
+                rt_log("resolution: no HeapDef table with a grown Font; fontk stays off");
+            }
+        }
         return;
     }
     if (!bigger()) {

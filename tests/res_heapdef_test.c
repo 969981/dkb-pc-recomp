@@ -1,4 +1,4 @@
-// res_heapdef_build on Bananza (GSys only): a synthetic HeapDef table, no game data.
+// res_heapdef_build on Bananza (GSys, and Font with fontk): a synthetic HeapDef table, no game data.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +8,7 @@
 
 static unsigned checks, failures;
 static uint64_t extra_kib;
+static int fontk_on;
 
 #define CHECK(c) do { checks++; if (!(c)) { \
     failures++; fprintf(stderr, "line %d: %s\n", __LINE__, #c); \
@@ -20,7 +21,9 @@ uint64_t dkb_wide_heap_extra_kib(void) { return extra_kib; }
 // Stubs for what the rest of resolution.c links against; none runs here.
 const char *cfg_value(const char *key) { (void)key; return ""; }
 int cfg_int(const char *key) { (void)key; return 0; }
-int rt_patch_set(const char *name) { (void)name; return -1; }
+int rt_patch_set(const char *name) { return strcmp(name, "fontk") ? -1 : 0; }
+int rt_patch_wanted(int set) { return set == 0 && fontk_on; }
+void rt_patch_disable(int set) { (void)set; }
 void rt_patch_switch(int set, int on) { (void)set; (void)on; }
 void *rt_patch_page(void) { return NULL; }
 void fs_init(void) {}
@@ -113,6 +116,31 @@ int main(void) {
     CHECK(run(raw, n, &z, &zn) == 1 && sizes_after(z, zn, "GSys", NULL, 0) == 518144 + 307200);
     free(z);
     n = build(raw, "Other", NULL, 518144, 0);   // no GSys: the game's table stays
+    z = NULL;
+    CHECK(run(raw, n, &z, &zn) == 0 && z == NULL);
+    // fontk: Font grows by 28 MiB, with or without a GSys extra; GSys keeps its size when it has none.
+    fontk_on = 1;
+    extra_kib = 0;
+    n = build(raw, "GSys", "Font", 518144, 30720);
+    CHECK(run(raw, n, &z, &zn) == 1);
+    CHECK(sizes_after(z, zn, "GSys", "Font", 0) == 518144 && sizes_after(z, zn, "GSys", "Font", 1) == 30720 + 28672);
+    CHECK(res_heap_extra_kib() == 28672);
+    free(z);
+    extra_kib = 307200;
+    CHECK(run(raw, n, &z, &zn) == 1);
+    CHECK(sizes_after(z, zn, "GSys", "Font", 0) == 518144 + 307200 && sizes_after(z, zn, "GSys", "Font", 1) == 30720 + 28672);
+    CHECK(res_heap_extra_kib() == 307200 + 28672);
+    free(z);
+    res_heapdef_served();
+    CHECK(R.font_ok);
+    // No Font heap: GSys still grows, and the served table leaves fontk off (R.font_ok); with no GSys extra the game's
+    // table stays.
+    n = build(raw, "GSys", "Stationed", 518144, 0x7fffffff);
+    CHECK(run(raw, n, &z, &zn) == 1 && sizes_after(z, zn, "GSys", "Stationed", 0) == 518144 + 307200);
+    free(z);
+    res_heapdef_served();
+    CHECK(R.heapdef_ok && !R.font_ok);
+    extra_kib = 0;
     z = NULL;
     CHECK(run(raw, n, &z, &zn) == 0 && z == NULL);
     printf("res_heapdef: %u checks, %u failures\n", checks, failures);

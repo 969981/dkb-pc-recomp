@@ -31,6 +31,7 @@
 #include "host.h"
 #include "platform/platform.h"
 #include "sha256.h"
+#include "vk_driver_env.h"
 
 #define MAX_MODULES 16
 
@@ -285,9 +286,16 @@ static void check_cpu(void) {
     printf("cpu: AArch64 (portable FP/SIMD lowering)\n");
 #else
     __builtin_cpu_init();
+#if defined(__AVX2__)
     int ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
-    printf("cpu: x86-64-v3 (AVX2, FMA, BMI2) %s\n", ok ? "present" : "MISSING");
-    CHECK(ok, "the lifted code is built for x86-64-v3");
+    const char *level = "x86-64-v3 (AVX2, FMA, BMI2)";
+#else
+    // A --march v2 build (tools/build_game.py) needs only SSE4.2 and POPCNT, as require_cpu checks at start (#318)
+    int ok = __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
+    const char *level = "x86-64-v2 (SSE4.2, POPCNT)";
+#endif
+    printf("cpu: %s %s\n", level, ok ? "present" : "MISSING");
+    CHECK(ok, "the lifted code is built for %s", level);
 #endif
 }
 
@@ -537,6 +545,9 @@ static void require_cpu(void) {
 int main(int argc, char **argv) {
     require_cpu();
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
+    // Right after the settings can be read and before anything loads or calls the Vulkan loader (SDL's video init,
+    // vk_init): the loader reads VK_DRIVER_FILES when it first lists the drivers.
+    vk_driver_env_apply();
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     plat_crash_hook(crash_handler);

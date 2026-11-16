@@ -43,7 +43,11 @@ screen and on loads (#157, #206), on layer changes (#218) and in a record loop (
 - Add-on content: the installer unpacks DLC from a `.nup` (57eaed9); a player confirmed the DLC and the 3.2.0
   update load (#183). Loose RomFS mods load from a `mods` folder beside `dkb.exe` (7779dda).
 
-RecompLauncher on Linux and macOS: [docs/recomp-launcher.md](docs/recomp-launcher.md). Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 15 November 2026.
+Since 0.4.0, on `bananza`: an FSR 3.1 temporal upscaler (`upscaler = fsr3`, #270), sharper text above 1080p behind
+`DKB_FONT_SCALE=1` (#214), HD rumble on Switch Pro Controllers and Joy-Con (#285, untested), the AppImage setup fix
+(#293) and the setup check on CPUs without AVX2 (#318).
+
+RecompLauncher on Linux and macOS: [docs/recomp-launcher.md](docs/recomp-launcher.md). Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 16 November 2026.
 
 | Phase | | State |
 | --- | --- | --- |

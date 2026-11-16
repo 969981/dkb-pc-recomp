@@ -722,14 +722,16 @@ static void rows_render_options(const MenuTarget &target) {
         opt_choice("TOTK_SCENE_RES", UI_MENU_SCENE_RES, scene, 2, UI_MENU_SCENE_RES_DESC);
     }
     // DLSS (runtime/vk_dlss.c) takes effect at the next start: NGX adds its Vulkan extensions when the device is made.
-    static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR, UI_MENU_UPSCALER_DLSS};
+    static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR, UI_MENU_UPSCALER_DLSS, UI_MENU_UPSCALER_FSR3, UI_MENU_UPSCALER_FSR4};
     int fitted[4];
     gfx_fit_rect(target.image_w, target.image_h, target.width, target.height, fitted);
     bool no_upscale = target.image_w > 0 && target.image_h > 0 &&
                       fitted[2] <= target.image_w && fitted[3] <= target.image_h;
-    // DLSS can run inside the game's renderer, even if the final image fits the display.
-    if (no_upscale && strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) opt_disable_next(UI_MENU_NO_UPSCALING);
-    opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 3, UI_MENU_UPSCALER_DESC);
+    // On Bananza DLSS, FSR 3.1 (runtime/vk_fsr3.c) and FSR 4 (runtime/vk_fsr4.c) replace the game's own upscale inside its renderer, which runs
+    // whether or not the final image fits the display, so the row stays open there: greyed out at the default
+    // 2880x1620 virtual display on a 1440p or 1080p screen, it hid DLSS from the players of issues #152 and #306.
+    if (no_upscale && rt_game_version) opt_disable_next(UI_MENU_NO_UPSCALING);
+    opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 5, UI_MENU_UPSCALER_DESC);
     if (no_upscale) opt_disable_next(UI_MENU_NO_UPSCALING);
     else if (!strcmp(cfg_value("TOTK_UPSCALER"), "bilinear")) opt_disable_next(UI_MENU_SHARPNESS_NEEDS_FSR);
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");

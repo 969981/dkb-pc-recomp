@@ -306,8 +306,33 @@ WEAK int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint
     return 0;
 }
 
+// How many 100 ms waits in a row may time out with the timeline standing still before the GPU counts as hung: 30 s, or
+// TOTK_GPU_HANG_S seconds (0: never). Timeouts are counted, not wall time, so a suspended PC or a process stopped in a
+// debugger adds nothing.
+static unsigned hang_limit(void) {
+    const char *e = cfg_get("TOTK_GPU_HANG_S");
+    long s = e && *e ? strtol(e, NULL, 10) : 30;
+    return s <= 0 ? 0 : s > 3600 ? 36000u : (unsigned)s * 10u;
+}
+
+// A submission the GPU never finishes: some hangs (NVIDIA Xid 109, RADV's "GPU hang" reset) leave every call returning
+// VK_SUCCESS or VK_TIMEOUT, so no thread reaches vk_device_fault_report and the log ends without a word. The report is
+// written as for a lost device and the process ends. The checkpoint and fault queries are specified for a lost device
+// only; on a device that hangs without saying so they are the one way to learn which draw was in flight, and the
+// process exits right after (Hookshot does the same, gpu/vk/vk_replay.cpp gpu_hang_watch_start, db35b122: a watch thread
+// there, the counting of stalled waits here).
+static void gpu_hang(uint64_t want, uint64_t newest, unsigned waits) {
+    rt_log("vk: GPU hang: submission %llu of %llu issued has not finished after %u s without the device reporting a loss",
+           (unsigned long long)want, (unsigned long long)newest, waits / 10);
+    vk_device_fault_report(VK_ERROR_DEVICE_LOST);
+    rt_fatal("vk: the GPU stopped answering (no submission finished for %u s; TOTK_GPU_HANG_S=0 turns this check off)",
+             waits / 10);
+}
+
 static void completion_main(void *arg) {
     VkCtx *c = arg;
+    const unsigned limit = hang_limit();
+    unsigned stalled = 0;   // waits in a row that timed out with the timeline at the same value
     plat_mutex_lock(&st_lock);
     for (;;) {
         while (!stop && done == issued && !(qn && queue[qhead].fence <= done))
@@ -325,6 +350,8 @@ static void completion_main(void *arg) {
                 rt_fatal("vk: vkWaitSemaphores failed (%d; device lost?)", (int)r);
             }
             vkGetSemaphoreCounterValue(c->device, c->timeline, &reached);
+            stalled = r == VK_TIMEOUT && reached < want ? stalled + 1 : 0;
+            if (limit && stalled >= limit) gpu_hang(want, __atomic_load_n(&issued, __ATOMIC_ACQUIRE), stalled);
             plat_mutex_lock(&st_lock);
             if (reached > issued) reached = issued;
         }

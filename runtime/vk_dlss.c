@@ -6,7 +6,8 @@
 // "Later"), so the temporal inputs are made here: the scene's draws get a sub-pixel jitter in their viewport
 // (vk_dlss_jitter), the scene depth and the camera block are noted at its draws (vk_dlss_scene_draw), and a compute
 // pass turns depth and the camera's view-projection of this and the last frame into camera motion vectors
-// (shaders/dlss_mv.comp). A frame without them (no scene noted, another size) runs spatially as before: zero motion,
+// (shaders/dlss_mv.comp). Those inputs are shared with upscaler = fsr3 (vk_fsr3.c, AMD FSR 3.1), which takes them
+// through vk_temporal_inputs / vk_temporal_done below. A frame without them (no scene noted, another size) runs spatially as before: zero motion,
 // a zero depth image, Reset = 1. Any NGX failure logs one "dlss: <reason>" line and the game's dispatch runs from then on.
 //
 // NGX itself: the core (_nvngx.dll) comes with the NVIDIA driver and is found through the registry keys NVIDIA's
@@ -32,8 +33,11 @@
 #include "vk_exec.h"
 #include "vk_spec.h"
 
-#ifdef _WIN32
 #include "dlss_mv_spv.h"
+
+typedef struct NgxHandle NgxHandle;   // F.h below; only NGX (Windows) ever sets it
+
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -44,7 +48,6 @@ enum { Q_MAX_PERF, Q_BALANCED, Q_MAX_QUALITY, Q_ULTRA_PERF, Q_ULTRA_QUALITY, Q_D
 enum { F_MV_LOW_RES = 1 << 1, F_AUTO_EXPOSURE = 1 << 6 };
 enum { PRESET_K = 11, PRESET_L = 12, PRESET_M = 13 };   // NGX render preset hints
 typedef struct NgxParam NgxParam;
-typedef struct NgxHandle NgxHandle;
 typedef struct {   // NVSDK_NGX_Resource_VK holding an image view (the larger member of its union)
     VkImageView view;
     VkImage image;
@@ -75,8 +78,13 @@ static PfnShutdown ngx_shutdown;
 static PfnDestroy ngx_destroy;
 static const char **inst_ext, **dev_ext;
 static unsigned n_inst_ext, n_dev_ext;
-static int state;   // 0 not tried, 1 ready, -1 failed (the game's upscaler from then on)
 static NgxParam *params;
+#define STATE_INIT 0
+#else
+#define STATE_INIT -1   // no NGX here: the temporal inputs below serve FSR 3.1 only
+#endif
+
+static int state = STATE_INIT;   // 0 not tried, 1 ready, -1 failed (the game's upscaler from then on)
 
 // The feature and its own inputs, made for one input and output size: the motion vectors (written by the motion pass,
 // or cleared to zero) and a zero depth image for frames without the scene's, both in GENERAL.
@@ -88,6 +96,7 @@ static struct {
     VkImage mv, depth;
     VmaAllocation mv_a, depth_a;
     VkImageView mv_v, depth_v;
+    uint32_t iw, ih;   // the size of mv and depth
     int fresh;   // created since the last evaluation: no history
 } F;
 
@@ -134,6 +143,7 @@ static struct {
 
 // The motion-vector compute pass.
 static struct { int ok; VkDescriptorSetLayout dsl; VkPipelineLayout pl; VkPipeline pipe; VkSampler samp; } MV = {.ok = -1};
+#ifdef _WIN32
 // Features replaced while the GPU may still run them: released once their submission's fence is done.
 #define GRAVE 8
 static struct { NgxHandle *h; uint64_t fence; } grave[GRAVE];
@@ -196,6 +206,9 @@ static int load(void) {
 #undef GET
     if (NGX_FAILED(required(&n_inst_ext, &inst_ext, &n_dev_ext, &dev_ext))) n_inst_ext = n_dev_ext = 0;
     rt_log("dlss: NGX core loaded, it asks for %u instance and %u device extensions", n_inst_ext, n_dev_ext);
+    if (!strcmp(cfg_value("TOTK_SCENE_RES"), "full"))   // dkb_wide.c dkb_scene_ratio: the game then runs no upscale
+        rt_log("dlss: scene_res = full draws the 3D scene at the output size, so the game runs no upscale for DLSS to "
+               "replace; set scene_res = auto for DLSS");
     return 1;
 }
 
@@ -224,7 +237,13 @@ static int init(void) {
     wchar_t *cut = n ? wcsrchr(dir, L'\\') : NULL;
     if (!cut) return fail("the executable's folder is unknown");
     wcscpy(cut + 1, L"nvngx_dlss.dll");
-    if (GetFileAttributesW(dir) == INVALID_FILE_ATTRIBUTES) return fail("nvngx_dlss.dll is not next to dkb.exe");
+    if (GetFileAttributesW(dir) == INVALID_FILE_ATTRIBUTES) {   // the path in the line, so a copy elsewhere shows
+        char why[MAX_PATH * 3 + 64];
+        int k = snprintf(why, sizeof why, "nvngx_dlss.dll is not next to dkb.exe (looked for ");
+        WideCharToMultiByte(CP_UTF8, 0, dir, -1, why + k, (int)sizeof why - k - 2, NULL, NULL);
+        strcat(why, ")");
+        return fail(why);
+    }
     *cut = 0;
     // 231313132: the application id of NVIDIA's DLSS samples, for applications without their own. The data path is
     // where NGX looks for nvngx_dlss.dll first and writes its logs.
@@ -261,10 +280,13 @@ static void reap(void) {
         if (grave[i].h && grave[i].fence <= done) ngx_release(grave[i].h), grave[i].h = NULL;
 }
 
+#endif   // _WIN32
+
 static void drop_inputs(void) {
     vk_defer_view(F.mv_v), vk_defer_view(F.depth_v);
     vk_defer_image(F.mv, F.mv_a), vk_defer_image(F.depth, F.depth_a);
     F.mv = F.depth = VK_NULL_HANDLE, F.mv_v = F.depth_v = VK_NULL_HANDLE, F.mv_a = F.depth_a = NULL;
+    F.iw = F.ih = 0;
 }
 
 static VkImageView view(VkImage img, VkFormat fmt, VkImageUsageFlags usage) {
@@ -314,6 +336,20 @@ static void full_barrier(VkCommandBuffer cb) {
     vkCmdPipelineBarrier2(cb, &di);
 }
 
+// The motion vectors and the zero depth image for inputs of up to ow x oh, made once per size (a temporal upscaler's
+// first frame, or its first at a new output size).
+static int inputs_images(VkCommandBuffer cb, uint32_t ow, uint32_t oh) {
+    if (F.mv && F.depth && F.iw == ow && F.ih == oh) return 1;
+    drop_inputs();
+    if (!zero_image(cb, VK_FORMAT_R16G16_SFLOAT, ow, oh, VK_IMAGE_USAGE_STORAGE_BIT, &F.mv, &F.mv_a, &F.mv_v) ||
+        !zero_image(cb, VK_FORMAT_R32_SFLOAT, ow, oh, 0, &F.depth, &F.depth_a, &F.depth_v)) {
+        drop_inputs();
+        return 0;
+    }
+    F.iw = ow, F.ih = oh;
+    return 1;
+}
+
 // The motion pass's pipeline (push descriptors: the depth, the vectors), made at the first temporal frame.
 static int mv_init(void) {
     if (MV.ok >= 0) return MV.ok;
@@ -349,7 +385,7 @@ static int mv_init(void) {
     if (r != VK_SUCCESS) goto fail;
     return MV.ok = 1;
 fail:
-    rt_log("dlss: the motion-vector pass could not be set up: DLSS stays spatial (no jitter or motion vectors)");
+    rt_log("temporal: the motion-vector pass could not be set up: the upscaler stays spatial (no jitter or motion vectors)");
     return 0;
 }
 
@@ -439,10 +475,14 @@ static float halton(uint32_t i, uint32_t b) {
 
 // The next frame's offset. The sequence is as long as NVIDIA's DLSS guide asks for the scale, 8 x (output / input)^2
 // phases, 16 at least (as TotK Recomp's vk_dlaa.c next_jitter).
-static void next_jitter(uint32_t w, uint32_t ow) {
+static uint32_t jitter_phases(uint32_t w, uint32_t ow) {
     double r = w ? (double)ow / w : 1.0;
     uint32_t phases = (uint32_t)ceil(8.0 * r * r - 1e-6);
-    phases = phases < 16 ? 16 : phases > 72 ? 72 : phases;
+    return phases < 16 ? 16 : phases > 72 ? 72 : phases;
+}
+
+static void next_jitter(uint32_t w, uint32_t ow) {
+    uint32_t phases = jitter_phases(w, ow);
     uint32_t i = J.n++ % phases + 1;
     J.jx = halton(i, 2) - 0.5f, J.jy = halton(i, 3) - 0.5f;
 }
@@ -458,7 +498,7 @@ static void jdepth_set(VkImage v) { __atomic_store_n(&J.depth, v, __ATOMIC_RELAX
 
 void vk_dlss_jitter(VkImage depth, float j[2]) {
     VkImage d = jdepth();
-    if (!d || depth != d || state <= 0) return;
+    if (!d || depth != d || (state <= 0 && !vk_fsr_wanted())) return;
     if (frames_now() - J.frame > 2) {   // DLSS has stopped running (a menu without the upscaler, a failure)
         if (!vk_spec_helper()) jdepth_set(VK_NULL_HANDLE);
         return;
@@ -469,7 +509,15 @@ void vk_dlss_jitter(VkImage depth, float j[2]) {
 }
 
 void vk_dlss_scene_draw(const VkExec *ex) {
-    if (state < 0) return;
+    if (state < 0 && !vk_fsr_wanted()) return;
+    // DLSS on and the scene drawn, but no upscale of the game's for half a minute: the game draws its 3D scene at the
+    // output size (its dynamic resolution at full on a fast GPU), so DLSS has nothing to replace. One line per run,
+    // where the log would otherwise show only that NGX started.
+    static int idle_logged;
+    if (!idle_logged && vk_dlss_wanted() && frames_now() - J.frame > 1800 && !vk_spec_helper() &&
+        !__atomic_exchange_n(&idle_logged, 1, __ATOMIC_RELAXED) && !strcmp(cfg_value("TOTK_UPSCALER"), "dlss"))
+        rt_log("dlss: the game ran no upscale in the last 1800 frames (it draws its 3D scene at the output size), so "
+               "DLSS has nothing to replace; a larger output_res makes the game upscale again");
     const VkExecTarget *z = &ex->depth;
     const p_bind_buf *b = &ex->ubo[0][0];   // vertex bank c3: the replay keeps the user banks from c3 on
     Scene *s = vk_spec_helper() ? &SH[vk_spec_here - 1] : &S;
@@ -516,6 +564,7 @@ void vk_dlss_image_gone(VkImage image) {
     if (image == jdepth()) jdepth_set(VK_NULL_HANDLE), J.prev_ok = 0;
 }
 
+#ifdef _WIN32
 // The mode follows the scale: 1.5x quality, 1.7x balanced, 2x performance, 3x ultra performance, 1x DLAA.
 static int quality(uint32_t w, uint32_t ow) {
     float s = (float)ow / (float)w;
@@ -575,11 +624,7 @@ static int feature(VkCommandBuffer cb, uint64_t fence, uint32_t w, uint32_t h, u
         drop_inputs();
     }
     create_params(ow, oh, ow, oh, q);
-    if (!zero_image(cb, VK_FORMAT_R16G16_SFLOAT, ow, oh, VK_IMAGE_USAGE_STORAGE_BIT, &F.mv, &F.mv_a, &F.mv_v) ||
-        !zero_image(cb, VK_FORMAT_R32_SFLOAT, ow, oh, 0, &F.depth, &F.depth_a, &F.depth_v)) {
-        drop_inputs();
-        return fail("its zero motion-vector and depth images could not be made");
-    }
+    if (!inputs_images(cb, ow, oh)) return fail("its zero motion-vector and depth images could not be made");
     rec_drain();   // NGX records into cb on this thread: everything queued for the recorder first
     NgxResult r = ngx_create(vk_ctx()->device, cb, NGX_FEATURE_SUPER_SAMPLING, params, &F.h);
     if (NGX_FAILED(r) || !F.h) {
@@ -633,6 +678,71 @@ int vk_dlss_warm(VkCommandBuffer cb, uint64_t fence) {
     return 1;
 }
 
+#endif   // _WIN32
+
+// The inputs of a temporal upscaler for this frame (DLSS in vk_dlss_record, FSR 3.1 in vk_fsr3.c): the jitter the
+// scene was drawn with, the scene's depth view and projection, and the camera motion vectors, recorded into cb through
+// the recorder. For inputs of w x h upscaled to ow x oh. fresh: the upscaler has no history of its own (a new feature).
+// 1 = filled in (t->temporal says whether there is a scene; without one the vectors are zero and reset is set); 0 =
+// the vector image could not be made. Call vk_temporal_done after the evaluation.
+int vk_temporal_inputs(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int fresh, VkTemporalIn *t) {
+    memset(t, 0, sizeof *t);
+    if (!inputs_images(cb, ow, oh)) return 0;
+    t->jx = J.used ? J.jx : 0.0f, t->jy = J.used ? J.jy : 0.0f;
+    t->phases = jitter_phases(w, ow);
+    t->mv = F.mv_v, t->mv_image = F.mv;
+    // The texture lock keeps the noted depth image from going (vk_dlss_image_gone) between the checks and its view;
+    // once the view exists the image's destruction waits for this submission (vk_defer_image).
+    vk_texture_lock();
+    int temporal = S.have && S.z.width == w && S.z.height == h && (S.z.usage & VK_IMAGE_USAGE_SAMPLED_BIT) && mv_init();
+    t->reset = 1;
+    VkImageView zv = temporal ? vk_exec_target_view(&S.z, S.zfmt, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                                    S.zlevel, S.zlayer, 1, 0)
+                              : VK_NULL_HANDLE;
+    // The last frame's camera only when it is the frame just before (a gap: a menu, a load, frames at another size).
+    int prev = J.prev_ok && jdepth() == S.z.image && frames_now() - J.frame <= 2;
+    vk_texture_unlock();
+    t->temporal = temporal;
+    if (temporal) {
+        for (int i = 0; i < 16; i++) t->vp[i] = S.cam[12 + i], t->proj[i] = S.cam[28 + i];
+        double ci[16], m[16];
+        if (prev && !fresh && !camera_cut(S.cam, J.prev_view) && inv4(t->vp, ci)) {
+            for (int r = 0; r < 4; r++)
+                for (int k = 0; k < 4; k++) {
+                    double v = 0;
+                    for (int i = 0; i < 4; i++) v += J.prev_vp[r * 4 + i] * ci[i * 4 + k];
+                    m[r * 4 + k] = v;
+                }
+            mv_pass(cb, zv, m, w, h, t->jx, t->jy);
+            t->reset = 0;
+        } else {
+            mv_zero(cb);
+        }
+        t->depth = zv, t->depth_image = S.z.image, t->depth_format = S.zfmt;
+        t->depth_level = S.zlevel, t->depth_layer = S.zlayer;
+    } else {
+        mv_zero(cb);
+    }
+    return 1;
+}
+
+// After the evaluation of the frame vk_temporal_inputs prepared: this frame's camera is the next one's last, and the
+// next frame's scene is jittered when this one was temporal.
+void vk_temporal_done(const VkTemporalIn *t, uint32_t w, uint32_t h, uint32_t ow) {
+    S.have = 0, J.used = 0;
+    J.w = w, J.h = h, J.frame = frames_now();
+    J.temporal += t->temporal, J.spatial += !t->temporal, J.resets += t->reset;
+    if (t->temporal) {
+        memcpy(J.prev_vp, t->vp, sizeof t->vp);
+        memcpy(J.prev_view, S.cam, sizeof J.prev_view);
+        J.prev_ok = 1, jdepth_set(S.z.image);
+    } else {
+        J.prev_ok = 0, jdepth_set(VK_NULL_HANDLE);
+    }
+    next_jitter(w, ow);
+}
+
+#ifdef _WIN32
 int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, const VkTexImage *out) {
     // The setting is live: fsr or bilinear chosen while the game runs turns DLSS off here (the extensions stay).
     if (!vk_dlss_wanted() || strcmp(cfg_value("TOTK_UPSCALER"), "dlss") || !init()) return 0;
@@ -657,42 +767,20 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
     VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     NgxResourceVk color = {iv, in->image, rg, in->format, w, h, 0, 0};
     NgxResourceVk output = {ov, out->image, rg, out->format, ow, oh, 0, 1};
-    NgxResourceVk depth = {F.depth_v, F.depth, rg, VK_FORMAT_R32_SFLOAT, F.w, F.h_, 0, 0};
-    NgxResourceVk mv = {F.mv_v, F.mv, rg, VK_FORMAT_R16G16_SFLOAT, F.w, F.h_, 0, 0};
     // Temporal when this frame's scene was noted at the input size: its depth and camera motion go to DLSS. Otherwise
     // the zero inputs and a new history, as a spatial upscaler.
-    float jx = J.used ? J.jx : 0.0f, jy = J.used ? J.jy : 0.0f;
-    // The texture lock keeps the noted depth image from going (vk_dlss_image_gone) between the checks and its view;
-    // once the view exists the image's destruction waits for this submission (vk_defer_image).
-    vk_texture_lock();
-    int temporal = S.have && S.z.width == w && S.z.height == h && (S.z.usage & VK_IMAGE_USAGE_SAMPLED_BIT) && mv_init();
-    int reset = 1;
-    double vp[16];
-    VkImageView zv = temporal ? vk_exec_target_view(&S.z, S.zfmt, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                                    S.zlevel, S.zlayer, 1, 0)
-                              : VK_NULL_HANDLE;
-    // The last frame's camera only when it is the frame just before (a gap: a menu, a load, frames at another size).
-    int prev = J.prev_ok && jdepth() == S.z.image && frames_now() - J.frame <= 2;
-    vk_texture_unlock();
-    if (temporal) {
-        for (int i = 0; i < 16; i++) vp[i] = S.cam[12 + i];
-        double ci[16], m[16];
-        if (prev && !F.fresh && !camera_cut(S.cam, J.prev_view) && inv4(vp, ci)) {
-            for (int r = 0; r < 4; r++)
-                for (int k = 0; k < 4; k++) {
-                    double v = 0;
-                    for (int i = 0; i < 4; i++) v += J.prev_vp[r * 4 + i] * ci[i * 4 + k];
-                    m[r * 4 + k] = v;
-                }
-            mv_pass(cb, zv, m, w, h, jx, jy);
-            reset = 0;
-        } else {
-            mv_zero(cb);
-        }
-        depth = (NgxResourceVk){zv, S.z.image, {VK_IMAGE_ASPECT_DEPTH_BIT, S.zlevel, 1, S.zlayer, 1}, S.zfmt, w, h, 0, 0};
-    } else {
-        mv_zero(cb);
+    VkTemporalIn t;
+    if (!vk_temporal_inputs(cb, w, h, ow, oh, F.fresh, &t)) {
+        vk_defer_view(iv), vk_defer_view(ov);
+        return fail("its zero motion-vector and depth images could not be made");
     }
+    float jx = t.jx, jy = t.jy;
+    int temporal = t.temporal, reset = t.reset;
+    NgxResourceVk depth = {F.depth_v, F.depth, rg, VK_FORMAT_R32_SFLOAT, F.w, F.h_, 0, 0};
+    NgxResourceVk mv = {F.mv_v, F.mv, rg, VK_FORMAT_R16G16_SFLOAT, F.w, F.h_, 0, 0};
+    if (temporal)
+        depth = (NgxResourceVk){t.depth, t.depth_image, {VK_IMAGE_ASPECT_DEPTH_BIT, t.depth_level, 1, t.depth_layer, 1},
+                                t.depth_format, w, h, 0, 0};
     set_ptr(params, "Color", &color);
     set_ptr(params, "Output", &output);
     set_ptr(params, "Depth", &depth);
@@ -717,18 +805,8 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
         fail(why);
         return -1;
     }
-    // This frame's camera is the next one's last; the next frame's scene is jittered when this one was temporal.
-    F.fresh = 0, S.have = 0, J.used = 0;
-    J.w = w, J.h = h, J.frame = frames_now();
-    J.temporal += temporal, J.spatial += !temporal, J.resets += reset;
-    if (temporal) {
-        memcpy(J.prev_vp, vp, sizeof vp);
-        memcpy(J.prev_view, S.cam, sizeof J.prev_view);
-        J.prev_ok = 1, jdepth_set(S.z.image);
-    } else {
-        J.prev_ok = 0, jdepth_set(VK_NULL_HANDLE);
-    }
-    next_jitter(w, ow);
+    F.fresh = 0;
+    vk_temporal_done(&t, w, h, ow);
     // A summary at the first evaluation and then every 1800 (half a minute of DLSS at 60 fps; the game skips its
     // upscaler, and DLSS with it, while it renders at the output size). The projection's z column shows an off-centre
     // or jittered frustum of the game's own.
@@ -742,31 +820,38 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
     return 1;
 }
 
+#endif   // _WIN32
+
 void vk_dlss_release(void) {   // device idle
-    if (!params) return;   // NGX never initialised
+#ifdef _WIN32
     for (int i = 0; i < GRAVE; i++)
         if (grave[i].h) ngx_release(grave[i].h), grave[i].h = NULL;
     if (F.h) ngx_release(F.h), F.h = NULL;
+#endif
     VkCtx *c = vk_ctx();
-    if (c) {
+    if (c) {   // the temporal inputs exist for FSR 3.1 too, whether or not NGX started
         if (F.mv_v) vkDestroyImageView(c->device, F.mv_v, NULL);
         if (F.depth_v) vkDestroyImageView(c->device, F.depth_v, NULL);
         if (F.mv) vmaDestroyImage(c->vma, F.mv, F.mv_a);
         if (F.depth) vmaDestroyImage(c->vma, F.depth, F.depth_a);
         mv_release(c->device);
-        if (ngx_destroy) ngx_destroy(params);
-        if (ngx_shutdown) ngx_shutdown(c->device);
+#ifdef _WIN32
+        if (params && ngx_destroy) ngx_destroy(params);
+        if (params && ngx_shutdown) ngx_shutdown(c->device);
+#endif
     }
     memset(&F, 0, sizeof F);
     memset(&S, 0, sizeof S);
     memset(&SH, 0, sizeof SH);
     memset(used_h, 0, sizeof used_h);
     memset(&J, 0, sizeof J);
+#ifdef _WIN32
     params = NULL;
+#endif
     if (state > 0) state = 0;   // a new device initialises NGX again; a failure stays a failure
 }
 
-#else   // NGX is Windows-only here
+#ifndef _WIN32   // NGX is Windows-only here
 
 int vk_dlss_wanted(void) { return 0; }
 int vk_dlss_instance_exts(const char **out, int max) { (void)out, (void)max; return 0; }
@@ -776,11 +861,5 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
     return 0;
 }
 int vk_dlss_warm(VkCommandBuffer cb, uint64_t fence) { (void)cb, (void)fence; return 0; }
-void vk_dlss_release(void) {}
-void vk_dlss_jitter(VkImage depth, float j[2]) { (void)depth, (void)j; }
-void vk_dlss_scene_draw(const VkExec *ex) { (void)ex; }
-void vk_dlss_part_begin(int k) { (void)k; }
-void vk_dlss_part_taken(int k) { (void)k; }
-void vk_dlss_image_gone(VkImage image) { (void)image; }
 
 #endif

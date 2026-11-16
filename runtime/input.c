@@ -22,6 +22,7 @@
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
+#include "switch_rumble.h"
 
 enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
 
@@ -33,6 +34,7 @@ static unsigned pad_device_seen;
 static InputHoldGate pad_fullscreen_gate;
 static int pad_fullscreen_pending;   // taken under lock; fullscreen request is posted after unlocking
 static void start(void);
+static int pad_switch;               // the open gamepad is a Switch Pro Controller or Joy-Con (HD rumble packets)
 static int pad_rumble;               // the open gamepad has rumble motors
 static volatile int32_t pad_labels[4];  // ... and the labels of its south, east, west, north buttons (PAD_LABEL_*), any thread
 static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under TOTK_PAD_LAYOUT=auto)
@@ -535,7 +537,7 @@ static void scan_pads(void) {
         SDL_RumbleGamepad(pad, 0, 0, 0);
         SDL_RumbleGamepadTriggers(pad, 0, 0, 0);
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
-        pad_rumble = 0;
+        pad_rumble = pad_switch = 0;
         motion_restart(motion_global());
         plat_xchg32(&pad_layout_shown, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
@@ -544,6 +546,9 @@ static void scan_pads(void) {
     pad = next;
     if (!pad) return;
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+    SDL_GamepadType gt = SDL_GetGamepadType(pad);
+    pad_switch = gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO || gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT ||
+                 gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT || gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
     pad_east_a = SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
     for (int i = 0; i < 4; i++) {
         SDL_GamepadButtonLabel lb = SDL_GetGamepadButtonLabel(pad, pad_sdl[PAD_SOUTH + i]);
@@ -952,13 +957,32 @@ int input_rumble_triggers_enabled(void) {
     return cfg_bool("TOTK_RUMBLE_TRIGGERS");
 }
 
+// Under lock: the open pad takes HD packets (a Switch pad, TOTK_RUMBLE_HD not off).
+static int pad_hd(void) {
+    return state == 1 && pad && pad_switch && strcmp(cfg_value("TOTK_RUMBLE_HD"), "off") != 0;
+}
+
+int input_rumble_hd(const float v[2][4], uint32_t ms) {
+    int ok = 0;
+    plat_mutex_lock(&lock);
+    if (pad_hd()) {
+        // SDL's driver stamps the packet counter itself; the packet has no subcommand byte.
+        uint8_t pkt[10];
+        const float zero[2][4] = { { 0, 160, 0, 320 }, { 0, 160, 0, 320 } };
+        switch_rumble_packet(ms ? v : zero, pkt);
+        ok = SDL_SendGamepadEffect(pad, pkt, sizeof pkt);
+    }
+    plat_mutex_unlock(&lock);
+    return ok;
+}
+
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
     int ok = 0;
     static int triggers = -1;
     static unsigned seen;
     if (triggers < 0 || seen != cfg_version()) seen = cfg_version(), triggers = input_rumble_triggers_enabled();
     plat_mutex_lock(&lock);
-    if (state == 1 && pad && pad_rumble) {
+    if (state == 1 && pad && pad_rumble && !pad_hd()) {
         ok = SDL_RumbleGamepad(pad, low, high, ms);
         if (triggers) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
     }

@@ -307,6 +307,7 @@ void rt_patches_init(void);                                // after ldr_load: sw
                                                            // page committed; logs the sets
 int rt_patch_set(const char *name);                        // index of a set of generated patches.h, -1 if absent
 int rt_patch_enabled(int set);                             // the set is on (0 for -1)
+int rt_patch_wanted(int set);                              // the switch rt_patches_init gives it, readable before
 void rt_patch_disable(int set);                            // before the guest starts: a set needs another that is off
 void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code
                                                            // the next time it runs

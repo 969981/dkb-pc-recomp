@@ -127,6 +127,10 @@ guard poolguard main 410794 410e54 ptr x10 f875794a
 # free list is empty its own code takes a null node and loads its payload at +0x10 (108510). The guard continues the
 # loop instead (108468): the id is not cached and may come back on a later pass.
 guard poolguard main 108510 108468 ptr x8 f9400909
+# #317: the job graph builder f_700011d680 looks each edge's target up in the node table (+0x28); a null slot faulted
+# on its pending count (11d8b4, 3.2.0 1116d4). The guard sends a null target to the next edge (11d8dc) before the link
+# slot is taken, the path of a full link pool.
+guard poolguard main 11d858 11d8dc ptr x12 b82b01ce
 
 # #136: the walk in main+0x1692ac4 passes a null slot to f_7000534324 (the call at 1692c00); the guard sits on the
 # bl and skips it to 1692c5c, the loop tail that reloads x8 from [x20] and uses no result of the call.
@@ -189,3 +193,79 @@ site dkbscene main 3c1624 bd400120 @page:x9 bd411920
 set recguard DKB_FIX_RECORD_GUARD 1
 guard recguard main a37a84 a3a388 ptr x10 3dc00140
 guard recguard main a37a9c a3a388 ptr x11 3dc00160
+
+# #214: text is soft above 1080p. nn::fontll rasterises each glyph at run time from the font's CFF outline, at the
+# layout size, so a larger output only magnifies it. Off by default; DKB_FONT_SCALE=1 turns it on: raster at k=2 and
+# keep the layout the same. The font cache (f_70049e1d0, filled by f_70006f84a0) holds, per font, a px-to-layout multiplier pair
+# at +0x10/+0x14 of its 0x1c-byte entries, and the glyph record GetGlyph (86e6e0) hands out has layout fields
+# (+0x48..+0x50, raw pixels times that multiplier) and raw cache fields (+0x44/+0x46 size, +0x40/+0x42 position, in cache
+# pixels, which the consumer divides by the cache size at x19+0x28/+0x2c). So: every raster size doubles, every
+# multiplier halves, the per-font pixel padding tables double, the ascent doubles and the cache texture doubles.
+set fontk DKB_FONT_SCALE 0
+# Big fonts stay at k=1. The area titles (fcpx FontHeadline, 180 px) still came out garbled at 2x while the HUD text
+# (FontCaption, 48 px) was right, so a font whose size is above 96 px keeps the stock raster and layout. The size is the
+# one each site already has: node +0x36 in the cache fill, the size argument (w22 in 86f42c, w20 in 86f65c) in the
+# queries. Every site derives its factor from that value with the same flag-free test, so the raster scale, the ascent,
+# the multipliers and the pixel tables of a glyph always agree: bit = (96 - size) >> 31 (1 above 96 px) at the
+# multiplier and table sites, and its complement, (size - 97) >> 31 (1 at 96 px and below), where SetScale and the
+# ascent take k = 2 directly. The entry multipliers and tables stay halved and doubled at init (49ebc8.., 49e75c..), and
+# the reading sites undo that above 96 px. The size is a u16 in a 32-bit register: the node field is loaded with ldrh,
+# but 86f42c's comes from a 32-bit field (ldr w2, [x, #0x18] at its four callers, 86e1ec..) and 86f65c is only called
+# through a vtable, and the stock code uses just the low 16 bits (lsl #16). So 86f42c masks w22 where it is set
+# (86f450), and the 86f65c sites mask w20 into their scratch register (w20 itself also goes to the fontll calls).
+# SetScale (PLT 1985530) takes the size as 16.16 fixed point: lsl #16 -> lsl #(16 + (size - 97 >> 31)). Cache fill,
+# then the width, kerning and advance queries (86f42c, 86f65c), which must measure at the same scale as the multiplier
+# they use.
+site fontk main 6f85a0 53103d01 51018501 531f7c21 11004021 1ac12101
+site fontk main 86f450 2a0203f6 12003c56   # mov w22, w2 -> and w22, w2, #0xffff
+site fontk main 86f4c4 53103ec1 510186c1 531f7c21 11004021 1ac122c1
+site fontk main 86f7e4 53103e81 12003e81 51018421 531f7c21 11004021 1ac12281
+site fontk main 86f860 53103e81 12003e81 51018421 531f7c21 11004021 1ac12281
+site fontk main 86f8e8 53103e81 12003e81 51018421 531f7c21 11004021 1ac12281
+# Multipliers (str of the file's two floats into the entry): halve. s1 is dead (reloaded at the next 49eb18+ use).
+site fontk main 49ebc8 bd001160 1e2c1001 1e210800 bd001160
+site fontk main 49ebd8 bd001560 1e2c1001 1e210800 bd001560
+# Per-font pixel tables used with glyph widths (1c10, 1c28 of the cache): store them doubled. The registers are dead after.
+site fontk main 49e75c 7837796a 531f794a 7837796a
+site fontk main 49e794 78377928 531f7908 78377928
+# Ascent in pixels, size * ratio + 0.5 (fmadd at 6f85d8): the size read from node +0x36 into s1, shifted left by
+# 1 - bit. x9 (consumed at 6f85c4) and x10 are dead until after the call at 6f85e0.
+site fontk main 6f85d0 7e21d821 1e260029 5101852a 531f7d4a 1aca2129 1e230121
+# Fill: the multiplier pair (ldp at 6f87e8) times 2^bit, by adding bit to the exponents (they are 0.5 to 0.6, normal).
+# w9 is rewritten at 6f87ec, x10 at 6f8840/6f88a8/6f8948 before any read.
+site fontk main 6f87e8 2d42252a 2d42252a 79406f49 4b0903e9 11018129 531f7d29 53092129 1e26014a 0b09014a 1e27014a 1e26012a 0b09014a 1e270149
+# Fill: the pixel tables (1c10 at 6f8844, 6f8860, 6f8950, 6f8970; 1c28 at 6f8890, 6f88ac) shifted right by bit, which is
+# exact since init doubled them. The two ldrh sites feed a signed halving of the u16, so they load signed and mask back
+# to 16 bits. x11 is not used between 6f8838 and its next write at 6f8a80.
+site fontk main 6f8844 78e8794a 78e8794a 79406f4b 4b0b03eb 1101816b 531f7d6b 1acb294a
+site fontk main 6f8860 78687929 78e87929 79406f4b 4b0b03eb 1101816b 531f7d6b 1acb2929 12003d29
+site fontk main 6f8890 78e87929 78e87929 79406f4b 4b0b03eb 1101816b 531f7d6b 1acb2929
+site fontk main 6f88ac 78e87929 78e87929 79406f4b 4b0b03eb 1101816b 531f7d6b 1acb2929
+site fontk main 6f8950 78e8794a 78e8794a 79406f4b 4b0b03eb 1101816b 531f7d6b 1acb294a
+site fontk main 6f8970 78687929 78e87929 79406f4b 4b0b03eb 1101816b 531f7d6b 1acb2929 12003d29
+# Width query (86f42c, size w22): multiplier times (bit ? 2.0 : 1.0) through s1 (rewritten at 86f540, w8 at 86f534),
+# table 1c10 shifted right by bit through w10 (unused in the function).
+site fontk main 86f530 bd401100 bd401100 4b1603e8 11018108 531f7d08 53092108 32091908 1e270101 1e210800
+site fontk main 86f538 78f57929 78f57929 4b1603ea 1101814a 531f7d4a 1aca2929
+# Kerning query (86f65c, size w20): the same factor on each multiplier load. x9 is reloaded right after 86f830 and
+# 86f8ac, where s1 is free before the call; at 86f94c and 86f9b8 s1 holds the kerning value, so s2 carries the factor.
+site fontk main 86f830 bd401128 bd401128 12003e89 4b0903e9 11018129 531f7d29 53092129 32091929 1e270121 1e210908
+site fontk main 86f8ac bd401128 bd401128 12003e89 4b0903e9 11018129 531f7d29 53092129 32091929 1e270121 1e210908
+site fontk main 86f94c bd401100 bd401100 12003e88 4b0803e8 11018108 531f7d08 53092108 32091908 1e270102 1e220800
+site fontk main 86f9b8 bd401100 bd401100 12003e88 4b0803e8 11018108 531f7d08 53092108 32091908 1e270102 1e220800
+# Raster work buffer of the engine that fills the cache (ScalableFontEngine::Initialize at 49e594, size from descriptor
+# +0x88, which the config default f_70004739e0 sets to 0x80000 and nothing overrides): x4, as a glyph bitmap at 2x is
+# four times larger. With 512 KiB AcquireGlyphmap (6f85e0) returns null and the fill reads glyph +0x1e off it. The
+# buffer comes from the FontHeap (HeapDef "Font", 30720 KiB); w9 is reloaded at 473d0c. f_70004739e0's two callers are
+# the two paths of one engine set-up, f_70004727a4 (called once, from 4712c4): 4733e8 inside f_7000473390, which parses
+# a font list (fcpx/ entries) and changes only descriptor +0x90, and 4728e0, the built-in list when that returns 0.
+# Both fill the same descriptor (sp + 0x678), so there is one 2 MiB buffer and DKB_FONT_EXTRA_KIB counts it once.
+site fontk main 473cf0 52a00109 52a00409
+# Glyph cache texture (descriptor +0/+4, stored at cache +0x28/+0x2c): x2 each way, as a 2x glyph covers four times the
+# area and the shelf packer (line heights 16..1024 from f_700086fa30, lines up to the cache size) would evict glyphs
+# still on screen. Every reader takes the size from +0x28/+0x2c (texture builder 49ed30, packer 86be48, glyph records
+# 86e490/86e754). The R8 texture becomes 32 MiB, more than the stock 30 MiB FontHeap (the allocation at 49eebc would
+# return null and the memset at 49eecc write to 0): resolution.c grows the HeapDef's "Font" by 28 MiB while fontk is on,
+# and turns fontk off when it cannot serve that table.
+site fontk main 49e4a0 b9400288 b9400288 531f7908
+site fontk main 49e4ac b9400688 b9400688 531f7908

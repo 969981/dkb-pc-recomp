@@ -136,6 +136,10 @@
 # Which GPU to use: its index in the log, or part of its name. Default: the first discrete GPU with Vulkan 1.3.
 # gpu_index = 0
 # gpu_name = NVIDIA
+# Linux: a Vulkan driver of your own for this game only, such as a Mesa build outside the system's folders: the path of
+# its ICD .json file ("~" expands), for example ~/.local/mesa/share/vulkan/icd.d/radeon_icd.x86_64.json. Empty uses the
+# system's drivers. A VK_DRIVER_FILES or VK_ICD_FILENAMES already set in the environment wins. Read at start.
+# vulkan_driver =
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1920x1080 the
 # game's texture heap and memory pool grow with it. Another shape than 16:9, such as 3440x1440 on a 21:9 monitor or
 # the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. The installer
@@ -153,6 +157,12 @@
 # upscaler = dlss (experimental, NVIDIA RTX only, read at start) also replaces the game's own upscaler with NVIDIA DLSS
 # and keeps FSR for the window; it needs nvngx_dlss.dll next to dkb.exe (docs/dkb-dlss.md) and falls back to the
 # game's upscaler, with a "dlss:" line in the log, when anything is missing.
+# upscaler = fsr3 (experimental, any GPU with push descriptors and extended storage formats, read each frame) does the same
+# with AMD FSR 3.1's temporal upscaler, from the same jitter, scene depth and camera motion DLSS gets; frames without a scene
+# at the input size go to the game's upscaler. The log has "fsr3:" lines (a summary every 1800 frames and at exit).
+# upscaler = fsr4 (experimental) runs AMD FSR 4 from the same inputs, through AMD's own signed DLLs
+# (amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll next to dkb.exe, docs/dkb-dlss.md); without them, or on
+# a GPU with no FSR 4 (NVIDIA), the log has one "fsr4:" line saying why and FSR 3.1 runs instead.
 # upscaler = fsr
 # Bananza only: auto keeps the game's dynamic 3D resolution (usually two thirds of output_res on each side), full draws
 # the 3D scene at output_res (sharper, more GPU cost; no upscaler or DLSS then), a ratio from 1.0 to 3.0 draws it at
@@ -164,11 +174,14 @@
 # the window (FSR or bilinear) and before the menu is drawn, so the game's HUD is smoothed as well. Changes while the game
 # runs take effect at once.
 # smaa = off
-# Frame generation (experimental, Donkey Kong Bananza only): off (the default) or 2x. At 2x a frame is made between each two of the game's, from their
-# motion, and shown first, then the game's own frame half a frame later, so a game at 30 fps is shown at 60. The menu
-# overlay is drawn on every shown frame and is never interpolated. No frame is made after a gap of over 100 ms, when the
-# picture's size changes, for the game's own HDR picture, when the display's refresh is below the doubled rate, or unless
-# vk_present is mailbox or immediate. Changes while the game runs take effect at once.
+# Frame generation (experimental, Donkey Kong Bananza only): off (the default), auto, or 2x to 8x. Frames are made between
+# each two of the game's, from their motion. At 2x one is made and shown first, then the game's own frame half a frame
+# later, so a game at 30 fps is shown at 60. auto gives each refresh of the display between two game frames a frame, up
+# to 4 a game frame (the refresh over 30 fps), shown one game frame later. 3x to 8x make that many frames for each of the
+# game's, and no more than the display can show: a game at 60 fps on a 165 Hz display gets 2 whatever the multiplier. The
+# menu overlay is drawn on every shown frame and is never interpolated. No frame is made after a gap of over 100 ms, when
+# the picture's size changes, for the game's own HDR picture, when the display's refresh is below the rate asked, or
+# unless vk_present is mailbox or immediate. Changes while the game runs take effect at once.
 # frame_gen = off
 # Picture shape when the window's shape differs from the game resolution's (a 16:9 picture in a 21:9 fullscreen
 # window): fit, the default, keeps the shape, with black bars at the sides or above and below, so a 16:9 game in a wider

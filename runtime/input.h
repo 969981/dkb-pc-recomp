@@ -91,6 +91,10 @@ int input_mouse_direct_recent(void);
 // Rumble: SDL_RumbleGamepad on the open gamepad, low (heavy, left) and high (light, right) motor 0..65535 for ms
 // milliseconds. 1 if a gamepad with rumble took it. Callable from any thread.
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
+// HD rumble for a Switch Pro Controller or Joy-Con (TOTK_RUMBLE_HD=auto): v[side][] = amplitude and frequency in Hz of the
+// low band, then of the high band, sent as one SDL_SendGamepadEffect packet; ms == 0 sends neutral. While it applies,
+// input_rumble leaves that pad alone. 1 if the pad took it; any other pad returns 0. Callable from any thread.
+int input_rumble_hd(const float v[2][4], uint32_t ms);
 // Motor value for a normalised amplitude: pow(a, curve) * strength, saturated to 0..65535. Pure.
 uint16_t rumble_motor(float a, float curve, float strength);
 // TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.

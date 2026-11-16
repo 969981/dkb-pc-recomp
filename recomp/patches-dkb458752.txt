@@ -166,6 +166,11 @@ guard poolguard main 429594 429c54 ptr x10 f875794a
 # #218 crash 2, f_700011a7e0 (1.0.0 f_7000108020, -0x127c0): an empty node free list gives a null node at 11acd0;
 # the guard continues the id loop at 11ac28.
 guard poolguard main 11acd0 11ac28 ptr x8 f9400909
+# #317: the edge loop of the job graph builder f_70001114a0 (1.0.0 f_700011d680, +0xc1e0) looks both ends of each
+# edge up in the graph's node table (+0x28) and a null target slot faulted at 1116d4 (its pending count at +0x28). The
+# guard checks the target before the link slot is taken (ldadd at 111678) and goes to the loop's next edge (1116fc),
+# the path the code already takes when the link pool is full.
+guard poolguard main 111678 1116fc ptr x12 b82b01ce
 
 # #136 (1.0.0 main+0x1692c00): the call to f_7000474574 (1.0.0 f_7000534324) in the 3.2.0 walk, skipped to the loop tail at 1887e4c.
 guard poolguard main 1887df0 1887e4c ptr x0 97afb1e1
@@ -175,3 +180,56 @@ guard poolguard main 1887df0 1887e4c ptr x0 97afb1e1
 set recguard DKB_FIX_RECORD_GUARD 1
 guard recguard main a55a84 a58388 ptr x10 3dc00140
 guard recguard main a55a9c a58388 ptr x11 3dc00160
+
+# #214 fontk (1.0.0 sites in brackets): the text raster at 2x, as in patches-dkb100.txt, which explains the method.
+# Placed by hand: the cache class gained a second glyph engine at +0x1ed0 in 3.2.0, so the fill, the width query and
+# the cache init are restructured (register allocation, merged blocks) and only the kerning query and the descriptor
+# default keep the 1.0.0 words. The +0x1ed0 engine is the descriptor's +0x8c8, which the default (f_7000554b80) clears
+# and neither of its callers (553a40, 554578) sets, so only the nn::fontll paths are patched; where a block is shared
+# with the +0x1ed0 path (the ascent at 747d70, the fill's multiplier and table loads, the width tail at 886ffc) that
+# path is not taken. Off by default; DKB_FONT_SCALE=1 turns it on.
+set fontk DKB_FONT_SCALE 0
+# SetScale (PLT 1b7b460), lsl #(16 + (size - 97 >> 31)): cache fill (size ldrh'd from node +0x36 into w8) [6f85a0].
+site fontk main 747d10 53103d01 51018501 531f7c21 11004021 1ac12101
+# Width query f_7000886f00 [86f42c]: the size w22 masked where it is set [86f450], then SetScale [86f4c4].
+site fontk main 886f2c 2a0203f6 12003c56   # mov w22, w2 -> and w22, w2, #0xffff
+site fontk main 887060 53103ec1 510186c1 531f7c21 11004021 1ac122c1
+# Kerning query f_700088724c [86f658], the same words (size w20, masked into the scratch register).
+site fontk main 8873d8 53103e81 12003e81 51018421 531f7c21 11004021 1ac12281   # [86f7e4]
+site fontk main 887454 53103e81 12003e81 51018421 531f7c21 11004021 1ac12281   # [86f860]
+site fontk main 8874dc 53103e81 12003e81 51018421 531f7c21 11004021 1ac12281   # [86f8e8]
+# Init f_7000581590 [49e1d0], fontll path: multipliers halved (s1 dead, reloaded at 582018 or written before any read).
+site fontk main 5820c0 bd001140 1e2c1001 1e210800 bd001140   # [49ebc8]
+site fontk main 5820d0 bd001540 1e2c1001 1e210800 bd001540   # [49ebd8]
+# Pixel tables 1c10 and 1c28 stored doubled; w10 and w8 are rewritten by the next instruction.
+site fontk main 581c8c 7839796a 531f794a 7839796a   # [49e75c]
+site fontk main 581cc0 78397928 531f7908 78397928   # [49e794]
+# Ascent (ucvtf of the size ldr'd from node +0x36): shifted left by (size - 97 >> 31). x10 holds the entry here, so
+# the scratch is w9 (last read at 747d60, next written at 747d98) and w12 (read at 747d6c, next written at 747da8).
+site fontk main 747d70 7e21d821 1e260029 5101852c 531f7d8c 1acc2129 1e230121   # [6f85d0]
+# Fill: the multiplier pair ldp s10, s8 times 2^bit through w9 (rewritten at 747f70) and w10 (dead after 747f68).
+site fontk main 747f6c 2d42212a 2d42212a 79406f89 4b0903e9 11018129 531f7d29 53092129 1e26014a 0b09014a 1e27014a 1e26010a 0b09014a 1e270148   # [6f87e8]
+# Fill: pixel tables shifted right by bit through w11 (not read in the function before its write at 74835c). 748048
+# is the 1c10 load of the path that 1.0.0 sends through 6f8950 and 3.2.0 sends past 748120 to 748128.
+site fontk main 747fc8 78e8794a 78e8794a 79406f8b 4b0b03eb 1101816b 531f7d6b 1acb294a   # [6f8844]
+site fontk main 747fe4 78687929 78e87929 79406f8b 4b0b03eb 1101816b 531f7d6b 1acb2929 12003d29   # [6f8860]
+site fontk main 748004 78e87929 78e87929 79406f8b 4b0b03eb 1101816b 531f7d6b 1acb2929   # [6f8890]
+site fontk main 748020 78e87929 78e87929 79406f8b 4b0b03eb 1101816b 531f7d6b 1acb2929   # [6f88ac]
+site fontk main 748048 78e8794a 78e8794a 79406f8b 4b0b03eb 1101816b 531f7d6b 1acb294a   # [6f8950, other path]
+site fontk main 748120 78e8794a 78e8794a 79406f8b 4b0b03eb 1101816b 531f7d6b 1acb294a   # [6f8950]
+site fontk main 748140 78687929 78e87929 79406f8b 4b0b03eb 1101816b 531f7d6b 1acb2929 12003d29   # [6f8970]
+# Width query: the multiplier times (bit ? 2.0 : 1.0) through w10 (dead after 887004; w8 is live here, unlike 1.0.0)
+# and s1 (written at 887018), the 1c10 table shifted right by bit through w10 [86f530, 86f538].
+site fontk main 887008 bd401120 bd401120 4b1603ea 1101814a 531f7d4a 5309214a 3209194a 1e270141 1e210800
+site fontk main 887010 78f47929 78f47929 4b1603ea 1101814a 531f7d4a 1aca2929
+# Kerning query multipliers [86f830, 86f8ac, 86f94c, 86f9b8].
+site fontk main 887424 bd401128 bd401128 12003e89 4b0903e9 11018129 531f7d29 53092129 32091929 1e270121 1e210908
+site fontk main 8874a0 bd401128 bd401128 12003e89 4b0903e9 11018129 531f7d29 53092129 32091929 1e270121 1e210908
+site fontk main 887540 bd401100 bd401100 12003e88 4b0803e8 11018108 531f7d08 53092108 32091908 1e270102 1e220800
+site fontk main 8875ac bd401100 bd401100 12003e88 4b0803e8 11018108 531f7d08 53092108 32091908 1e270102 1e220800
+# Raster work buffer x4 in the descriptor default [473cf0]: one engine, as on 1.0.0. f_7000554b80's callers are the
+# two paths of one builder: 553a40 in it and 554578 in the font-list parser f_7000554520 it calls.
+site fontk main 554e90 52a00109 52a00409
+# Glyph cache texture x2 each way [49e4a0, 49e4ac]; w9 is stored to +0x28/+0x2c and rewritten.
+site fontk main 5818b8 b9400369 b9400369 531f7929
+site fontk main 5818c8 b9400769 b9400769 531f7929

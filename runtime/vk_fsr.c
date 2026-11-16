@@ -1,6 +1,6 @@
 // AMD FidelityFX Super Resolution 1 on the present path (vk_present.c present_image): when the window is larger than
 // the game's output, EASU scales the game's crop rectangle to the swapchain size and RCAS sharpens it, in place of the
-// bilinear vkCmdBlitImage. TOTK_UPSCALER=fsr|bilinear picks it (dlss counts as fsr), TOTK_SHARPNESS (0..100, 0 = no RCAS pass) sets RCAS;
+// bilinear vkCmdBlitImage. TOTK_UPSCALER=fsr|bilinear picks it (dlss, fsr3 and fsr4 count as fsr), TOTK_SHARPNESS (0..100, 0 = no RCAS pass) sets RCAS;
 // both apply at the next frame.
 //
 // Per frame: EASU reads the source through a view of its own format (the same colour conversion the blit does) and
@@ -160,8 +160,8 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                   VkImage dst, const int out[4]) {
     int cw = crop[2], ch = crop[3];
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
-    const char *up = cfg_value("TOTK_UPSCALER");   // dlss (vk_dlss.c) replaces the game's upscaler and keeps FSR here
-    if ((strcmp(up, "fsr") && strcmp(up, "dlss")) || (dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
+    const char *up = cfg_value("TOTK_UPSCALER");   // dlss (vk_dlss.c) and fsr3 (vk_fsr3.c) replace the game's upscaler and keep FSR here
+    if ((strcmp(up, "fsr") && strcmp(up, "dlss") && strcmp(up, "fsr3") && strcmp(up, "fsr4")) || (dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);
     if (!F.ok || !ensure_images(c, dw, dh)) return 0;

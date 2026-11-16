@@ -36,6 +36,23 @@ static const struct { const char *name, *env; int on; } sets[] = {
 static void *page;
 #endif
 
+#if RT_PATCH_COUNT
+// The switch a set gets from the settings: a set with a row in the settings table takes its default from there; the
+// generated default serves the rest.
+static int wanted(int i) {
+    const char *e = cfg_get(sets[i].env);
+    return cfg_meta(sets[i].env) ? cfg_bool(sets[i].env) : e && *e ? strcmp(e, "0") != 0 : sets[i].on;
+}
+#endif
+
+int rt_patch_wanted(int set) {
+#if RT_PATCH_COUNT
+    if (set >= 0 && set < RT_PATCH_COUNT) return wanted(set);
+#endif
+    (void)set;
+    return 0;
+}
+
 void rt_patches_init(void) {
 #if RT_PATCH_COUNT
     if (!plat_mem_commit(RT_PATCH_PAGE, 0x1000))
@@ -45,9 +62,7 @@ void rt_patches_init(void) {
     size_t n = 0;
     list[0] = 0;
     for (int i = 0; i < RT_PATCH_COUNT; i++) {
-        const char *e = cfg_get(sets[i].env);
-        // a set with a row in the settings table takes its default from there; the generated default serves the rest
-        rt_patch_on[i] = (uint8_t)(cfg_meta(sets[i].env) ? cfg_bool(sets[i].env) : e && *e ? strcmp(e, "0") != 0 : sets[i].on);
+        rt_patch_on[i] = (uint8_t)wanted(i);
         n += (size_t)snprintf(list + n, sizeof list - n, "%s%s %s", i ? ", " : "", sets[i].name,
                               rt_patch_on[i] ? "on" : "off");
         if (n >= sizeof list) n = sizeof list - 1;

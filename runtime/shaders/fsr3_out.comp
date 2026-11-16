@@ -1,0 +1,14 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+// The last step of upscaler = fsr3 (runtime/vk_fsr3.c): FSR 3.1's picture (RGBA16F at the output size) into the game's
+// upscale output image, whose format the game chose, so it is written without a format qualifier.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform texture2D src;
+layout(binding = 1) uniform writeonly image2D dst;
+layout(push_constant) uniform P { ivec2 size; } pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, pc.size))) return;
+    imageStore(dst, p, vec4(texelFetch(src, p, 0).rgb, 1.0));
+}
