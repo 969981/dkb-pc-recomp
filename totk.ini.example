@@ -217,8 +217,9 @@
 # frame interpolation, which also uses the scene's depth and motion. fsr3 runs only while a temporal upscaler (upscaler =
 # dlss, fsr3 or fsr4) draws the 3D below the output size, at 2x, with the display's refresh over twice the game's rate; a
 # frame it cannot make (no depth or motion, a camera cut, the first frame after a gap) gets the built-in one, and the other
-# frame_gen values always use the built-in one. The game's HUD is interpolated with the scene. Changes while the game runs
-# take effect at once.
+# frame_gen values always use the built-in one, as does the game's own HDR picture (hdr_native), which AMD's passes do
+# not take. AMD's passes are given the picture copied before the game draws its HUD, so the HUD is not moved with the
+# scene. Changes while the game runs take effect at once.
 # The menu's Frame generation made by row shows while frame_gen is 2x.
 # frame_gen_by = builtin
 # Picture shape when the window's shape differs from the game resolution's (a 16:9 picture in a 21:9 fullscreen

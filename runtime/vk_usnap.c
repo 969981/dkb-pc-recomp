@@ -505,6 +505,26 @@ static void drop(uint64_t addr, uint64_t n, uint64_t fence) {
 
 void vk_usnap_drop(uint64_t addr, uint64_t n) { drop(addr, n, U.fence); }
 
+// Whether a GPU write noted here (vk_usnap_drop: shader stores, copies, fills, reports, uniform updates, indirect
+// resets) whose fence is not done overlaps [addr, addr+n): guest memory there may not hold the GPU's bytes yet. The
+// sorted prefix of the last prune and the unsorted tail are both looked at, under drop_lock as the slices add to them.
+int vk_usnap_gpu_writing(uint64_t addr, uint64_t n) {
+    if (!n) return 0;
+    const uint64_t done = vk_sync_fence_done(), hi = addr + n;
+    int hit = 0;
+    plat_mutex_lock(&drop_lock);
+    int a = 0, b = nwr_sorted < U.nwr ? nwr_sorted : U.nwr;
+    while (a < b) {   // the first sorted entry ending above addr
+        int k = (a + b) / 2;
+        if (U.wr[k].hi <= addr) a = k + 1;
+        else b = k;
+    }
+    for (int end = nwr_sorted < U.nwr ? nwr_sorted : U.nwr; !hit && a < end && U.wr[a].lo < hi; a++) hit = U.wr[a].fence > done;
+    for (int i = nwr_sorted; !hit && i < U.nwr; i++) hit = U.wr[i].lo < hi && addr < U.wr[i].hi && U.wr[i].fence > done;
+    plat_mutex_unlock(&drop_lock);
+    return hit;
+}
+
 uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_ACQUIRE); }
 uint64_t vk_usnap_arena_bytes(void) { return __atomic_load_n(&arena_total, __ATOMIC_RELAXED); }
 

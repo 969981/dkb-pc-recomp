@@ -803,6 +803,14 @@ cmd = ["{game_exe}", "--probe-gfx-abi"]
 exclusive = true
 
 [[test]]
+name = "exe-probe-vkreset"
+tier = 3
+area = "gfx"
+cmd = ["{game_exe}", "--probe-vkreset"]
+needs = ["gpu"]
+exclusive = true
+
+[[test]]
 name = "exe-probe-astc"
 tier = 3
 area = "gfx"
