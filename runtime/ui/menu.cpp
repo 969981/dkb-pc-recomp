@@ -32,6 +32,7 @@ static int g_font_bad;
 #pragma clang diagnostic pop
 #include "ui/binds_page.h"
 #include "ui/option_rows.h"
+#include "ui/perf_counter.h"
 
 extern "C" {
 #include "cfg.h"
@@ -42,10 +43,12 @@ extern "C" {
 #include "sysinfo.h"
 #include "ui/menu.h"
 #include "ui_text.h"
+#include "window_filter.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
+int vk_antilag_available(void);   // vk_antilag.c: the device can run AMD Anti-Lag 2; its row is shown only then
 void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]);
 int res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
@@ -53,6 +56,8 @@ int frame_step_realtime(void);
 int rt_patch_set(const char *name);
 extern const int rt_game_version;
 extern const char rt_game_target[];   // build target: dkb100, dkb458752 or a TotK one
+int hdr_native_on(void);       // ov_gfx.c: the game's own HDR picture is in effect (3.2.0, hdr and hdr_native)
+int gfx_window_hdr10(void);    // gfx.h: the swapchain is HDR10 now (the CRT row's bypass note)
 // fs.h (romfs.c): romfs-patches-xbox was next to romfs-index.bin at start, and was loaded.
 int romfs_xbox_prompts_ready(void);
 int romfs_xbox_prompts_active(void);
@@ -676,6 +681,25 @@ static const char *present_note(void) {
     return note;
 }
 
+// Frame generation (vk_framegen.c, Bananza only): off, Auto (a frame for each of the display's refreshes) or a fixed
+// 2x to 8x, live; the names follow the order of cfg.c's list of values. It makes no frames in VSync (fifo) mode, which
+// the note under the value says while both are chosen. "Made by" (frame_gen_by, vk_fsr3fi.c) is shown at 2x only, the
+// one multiplier AMD's interpolation makes frames for; its note says what AMD's needs while it is chosen.
+static void rows_frame_gen(void) {
+    static const UiTextId names[] = {UI_MENU_OFF, UI_MENU_AUTO, UI_MENU_FRAME_GEN_2X, UI_MENU_FRAME_GEN_3X,
+                                     UI_MENU_FRAME_GEN_4X, UI_MENU_FRAME_GEN_5X, UI_MENU_FRAME_GEN_6X,
+                                     UI_MENU_FRAME_GEN_7X, UI_MENU_FRAME_GEN_8X};
+    const char *mode = cfg_value("TOTK_FRAME_GEN");
+    bool idle = strcmp(mode, "off") && !strcmp(gfx_window_present_mode(), "fifo");
+    opt_choice("TOTK_FRAME_GEN", UI_MENU_FRAME_GEN, names, 9, UI_MENU_FRAME_GEN_DESC,
+               idle ? menu_text(UI_MENU_FRAME_GEN_VSYNC) : nullptr);
+    if (!strcmp(mode, "2x")) {
+        static const UiTextId by[] = {UI_MENU_FRAME_GEN_BUILTIN, UI_MENU_FRAME_GEN_FSR3};
+        opt_choice("TOTK_FRAME_GEN_BY", UI_MENU_FRAME_GEN_BY, by, 2, UI_MENU_FRAME_GEN_BY_DESC,
+                   !strcmp(cfg_value("TOTK_FRAME_GEN_BY"), "fsr3") ? menu_text(UI_MENU_FRAME_GEN_BY_NEEDS) : nullptr);
+    }
+}
+
 // ---- the tabs
 // Colour adjustment (vk_color.c): a profile writes the four values (STS78721's presets, issue #136); moving one of them
 // makes the profile Custom.
@@ -722,7 +746,13 @@ static void rows_render_options(const MenuTarget &target) {
         opt_choice("TOTK_SCENE_RES", UI_MENU_SCENE_RES, scene, 2, UI_MENU_SCENE_RES_DESC);
     }
     // DLSS (runtime/vk_dlss.c) takes effect at the next start: NGX adds its Vulkan extensions when the device is made.
-    static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR, UI_MENU_UPSCALER_DLSS, UI_MENU_UPSCALER_FSR3, UI_MENU_UPSCALER_FSR4};
+    // fsr and bilinear both mean the game's own upscaler (cfg.c UPSCALER): bilinear shows as the first choice
+    static const char *const up_vals[] = {"fsr", "dlss", "fsr3", "fsr4"};
+    const char *up_names[] = {menu_text(UI_MENU_UPSCALER_GAME), menu_text(UI_MENU_UPSCALER_DLSS),
+                              menu_text(UI_MENU_UPSCALER_FSR3), menu_text(UI_MENU_UPSCALER_FSR4)};
+    int up_cur = 0;
+    for (int i = 1; i < 4; i++)
+        if (!strcmp(cfg_value("TOTK_UPSCALER"), up_vals[i])) up_cur = i;
     int fitted[4];
     gfx_fit_rect(target.image_w, target.image_h, target.width, target.height, fitted);
     bool no_upscale = target.image_w > 0 && target.image_h > 0 &&
@@ -731,12 +761,37 @@ static void rows_render_options(const MenuTarget &target) {
     // whether or not the final image fits the display, so the row stays open there: greyed out at the default
     // 2880x1620 virtual display on a 1440p or 1080p screen, it hid DLSS from the players of issues #152 and #306.
     if (no_upscale && rt_game_version) opt_disable_next(UI_MENU_NO_UPSCALING);
-    opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 5, UI_MENU_UPSCALER_DESC);
-    if (no_upscale) opt_disable_next(UI_MENU_NO_UPSCALING);
-    else if (!strcmp(cfg_value("TOTK_UPSCALER"), "bilinear")) opt_disable_next(UI_MENU_SHARPNESS_NEEDS_FSR);
+    opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC, up_cur);
+    // The Window scaling filter (TOTK_WINDOW_FILTER, live): how the finished picture is scaled to the window, with
+    // every upscaler. While the window is the picture's size the row says so and keeps the saved value. It shows the
+    // filter in effect (window_filter.h wf_resolve: upscaler = bilinear with no filter chosen is Linear); choosing one
+    // while the upscaler is the legacy bilinear also writes upscaler = fsr, so that alias stops mattering.
+    static const char *const filter_vals[] = {"linear", "catmull_rom", "lanczos", "fsr1"};
+    const char *filter_names[] = {menu_text(UI_MENU_FILTER_LINEAR), menu_text(UI_MENU_FILTER_CATMULL_ROM),
+                                  menu_text(UI_MENU_FILTER_LANCZOS), menu_text(UI_MENU_FILTER_FSR1)};
+    if (target.image_w > 0 && target.image_h > 0 && !wf_needed(target.image_w, target.image_h, fitted[2], fitted[3]))
+        opt_disable_next(UI_MENU_FILTER_NOT_NEEDED);
+    int filter_cur = wf_resolve(cfg_value("TOTK_WINDOW_FILTER"), cfg_is_set("TOTK_WINDOW_FILTER"), cfg_value("TOTK_UPSCALER"));
+    if (filter_cur == WF_BLIT) filter_cur = WF_LINEAR;   // the legacy plain blit is the linear filter without the pass
+    if (opt_choice_list("TOTK_WINDOW_FILTER", UI_MENU_FILTER, filter_vals, filter_names, 4, UI_MENU_FILTER_DESC, filter_cur) &&
+        !strcmp(cfg_value("TOTK_UPSCALER"), "bilinear"))
+        cfg_set("TOTK_UPSCALER", "fsr");
+    // Sharpness (TOTK_SHARPNESS, live): FSR 1's RCAS where it scales up, or, with another filter chosen, the window
+    // pass's sharpen at any window size (vk_fsr.c, window_filter.h wf_plan)
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId smaa[] = {UI_MENU_OFF, UI_MENU_SMAA_LOW, UI_MENU_SMAA_MEDIUM, UI_MENU_SMAA_HIGH};
     opt_choice("TOTK_SMAA", UI_MENU_SMAA, smaa, 4, UI_MENU_SMAA_DESC);
+    // CRT filter and CRT lines after SMAA, the order of the present chain (vk_crt.c); the game's own HDR picture
+    // bypasses them (SDR shaders), which the note says
+    static const UiTextId crt[] = {UI_MENU_OFF, UI_MENU_CRT_LOTTES_GRILLE, UI_MENU_CRT_LOTTES_TV, UI_MENU_CRT_HYLLIAN,
+                                   UI_MENU_CRT_ZFAST};
+    const bool crt_bypassed = hdr_native_on() && gfx_window_hdr10();
+    opt_choice("TOTK_CRT_FILTER", UI_MENU_CRT, crt, 5, UI_MENU_CRT_DESC,
+               crt_bypassed && strcmp(cfg_value("TOTK_CRT_FILTER"), "off") ? menu_text(UI_MENU_CRT_NATIVE_HDR) : nullptr);
+    if (strcmp(cfg_value("TOTK_CRT_FILTER"), "off")) {
+        static const UiTextId lines[] = {UI_MENU_CRT_LINES_240, UI_MENU_CRT_LINES_480, UI_MENU_CRT_LINES_720};
+        opt_choice("TOTK_CRT_LINES", UI_MENU_CRT_LINES, lines, 3, UI_MENU_CRT_LINES_DESC);
+    }
     if (rt_patch_set("fov") >= 0)
         opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
 }
@@ -755,8 +810,9 @@ static void rows_display_output(void) {
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
     static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
     opt_choice("TOTK_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
-    static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
-    opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
+    static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL,
+                                     UI_MENU_PERF_BREAKDOWN, UI_MENU_PERF_COUNTER};
+    opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 5, UI_MENU_PERF_OVERLAY_DESC);
     row_gpu();
 }
 
@@ -780,6 +836,8 @@ static void tab_display(float scale) {
     if (!rt_game_version && settings_section(UI_MENU_FRAME_RATE_GROUP, "frame_rate")) {
         row_fps_limit();
         opt_toggle("TOTK_REALTIME", UI_MENU_DKB_REALTIME, UI_MENU_DKB_REALTIME_DESC);
+        if (vk_antilag_available()) opt_toggle("TOTK_ANTILAG", UI_MENU_ANTILAG, UI_MENU_ANTILAG_DESC);   // vk_antilag.c
+        rows_frame_gen();
     }
     if (!rt_game_version && settings_section(UI_MENU_ULTRAWIDE, "ultrawide")) {
         row_dkb_ultrawide();
@@ -1274,19 +1332,25 @@ static int g_save_pending;   // a changed setting still waits for its write to t
 // ---- the performance overlay (TOTK_PERF_OVERLAY), in the top right corner. "fps": the frame rate over the presents of
 // the last half second. "full": a panel of perfmon.c's numbers, in the style of SavageWindRecomp's perf_overlay_draw
 // (menu.mm): the machine's load and temperatures, the frame rate and frame times with a graph, the render thread's waits.
+// "breakdown": the full panel with each frame's parts stacked in the graph's columns (perfmon.h PERF_PART_*), and a
+// legend of the parts' means.
+// "counter": the same frame rate as "fps" (the game's own presents), drawn as a large outlined number with no plate
+// (ui/perf_counter.cpp).
 // Off, it costs a cfg_version load per present.
 static unsigned g_perf_ver = ~0u;
-static int g_perf_mode;                  // 0 off, 1 fps, 2 full
+static int g_perf_mode;                  // 0 off, 1 fps, 2 full, 3 breakdown, 4 counter
 static std::atomic<int> g_perf_save;     // F10 changed the mode: totk.ini is written on the present thread
 static uint64_t g_perf_last_ns, g_perf_win_ns, g_perf_max_ns;
 static int g_perf_frames;
-static char g_perf_text[96];
+static char g_perf_text[96];             // fps mode: the line; counter mode: the number alone
 
-static int perf_mode_of(const char *s) { return !strcmp(s, "full") ? 2 : !strcmp(s, "fps") ? 1 : 0; }
+static int perf_mode_of(const char *s) {
+    return !strcmp(s, "counter") ? 4 : !strcmp(s, "breakdown") ? 3 : !strcmp(s, "full") ? 2 : !strcmp(s, "fps") ? 1 : 0;
+}
 
 extern "C" void menu_perf_cycle(void) {
-    static const char *const modes[] = {"off", "fps", "full"};
-    cfg_set("TOTK_PERF_OVERLAY", modes[(perf_mode_of(cfg_value("TOTK_PERF_OVERLAY")) + 1) % 3]);
+    static const char *const modes[] = {"off", "fps", "full", "breakdown", "counter"};
+    cfg_set("TOTK_PERF_OVERLAY", modes[(perf_mode_of(cfg_value("TOTK_PERF_OVERLAY")) + 1) % 5]);
     g_perf_save.store(1);
 }
 
@@ -1322,12 +1386,12 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         int m = perf_mode_of(cfg_value("TOTK_PERF_OVERLAY"));
         if (m != g_perf_mode) {
             g_perf_last_ns = 0, g_perf_text[0] = 0;
-            if (m == 2) perf_gpu_once(t);
-            perfmon_mode(m);
+            if (m == 2 || m == 3) perf_gpu_once(t);
+            perfmon_mode(m == 4 ? 1 : m);   // the counter only needs the presents' times, as fps
         }
         g_perf_mode = m;
     }
-    if (g_perf_mode != 1) return;
+    if (g_perf_mode != 1 && g_perf_mode != 4) return;
     uint64_t d = now - g_perf_last_ns;
     if (!g_perf_last_ns || d > 2000000000ull) {   // first frame, or a stall the window should not average in
         g_perf_win_ns = g_perf_max_ns = 0;
@@ -1337,7 +1401,8 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         g_perf_frames++;
         if (d > g_perf_max_ns) g_perf_max_ns = d;
         if (g_perf_win_ns >= 500000000ull) {
-            snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), g_perf_frames * 1e9 / g_perf_win_ns);
+            snprintf(g_perf_text, sizeof g_perf_text, g_perf_mode == 4 ? "%.0f" : menu_text(UI_PERF_LINE_FPS),
+                     g_perf_frames * 1e9 / g_perf_win_ns);
             g_perf_win_ns = g_perf_max_ns = 0;
             g_perf_frames = 0;
         }
@@ -1399,9 +1464,12 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     else if (!rt_game_version)
         snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_UPSCALE), scene[0], scene[1], out[0], out[1]);
     else snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
-    if (t->scaler == 2) {
+    if (t->scaler >= 2) {   // FSR 1 or the scaling pass: the filter's name and the slider
+        static const UiTextId filters[] = {UI_MENU_FILTER_FSR1, UI_MENU_FILTER_LINEAR, UI_MENU_FILTER_CATMULL_ROM,
+                                           UI_MENU_FILTER_LANCZOS};
         int s = cfg_int("TOTK_SHARPNESS");
-        snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
+        snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_SHARP), menu_text(filters[ImClamp(t->scaler - 2, 0, 3)]),
+                 s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
         snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
@@ -1423,6 +1491,46 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
         perf_right(v[i], false);
     }
     ImGui::EndTable();
+}
+
+// The Breakdown's colours, bottom to top (perfmon.h PERF_PART_*): blue the game's work and the frame prep, warm colours
+// the waits on the renderer's own work, red the GPU, grey the present and the frame limit.
+static const ImU32 perf_part_col[PERF_PARTS] = {
+    IM_COL32(46, 150, 204, 255),  IM_COL32(120, 190, 240, 255), IM_COL32(237, 194, 84, 255), IM_COL32(242, 140, 51, 255),
+    IM_COL32(178, 115, 217, 255), IM_COL32(230, 77, 77, 255),   IM_COL32(150, 150, 150, 255), IM_COL32(95, 95, 95, 255)};
+static const UiTextId perf_part_label[PERF_PARTS] = {UI_MENU_OV_PART_GAME, UI_MENU_OV_REPLAY,    UI_MENU_OV_SHADER_WAIT,
+                                                     UI_MENU_OV_PIPE_WAIT, UI_MENU_OV_PART_TEX,  UI_MENU_OV_PART_FENCE,
+                                                     UI_MENU_OV_PART_PRESENT, UI_MENU_OV_PART_PACE};
+
+// Each frame of the history a column of its parts, stacked from the bottom, and the frame time as a line over them; as
+// wide as the panel, which it does not widen (as PlotLines in perf_full_draw)
+static void perf_breakdown_graph(const PerfStats &s, float top, float height) {
+    ImGuiWindow *win = ImGui::GetCurrentWindow();
+    const float max_x = win->DC.CursorMaxPos.x;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    ImGui::Dummy(ImVec2(w, height));
+    win->DC.CursorMaxPos.x = max_x;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + height), IM_COL32(0, 0, 0, 90));
+    const float cw = w / PERF_HISTORY, bottom = p.y + height;
+    for (int i = 0; i < PERF_HISTORY; i++) {
+        const float x0 = p.x + i * cw, x1 = x0 + cw;
+        float y = bottom;
+        for (int k = 0; k < PERF_PARTS && y > p.y; k++) {
+            const float hh = s.frame_part[i][k] / top * height;
+            if (hh <= 0) continue;
+            const float y1 = y - hh > p.y ? y - hh : p.y;
+            dl->AddRectFilled(ImVec2(x0, y1), ImVec2(x1, y), perf_part_col[k]);
+            y = y1;
+        }
+    }
+    for (int i = 1; i < PERF_HISTORY; i++) {
+        if (s.frame_ms[i - 1] <= 0 || s.frame_ms[i] <= 0) continue;
+        const float ya = bottom - (s.frame_ms[i - 1] < top ? s.frame_ms[i - 1] : top) / top * height;
+        const float yb = bottom - (s.frame_ms[i] < top ? s.frame_ms[i] : top) / top * height;
+        dl->AddLine(ImVec2(p.x + (i - 0.5f) * cw, ya), ImVec2(p.x + (i + 0.5f) * cw, yb), IM_COL32(140, 212, 79, 255));
+    }
 }
 
 static void perf_full_draw(const MenuTarget *t, float scale) {
@@ -1479,11 +1587,25 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
     // as wide as the panel the tables size; the plot does not count toward that width, so the panel can still shrink
     ImGuiWindow *win = ImGui::GetCurrentWindow();
     float max_x = win->DC.CursorMaxPos.x;
-    ImGui::PlotLines("##ft", s.frame_ms, PERF_HISTORY, 0, nullptr, 0, top, ImVec2(-FLT_MIN, 48 * scale));
+    if (g_perf_mode == 3) perf_breakdown_graph(s, top, 64 * scale);
+    else ImGui::PlotLines("##ft", s.frame_ms, PERF_HISTORY, 0, nullptr, 0, top, ImVec2(-FLT_MIN, 48 * scale));
     win->DC.CursorMaxPos.x = max_x;
+    // Breakdown: the parts' means over the last second, each label in its colour, under the graph
+    if (g_perf_mode == 3 && ImGui::BeginTable("##perfb", 2, ImGuiTableFlags_SizingFixedFit)) {
+        static const PerfCol c1[] = {{UI_MENU_OV_FMT_MS, 888.88f}};
+        ImGui::TableSetupColumn("##b0", ImGuiTableColumnFlags_WidthStretch);
+        perf_column("##b1", c1, 1);
+        for (int k = PERF_PARTS - 1; k >= 0; k--) {   // the legend in the graph's order, top first
+            perf_label(perf_part_label[k], ImGui::ColorConvertU32ToFloat4(perf_part_col[k]));
+            perf_cell(UI_MENU_OV_FMT_MS, s.part_ms[k]);
+        }
+        perf_label(UI_MENU_OV_GPU_TIME, gpu_c);
+        perf_cell(UI_MENU_OV_FMT_MS, s.gpu_ms);
+        ImGui::EndTable();
+    }
     // per frame, averaged over the last half second; the labels' column stretches, so the numbers end at the panel's
     // right edge, and the table still asks for no more than its widest label and number
-    if (ImGui::BeginTable("##perfw", 2, ImGuiTableFlags_SizingFixedFit)) {
+    if (g_perf_mode == 2 && ImGui::BeginTable("##perfw", 2, ImGuiTableFlags_SizingFixedFit)) {
         static const PerfCol c1[] = {{UI_MENU_OV_FMT_MS, 888.88f}, {UI_MENU_OV_PER_FRAME, 888.8f}};
         ImGui::TableSetupColumn("##w0", ImGuiTableColumnFlags_WidthStretch);
         perf_column("##w1", c1, 2);
@@ -1506,11 +1628,12 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
 }
 
 static void perf_draw(const MenuTarget *t, float scale) {
-    if (g_perf_mode == 2) return perf_full_draw(t, scale);
+    if (g_perf_mode == 2 || g_perf_mode == 3) return perf_full_draw(t, scale);
     float w = (float)t->width;
     if (!g_perf_mode || !g_perf_text[0]) return;
     // with the menu open: under its window, over the dimming layout_menu drew before
     ImDrawList *dl = g_open.load(std::memory_order_relaxed) ? ImGui::GetBackgroundDrawList() : ImGui::GetForegroundDrawList();
+    if (g_perf_mode == 4) return perf_counter_draw(dl, scale, w, g_perf_text, menu_text(UI_PERF_FPS_LABEL));
     ImVec2 sz = ImGui::CalcTextSize(g_perf_text);
     float pad = 6 * scale;
     ImVec2 p(w - 12 * scale - sz.x - pad * 2, 12 * scale);   // the top right corner: the game's HUD leaves it empty

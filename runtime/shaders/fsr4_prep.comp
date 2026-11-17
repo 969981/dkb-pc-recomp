@@ -1,0 +1,35 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+// SPDX-License-Identifier: GPL-3.0-or-later
+// AMD FSR 4's inputs (runtime/vk_fsr4.c, upscaler = fsr4), at the render size, in one pass, from the inputs upscaler =
+// fsr3 and dlss share (vk_dlss.c vk_temporal_inputs):
+//  - colour: the input of the game's own upscaler as it is, without negative values; a NaN is 0, as one would stay in
+//    the library's history for good
+//  - depth: the scene depth reversed (1 - d). The game's depth is not reversed (0 at the near plane), and the library
+//    is told it is (FFX_UPSCALE_ENABLE_DEPTH_INVERTED)
+//  - motion: the camera motion vectors vk_temporal_inputs made (where each pixel was a frame ago minus where it is now,
+//    in render pixels, x right and y down, without the jitter), copied into an image of exactly the render size
+// The library takes images of its own formats and sizes: the game's depth is a depth-format image and the vectors sit in
+// an image of the output size, of which the render size's corner is used.
+//
+// One pass for the three inputs and the reversed depth are the design of Longshot's gpu/vk/shaders/fsr3_prep.comp
+// (https://git.magicbean.dev/MagicBeanDev/Longshot, GPL-3.0-or-later, Copyright (C) 2026 the Longshot contributors; the
+// commit is in THIRD_PARTY_NOTICES.md); the colour is not clamped to 1 here.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform texture2D scene;
+layout(binding = 1) uniform texture2D scene_depth;
+layout(binding = 2) uniform texture2D vectors;
+layout(binding = 3, rgba16f) uniform writeonly image2D color;
+layout(binding = 4, r32f) uniform writeonly image2D depth;
+layout(binding = 5, rg16f) uniform writeonly image2D motion;
+layout(push_constant) uniform P { ivec2 size; } pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, pc.size))) return;
+    vec3 c = texelFetch(scene, p, 0).rgb;
+    c = mix(c, vec3(0.0), isnan(c));
+    imageStore(color, p, vec4(clamp(c, 0.0, 64000.0), 1.0));
+    imageStore(depth, p, vec4(1.0 - texelFetch(scene_depth, p, 0).r));
+    imageStore(motion, p, vec4(texelFetch(vectors, p, 0).rg, 0.0, 0.0));
+}

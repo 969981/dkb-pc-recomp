@@ -29,6 +29,7 @@ static PerfStats g_stats;                    // the machine numbers the sampler 
 
 // ---- frames
 static float g_ring[PERF_HISTORY];
+static float g_parts[PERF_HISTORY][PERF_PARTS];   // the Breakdown's parts of each frame in g_ring
 static uint64_t g_ring_at[PERF_HISTORY];   // when each frame ended
 static int g_ring_n, g_ring_pos;
 
@@ -39,10 +40,33 @@ static struct {
     int64_t up0, up;
 } g_win;
 
+// A frame's parts (perfmon.h PERF_PART_*): its waits by cause, the replay less the waits made inside it (pipeline
+// builds, shader translation and texture uploads happen while the frame's commands are made), and the rest as the
+// game's own work. With the replay on its own thread (replay_async) the parts can overlap and add up to more than the
+// frame; they are then scaled to it, so the column keeps the frame's height and its proportions.
+static void frame_parts(float *p, uint64_t interval_ns, const uint64_t *w, uint64_t replay_ns) {
+    const double ms = interval_ns / 1e6;
+    double v[PERF_PARTS] = {0};
+    v[PERF_PART_XLATE] = w[PERF_XLATE] / 1e6;
+    v[PERF_PART_PIPE] = w[PERF_PIPE] / 1e6;
+    v[PERF_PART_TEX] = w[PERF_TEX] / 1e6;   // PERF_TEX includes the ASTC decodes (host.h)
+    v[PERF_PART_FENCE] = w[PERF_FENCE] / 1e6;
+    v[PERF_PART_PRESENT] = w[PERF_DRAIN] / 1e6;
+    v[PERF_PART_PACE] = w[PERF_PACE] / 1e6;
+    const double rep = replay_ns / 1e6 - v[PERF_PART_XLATE] - v[PERF_PART_PIPE] - v[PERF_PART_TEX];
+    v[PERF_PART_REPLAY] = rep > 0 ? rep : 0;
+    double sum = 0;
+    for (int k = 1; k < PERF_PARTS; k++) sum += v[k];
+    const double scale = sum > ms && sum > 0 ? ms / sum : 1.0;
+    for (int k = 1; k < PERF_PARTS; k++) p[k] = (float)(v[k] * scale);
+    p[PERF_PART_GAME] = (float)(sum * scale < ms ? ms - sum * scale : 0);
+}
+
 void perfmon_frame(uint64_t now, uint64_t interval_ns, const uint64_t *wait_ns, uint64_t replay_ns,
                    int64_t tex_uploads) {
     plat_mutex_lock(&g_lock);
     if (interval_ns) {
+        frame_parts(g_parts[g_ring_pos], interval_ns, wait_ns, replay_ns);
         g_ring[g_ring_pos] = (float)(interval_ns / 1e6);
         g_ring_at[g_ring_pos] = now;
         g_ring_pos = (g_ring_pos + 1) % PERF_HISTORY;
@@ -58,21 +82,25 @@ void perfmon_frame(uint64_t now, uint64_t interval_ns, const uint64_t *wait_ns, 
 }
 
 static void frames_summary(PerfStats *s, uint64_t now) {   // (lock held)
-    double sum = 0, mx = 0;
+    double sum = 0, mx = 0, parts[PERF_PARTS] = {0};
     int n = 0;
     for (int i = 0; i < g_ring_n; i++) {
         int k = (g_ring_pos - 1 - i + PERF_HISTORY) % PERF_HISTORY;
         if (now - g_ring_at[k] > 1000000000ull) break;   // the last second
         sum += g_ring[k];
         if (g_ring[k] > mx) mx = g_ring[k];
+        for (int j = 0; j < PERF_PARTS; j++) parts[j] += g_parts[k][j];
         n++;
     }
+    for (int j = 0; j < PERF_PARTS; j++) s->part_ms[j] = n ? (float)(parts[j] / n) : 0;
     s->fps = n && sum > 0 ? (float)(n * 1000.0 / sum) : 0;
     s->frame_ms_avg = n ? (float)(sum / n) : 0;
     s->frame_ms_max = (float)mx;
     for (int i = 0; i < PERF_HISTORY; i++) {   // oldest first; frames not seen yet read 0
         int age = PERF_HISTORY - 1 - i;
-        s->frame_ms[i] = age < g_ring_n ? g_ring[(g_ring_pos - 1 - age + 2 * PERF_HISTORY) % PERF_HISTORY] : 0;
+        const int k = (g_ring_pos - 1 - age + 2 * PERF_HISTORY) % PERF_HISTORY;
+        s->frame_ms[i] = age < g_ring_n ? g_ring[k] : 0;
+        for (int j = 0; j < PERF_PARTS; j++) s->frame_part[i][j] = age < g_ring_n ? g_parts[k][j] : 0;
     }
 }
 
@@ -327,7 +355,7 @@ static void sampler(void *arg) {
 void perfmon_mode(int mode) {
     perf_set_overlay(mode);
     plat_mutex_lock(&g_lock);
-    if (mode == 2) {
+    if (mode >= 2) {
         g_smp.want = 1;
         if (!g_smp.alive) {
             machine_clear(&g_stats);   // "-" until the first sample, not the numbers of the last time

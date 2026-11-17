@@ -29,6 +29,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "temporal_idle.h"
 #include "vk.h"
 #include "vk_exec.h"
 #include "vk_spec.h"
@@ -206,9 +207,9 @@ static int load(void) {
 #undef GET
     if (NGX_FAILED(required(&n_inst_ext, &inst_ext, &n_dev_ext, &dev_ext))) n_inst_ext = n_dev_ext = 0;
     rt_log("dlss: NGX core loaded, it asks for %u instance and %u device extensions", n_inst_ext, n_dev_ext);
-    if (!strcmp(cfg_value("TOTK_SCENE_RES"), "full"))   // dkb_wide.c dkb_scene_ratio: the game then runs no upscale
+    if (!strcmp(cfg_value("TOTK_SCENE_RES"), "full") && !dkb_native_aa())   // dkb_wide.c dkb_scene_ratio: no upscale
         rt_log("dlss: scene_res = full draws the 3D scene at the output size, so the game runs no upscale for DLSS to "
-               "replace; set scene_res = auto for DLSS");
+               "replace (update 3.2.0 makes it run one for native anti-aliasing); set scene_res = auto for DLSS");
     return 1;
 }
 
@@ -727,7 +728,7 @@ int vk_temporal_inputs(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_t ow, 
 }
 
 // After the evaluation of the frame vk_temporal_inputs prepared: this frame's camera is the next one's last, and the
-// next frame's scene is jittered when this one was temporal.
+// next frame's scene is jittered when this one was temporal. The inputs go on to frame interpolation (vk_fsr3fi.c).
 void vk_temporal_done(const VkTemporalIn *t, uint32_t w, uint32_t h, uint32_t ow) {
     S.have = 0, J.used = 0;
     J.w = w, J.h = h, J.frame = frames_now();
@@ -740,6 +741,7 @@ void vk_temporal_done(const VkTemporalIn *t, uint32_t w, uint32_t h, uint32_t ow
         J.prev_ok = 0, jdepth_set(VK_NULL_HANDLE);
     }
     next_jitter(w, ow);
+    vk_fsr3fi_note(t, w, h);   // AMD's frame interpolation takes the same depth and motion at this frame's present
 }
 
 #ifdef _WIN32
@@ -807,6 +809,7 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
     }
     F.fresh = 0;
     vk_temporal_done(&t, w, h, ow);
+    vk_fsr3fi_note_picture(cb, out);   // the picture before the game's HUD, for AMD's frame interpolation
     // A summary at the first evaluation and then every 1800 (half a minute of DLSS at 60 fps; the game skips its
     // upscaler, and DLSS with it, while it renders at the output size). The projection's z column shows an off-centre
     // or jittered frustum of the game's own.
@@ -821,6 +824,73 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
 }
 
 #endif   // _WIN32
+
+// ---- letting go of what an upscaler no longer chosen holds (temporal_idle.h)
+
+// The last frame each upscaler was the setting's choice, and the last any was (which keeps the inputs both share).
+static struct {
+    uint64_t frame;   // the frame last ticked
+    uint64_t dlss_at, fsr3_at, fsr4_at, any_at;
+} Idle;
+
+#ifdef _WIN32
+// DLSS has something to give back: its feature, or one still waiting in the grave for the GPU.
+static int dlss_holding(void) {
+    if (F.h) return 1;
+    for (int i = 0; i < GRAVE; i++)
+        if (grave[i].h) return 1;
+    return 0;
+}
+
+// The feature goes into the grave as one replaced by a new output size does (feature), released by reap once the
+// submission being recorded is done: any evaluation of it was recorded in that submission or an earlier one. NGX's own
+// memory for it (the model's buffers and history) goes with it. The next evaluation makes a feature again, about 80 ms
+// of the frame that chooses DLSS again (feature). A full grave leaves the feature, and the next frame asks again.
+static void dlss_idle_release(uint64_t fence) {
+    reap();
+    if (!F.h) return;
+    int i = 0;
+    while (i < GRAVE && grave[i].h) i++;
+    if (i == GRAVE) return;
+    grave[i].h = F.h, grave[i].fence = fence;
+    F.h = NULL;
+    F.w = F.h_ = F.ow = F.oh = 0;
+    rt_log("dlss: not used for %u frames: its feature let go; the next upscale with it makes it again",
+           TEMPORAL_IDLE_FRAMES);
+}
+#else
+static int dlss_holding(void) { return 0; }
+static void dlss_idle_release(uint64_t fence) { (void)fence; }
+#endif
+
+// No temporal upscaler is chosen: the motion-vector and depth images they share are freed once the GPU is done with
+// them (vk_defer_*). The pass's pipeline stays. AMD's frame interpolation may have noted their views for the present of
+// a frame before, so its note goes first (vk_fsr3fi_note without inputs).
+static void inputs_idle_release(void) {
+    vk_fsr3fi_note(NULL, 0, 0);
+    drop_inputs();
+    rt_log("temporal: no upscaler chosen for %u frames: the motion-vector and depth images let go; the next upscale "
+           "makes them again", TEMPORAL_IDLE_FRAMES);
+}
+
+// Once per presented frame, from op_dispatch on the replay thread, which is also the thread that records the upscalers
+// (dlss_upscale there): a release never overlaps an evaluation. Frames without a compute dispatch (some menus) tick at
+// the next one that has.
+void vk_temporal_idle_tick(uint64_t fence) {
+    uint64_t f = frames_now();
+    if (f == Idle.frame) return;
+    Idle.frame = f;
+    int dlss = vk_dlss_wanted() && !strcmp(cfg_value("TOTK_UPSCALER"), "dlss");
+    int fsr3 = vk_fsr3_wanted(), fsr4 = vk_fsr4_wanted();
+    if (dlss) Idle.dlss_at = f;
+    if (fsr3) Idle.fsr3_at = f;
+    if (fsr4) Idle.fsr4_at = f;
+    if (dlss || fsr3 || fsr4) Idle.any_at = f;
+    if (temporal_idle_due(f, Idle.dlss_at, dlss, dlss_holding())) dlss_idle_release(fence);
+    if (temporal_idle_due(f, Idle.fsr3_at, fsr3, vk_fsr3_holding())) vk_fsr3_idle_release();
+    if (temporal_idle_due(f, Idle.fsr4_at, fsr4, vk_fsr4_holding())) vk_fsr4_idle_release(fence);
+    if (temporal_idle_due(f, Idle.any_at, dlss || fsr3 || fsr4, F.mv || F.depth)) inputs_idle_release();
+}
 
 void vk_dlss_release(void) {   // device idle
 #ifdef _WIN32
@@ -845,6 +915,7 @@ void vk_dlss_release(void) {   // device idle
     memset(&SH, 0, sizeof SH);
     memset(used_h, 0, sizeof used_h);
     memset(&J, 0, sizeof J);
+    memset(&Idle, 0, sizeof Idle);
 #ifdef _WIN32
     params = NULL;
 #endif

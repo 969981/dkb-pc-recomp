@@ -32,7 +32,7 @@ def draw_context(source):
     the entry points' hand-over to the helpers' copy (vk_exec_draw_h_*) is declared and never taken.
     """
     bounds = []
-    for name in ('MAX_BINDINGS', 'MAX_DESC', 'SUPPORT_BYTES'):
+    for name in ('MAX_BINDINGS', 'MAX_DESC', 'TK_N', 'SUPPORT_BYTES'):
         line = next(line for line in source.splitlines() if line.startswith(f'#define {name} '))
         bounds.append(f'#ifndef {name}\n{line}\n#endif')
     res = source[source.index('typedef struct { VkBuffer buf; VmaAllocation alloc;'):

@@ -116,6 +116,9 @@ int main(void) {
     CHECK(fg_pace_show_due(0, 0, 45 * MS, 40 * MS, 30 * MS, 20 * MS, 10 * MS) == 45 * MS);    // the line
     CHECK(fg_pace_show_due(0, 0, 90 * MS, 40 * MS, 30 * MS, 20 * MS, 10 * MS) == 60 * MS);    // a game frame and a step at most
     CHECK(fg_pace_show_due(0, 0, 20 * MS, 40 * MS, 30 * MS, 20 * MS, 10 * MS) == 40 * MS);    // behind: from now
+    // later than the cap (job_at + interval + step = 60 ms): the cap, which is past, so the frame goes out at once and
+    // counts as late, as Hookshot does it
+    CHECK(fg_pace_show_due(0, 0, 90 * MS, 80 * MS, 30 * MS, 20 * MS, 10 * MS) == 60 * MS);
     // The display thread on a synthetic clock: the game hands over a set every gap with up to +-jitter (a fixed pattern),
     // each frame shown at its due time (presents take no time). Fixed 2x and 4x: the frames go out evenly, interval / n
     // apart, the gaps between shown frames within 2 ms of that on at least 95% of them, and no set is shown later than

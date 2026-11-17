@@ -1,9 +1,20 @@
 #version 450
 // From Hookshot gpu/vk/shaders/fg_luma.comp, https://github.com/NotRexed/Hookshot @ fab8cb37641714bd839ae83c2a7bc582bedc4d70, GPL-3.0
 // quarter-size luma of a frame (each texel the mean of 4x4 pixels)
+// pq (vk_framegen.c record): the frame is the game's own HDR picture, Rec. 2020 PQ code values. Each pixel's luma is
+// then taken to the SDR picture's scale, the sRGB code of its light over paper white (white, in nits), so that block
+// matching (fg_flow.comp) weighs a change as it does in SDR; highlights above paper white go above 1.
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, r16f) uniform writeonly image2D dst;
+layout(push_constant) uniform P { int pq; float white; } pc;
+float sdr_scale(float c) {
+    if (pc.pq == 0) return c;
+    const float p = pow(max(c, 0.0), 1.0 / 78.84375);   // SMPTE ST 2084 to light, 1 = 10000 nits
+    const float q = max(p - 0.8359375, 0.0) / (18.8515625 - 18.6875 * p);
+    const float l = 10000.0 * pow(q, 1.0 / 0.1593017578125) / pc.white;
+    return l <= 0.0031308 ? l * 12.92 : 1.055 * pow(l, 1.0 / 2.4) - 0.055;
+}
 void main() {
     const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(g, imageSize(dst)))) return;
@@ -11,6 +22,7 @@ void main() {
     float sum = 0.0;
     for (int y = 0; y < 4; y++)
         for (int x = 0; x < 4; x++)
-            sum += dot(texelFetch(src, min(g * 4 + ivec2(x, y), s), 0).rgb, vec3(0.299, 0.587, 0.114));
+            sum += sdr_scale(dot(texelFetch(src, min(g * 4 + ivec2(x, y), s), 0).rgb,
+                                 pc.pq != 0 ? vec3(0.2627, 0.678, 0.0593) : vec3(0.299, 0.587, 0.114)));
     imageStore(dst, g, vec4(sum / 16.0));
 }

@@ -34,7 +34,7 @@
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; } PresentJob;
+typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; VkFiInputs fi; uint64_t antilag; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -42,7 +42,7 @@ static PresentJob job;
 static int pending, busy, present_thread;
 
 // Sleeps on a high-resolution timer to 1 ms before at, then yields until at: the timer alone wakes up to ~0.5 ms late.
-static void wait_until(uint64_t at) {
+void vk_wait_until(uint64_t at) {   // vk.h; the frame generation's display thread waits with it too
     uint64_t now = kern_now_ns();
     if (at > now + 1500000) plat_wait_ns(at - now - 1000000);
     while (kern_now_ns() < at) plat_yield();
@@ -89,7 +89,8 @@ static void present_main(void *arg) {
         // `made` replaces the blit below, and busy goes down as soon as that buffer is submitted; 1 is 2x, shown by
         // vk_fg_show below, 2 is Auto and 3x to 8x, whose display thread presents the frames, so this thread is free for
         // the next job at once
-        int made = vk_fg_record(j.image, j.format, j.w, j.h, j.has_crop ? j.crop : NULL, flight_on ? j.frame : 0);
+        int made = vk_fg_record(j.image, j.format, j.w, j.h, j.has_crop ? j.crop : NULL, &j.fi,
+                                flight_on ? j.frame : 0, j.antilag);
         if (!made) {
             if (flight_on) vk_thumbs_frame(j.frame);
             vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
@@ -103,10 +104,14 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
-        if (made == 1) vk_fg_show(job_pending, flight_on ? j.frame : 0);   // paces and flips itself, and never waits on a new job
-        else if (!made && present_hold()) wait_until(j.at);
+        if (made == 1) vk_fg_show(job_pending, flight_on ? j.frame : 0, j.antilag);   // paces and flips itself, and never waits on a new job
+        else if (!made && present_hold()) vk_wait_until(j.at);
         uint64_t t1 = kern_now_ns();
-        if (!made) vk_present_flip();
+        if (!made) {
+            // AMD Anti-Lag 2 (vk_antilag.c): the game frame's present stage goes right before its present
+            vk_antilag_present(j.antilag);
+            vk_present_flip();
+        }
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)
@@ -132,8 +137,9 @@ void vk_present_drain(void) {
 
 // The present after the frame count: resolves the image and hands the blit to the present thread. queued: when the game
 // presented; value: the timeline value queued for this present (asynchronous replay), 0 for the next one (synchronous).
+// antilag: the frame's Anti-Lag 2 index, taken when the game presented (vk_be_present).
 static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uint64_t queued, uint64_t frame,
-                          uint64_t value) {
+                          uint64_t value, uint64_t antilag) {
     static volatile int32_t n_skipped;
     vk_exec_frame_log(t, frame);
     vk_mem_census(frame);
@@ -151,12 +157,15 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         return;
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
-                    .at = at_ns, .queued = queued, .value = value};
+                    .at = at_ns, .queued = queued, .value = value, .antilag = antilag};
     if (crop) {
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
     }
     vk_upload_flush(0);   // an upload vk_texture_get just recorded goes before the blit
+    // The depth and motion the temporal upscaler was given for this frame (vk_fsr3fi.c): taken here, on the thread that
+    // recorded the frame, before the next frame's are noted
+    vk_fsr3fi_take(&j.fi);
     plat_mutex_lock(&pl);
     if (!present_thread) {
         if (!plat_thread_spawn(present_main, NULL, "vk present", 0)) rt_fatal("vk: cannot start the present thread");
@@ -175,6 +184,7 @@ enum { RI_SUBMIT, RI_PRESENT, RI_RELEASE, RI_WRITE_BACK };
 typedef struct {
     int kind, n, has_crop, crop[4];
     uint64_t value, submit_no, at, queued, submitted_ticks;
+    uint64_t antilag;   // RI_PRESENT: the frame's Anti-Lag 2 index (vk_antilag_frame)
     uint64_t *h;
     const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
                         // RI_WRITE_BACK: at is the guest address, queued the size
@@ -254,7 +264,7 @@ static void replay_main(void *arg) {
             free((void *)it.tex);
         } else {
             uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
-            present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
+            present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value, it.antilag);
         }
         plat_mutex_lock(&rl);
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
@@ -367,7 +377,8 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     if (!gfx_replay_async()) {
         uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
         perf_present(frame);   // before vk_exec_frame_log, which resets the frame's exec counts the flight recorder reads
-        present_image(t, crop, at_ns, kern_now_ns(), frame, 0);
+        present_image(t, crop, at_ns, kern_now_ns(), frame, 0, vk_antilag_frame());
+        vk_antilag_input();   // AMD Anti-Lag 2: the next frame's input stage, where the driver waits for its start
         return;
     }
     // Frame bound: the replay thread handled the previous present before this one is queued.
@@ -383,12 +394,13 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     uint64_t frame = ++game_frames;
     perf_present(frame);
     if (frame % 1800 == 0) replay_log(frame, 0);
-    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns()};
+    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns(), .antilag = vk_antilag_frame()};
     if (crop) {
         it.has_crop = 1;
         for (int i = 0; i < 4; i++) it.crop[i] = crop[i];
     }
     replay_enqueue(&it);
+    vk_antilag_input();
 }
 
 // vk_pipeline.c drops a released program's pipelines here.

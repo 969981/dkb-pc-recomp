@@ -1,0 +1,26 @@
+#version 450
+// The picture of a frame without the game's HUD, for AMD FSR 3.1's frame interpolation (vk_framegen.c, vk_fsr3fi.c).
+// Bananza draws its HUD into the upscaled picture (linear R11G11B10F) after the upscale, then one last draw scales that
+// picture to the window texture with bilinear filtering and the sRGB encoding of the target's format. `picture` is the
+// upscaled picture copied before the HUD (vk_fsr3fi_note_picture); this does that last draw's work on it. Where the
+// result matches the frame as shown (within `tol`: the last draw's own rounding), the shown pixel is kept exactly, so
+// AMD's inpainting pass (ffx_frameinterpolation_inpainting.h computeInpainting, which treats every difference between
+// the two as HUD) leaves those pixels to the interpolation; elsewhere, the HUD's pixels, it gives the scene behind.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D picture;   // linear filtering, clamped to the edge
+layout(binding = 1) uniform sampler2D shown;     // the frame as presented: sRGB-encoded bytes in an RGBA8 image
+layout(binding = 2, rgba8) uniform writeonly image2D dst;
+layout(push_constant) uniform P { float tol; } pc;
+vec3 encode(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+void main() {
+    const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 d = imageSize(dst);
+    if (any(greaterThanEqual(g, d))) return;
+    const vec3 scene = encode(textureLod(picture, (vec2(g) + 0.5) / vec2(d), 0.0).rgb);
+    const vec4 s = texelFetch(shown, g, 0);
+    const vec3 diff = abs(scene - s.rgb);
+    imageStore(dst, g, max(diff.r, max(diff.g, diff.b)) <= pc.tol ? s : vec4(scene, s.a));
+}

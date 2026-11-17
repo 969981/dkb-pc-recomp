@@ -321,8 +321,9 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     plat_mutex_unlock(&r->lock);
 }
 
-// ---- render tick: one frame each time the output device has taken the ring below its target (audio_mixer_pace_ns),
-// or every sample_count / sample_rate seconds of the host clock without a device, while stopped or while it stalls
+// ---- render tick: one frame every sample_count / sample_rate seconds of the host clock, nudged toward the output
+// target while the device paces rendering (audio_mixer_fill, render_thread); plain host time without a device, while
+// stopped or while it stalls
 static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) {
     if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate) return;
     double want = v->fraction + out_seconds * v->in.sample_rate * (v->in.pitch > 0 ? v->in.pitch : 1.0);
@@ -360,16 +361,35 @@ static void render_thread(void *p) {
     const uint64_t frame_ns = (uint64_t)r->param.sample_count * 1000000000ull / (uint64_t)r->param.sample_rate;
     const double frame = (double)r->param.sample_count / r->param.sample_rate;
     uint64_t next = kern_now_ns();
+    const int64_t block = (int64_t)r->param.sample_count;
     while (plat_cas32(&r->running, 0, 0)) {
         uint64_t now = kern_now_ns();
-        int64_t pace = audio_mixer_pace_ns(r, now);
-        if (pace > 0) {
-            plat_wait_ns((uint64_t)pace);
-            continue;
-        }
-        if (pace == 0) {
-            next = now + frame_ns;   // where the timer goes on if the device stops pacing
-        } else {
+        // Even pacing (Linux crackle fix, dkb-pc-recomp #133 / #272): one frame every frame_ns of host time, as the Switch's
+        // DSP renders, nudged by at most 5 % toward the output target so the queue stays there. Rendering whenever the
+        // device had taken the ring below the target made bursts of four or five frames after each large device period
+        // (1024 frames on PipeWire), with no game update between them, and the output clicked at every 240-frame edge.
+        // A burst is still allowed only to refill a nearly empty queue (start, underrun).
+        int64_t have, target, period;
+        if (audio_mixer_fill(r, now, &have, &target, &period)) {
+            if (have > target + 2 * period) {   // well above the target: let the device take some first
+                int64_t ns = (have - target - period) * 1000000000ll / (int64_t)r->param.sample_rate;
+                plat_wait_ns((uint64_t)(ns < 500000 ? 500000 : ns));
+                next = kern_now_ns();
+                continue;
+            }
+            // Steady state the queue saws between about target - period / 2 and target + period / 2 as the device takes a
+            // period at a time; more than half a period and two blocks under that low point it is behind (start,
+            // underrun): refill now instead of at the +5 % ramp.
+            if (have < target - period - 2 * block || have < 2 * block) {
+                next = now + frame_ns;   // refill now
+            } else {
+                double err = (double)(have - target) / (double)(target > 0 ? target : 1);   // > 0: too full
+                double k = 1.0 + (err * 0.1 > 0.05 ? 0.05 : err * 0.1 < -0.05 ? -0.05 : err * 0.1);
+                if (next > now) plat_wait_ns(next - now);
+                else if (now - next > 100000000ull) next = now;
+                next += (uint64_t)((double)frame_ns * k);
+            }
+        } else {   // no device, stopped or stalled: the host clock alone
             if (next > now) plat_wait_ns(next - now);
             else if (now - next > 100000000ull) next = now;   // fell far behind (debugger, sleep): resynchronise
             next += frame_ns;

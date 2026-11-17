@@ -1,3 +1,87 @@
+## Draft: next release (since 0.4.0)
+
+Draft, not released. It lists what is on `bananza` since the tag `v0.4.0`. The 0.4.0 notes follow below, unchanged.
+
+Not run in play by us: the Lanczos window filter at 1440p, AMD FSR 3.1 frame interpolation, AMD Anti-Lag 2 on AMD hardware, FSR 4 on AMD hardware and HD rumble on real controllers. The CRT and window filters and the frame interpolation come from community pull requests and have had little testing in play.
+
+### What is new
+
+- **Crashes.** A null edge target in the job graph builder is guarded on 1.0.0 and 3.2.0 (#317). A call that crashed after the Forest Layer snow tunnel gets a guard that skips it when its slot is null (#136, still open until the reporter retests). A GPU that finishes nothing for 30 seconds is reported as a device loss instead of a silent freeze (#329). A failed swapchain rebuild destroys the retired swapchain (#332). The frame generation display thread no longer takes its start lock under the present lock (#343).
+- **Picture and upscalers.** `upscaler = fsr3` is AMD FSR 3.1 temporal upscaling and `upscaler = fsr4` is AMD FSR 4 through your own AMD DLLs (#270, #333); both are off by default and fsr4 has not been run on AMD hardware by us. DLSS, FSR 3.1 and FSR 4 also run as native anti-aliasing at `scene_res = full` on 3.2.0 (#345). Only draws that test or write depth are jittered (#321, #325), and the upscaler dispatch is found by its shape when its hash is not a listed one (#323). The upscaler row stays open on Bananza, and DLSS says in the log why it does not run (#152, #306). Window scaling filter: `window_filter = fsr1`, `linear`, `catmull_rom` or `lanczos`, with Sharpness at any window size (#340); `fsr1` stays the default, and Lanczos at 1440p has not been run by us. CRT filters: `crt_filter = off` (default), `lottes_grille`, `lottes_tv`, `hyllian` or `zfast`, with `crt_lines` (#342). ASTC textures stored as BC3 are copied instead of skipped, which is meant to bring back the Ingot Isle textures (#310, awaiting the reporter). Text above 1080p is sharper behind `DKB_FONT_SCALE=1` (#214, off by default). Dug terrain builds on RADV (#322).
+- **Frame generation.** `frame_gen` has an Auto mode and 3x to 8x besides 2x, with the pacing they need (#334); it is off by default. At 2x, `frame_gen_by = fsr3` makes the frame with AMD FSR 3.1 frame interpolation instead of the built-in one (#346, off by default, not run by us), and it gets the frames without their HUD (#348). Frames are also made from the game's own HDR picture (#337). The Display tab has a Frame generation row and a Made by row (#349), and a set that waited is counted in the log (#352).
+- **Performance.** The uniform snapshot takes shortcuts (`TOTK_USNAP_FAST`) and deferred guest reads are written back without waiting, on by default, about 1.5 ms a frame in Canyon Layer (#312). `TOTK_MIRROR_OWN` leaves the VRAM mirror's own GPU writes out of the sync (#295), `TOTK_CALL_REF` records some CallCommands as one call (#307), and a submission's GPU writes are copied back in one pass (#328). `TOTK_DRAW_MERGE` draws runs of c4-only draws as instanced draws and is off by default (#300). The end of a sliced pass is held back without the recorder thread too (#292), and sliced passes are recorded by default on AMD's proprietary driver on the RX 9070 and 9070 XT, the chip measured (#298; RDNA 1 and 2 are left out, #84, #155). An upscaler that is no longer chosen releases its images after 120 frames (#351). On Linux the shader disk caches get 10 GiB of room unless you set a size (#330), and on Intel under Windows the pipeline cache data is fetched only while no pipeline is being built (#331).
+- **Sound.** The audio renderer is paced evenly instead of in bursts after each device period, which is meant to remove the crackling on a 1024-frame device (#133, #272, #347); #272 awaits the reporter.
+- **Languages and text.** Polish (`pl`, `EUpl`, `pl-PL`) is a language choice (#335).
+- **Input.** `pad:touchpad` can be bound, so the DualSense or DualShock 4 touchpad click can open the map (#291). HD rumble goes to a Switch Pro Controller or Joy-Con as amplitude and frequency (#285, not run on real controllers by us). The Controls tab builds against SDL older than 3.4.18 (#324).
+- **Installer and Linux.** The setup's host check builds against the release sysroot on Linux, so the AppImage no longer fails at step 1 (#293), and its last check accepts a CPU that has no AVX2 when you build for x86-64-v2 (#318). `vulkan_driver` runs a Mesa build of your own on Linux without a wrapper script (#339). The `--warm-shaders` and `--prepare-shaders` library builds run at below-normal priority on one core fewer than the machine has, from 4 cores up (#3).
+- **Diagnostics.** The performance overlay has a Breakdown mode that stacks each frame's parts in the graph (#341) and a Counter mode, a large FPS number with a small label (#350); both are values of `perf_overlay`. AMD Anti-Lag 2 is `antilag = 1`, off by default, on an AMD GPU whose driver has VK_AMD_anti_lag (#338); not run on AMD hardware by us. `TOTK_MEM_REPORT=N` logs where the process's commit goes, and `tools/lowend_bench.py` runs a low-end benchmark.
+
+### Pull requests in this release
+
+Thank you to everyone who sent code. Each one below is on `bananza` since 0.4.0:
+
+- #292 Hold back the end of a sliced pass without the recorder thread too (@GlebShekovtsov)
+- #294 Read page stamps under gen_lock in TOTK_MEMORY=verify (@Zorkats)
+- #295 Leave the VRAM mirror's own GPU writes out of mirror_sync (TOTK_MIRROR_OWN) (@Zorkats)
+- #296 Commit the probe's heap before the freeze checks (exe-probe-gfx-abi with the lazy heap) (@thatbananaman08)
+- #298 Record sliced passes by default on AMD's proprietary driver too (@GlebShekovtsov)
+- #300 Draw runs of c4-only draws as instanced draws (TOTK_DRAW_MERGE, off by default) (@Zorkats)
+- #307 Record CallCommands of a recording without deferred records as one call instead of a copy (TOTK_CALL_REF) (@thatbananaman08)
+- #312 Take shortcuts in the uniform snapshot and write deferred reads back without waiting, about 1.5 ms a frame in Canyon Layer (@Zorkats)
+- #321 Jitter only the draws that test or write depth, so the temporal upscalers are not handed a picture shifted twice (@roverdrubber)
+- #322 Build the geometry stage of dug terrain on RADV, whose input locations past 15 the location check refused (@roverdrubber)
+- #323 Take the game's upscaler dispatch for DLSS, FSR 3.1 and FSR 4 by its shape when its hash is not one of the listed ones (@roverdrubber, landed by hand)
+- #324 Build the Controls tab against SDL older than 3.4.18, whose headers have no SDL_GAMEPAD_TYPE_STEAM (@roverdrubber)
+- #325 Jitter the scene draws by their depth test alone, as the review of #321 noted, and say which draws that leaves out (@roverdrubber)
+- #326 Say in geometry_validate that taking the vertex stage's location limit on RADV is deliberate, as the review of #322 asked (@roverdrubber)
+- #328 Copy a submission's GPU writes back to guest memory in one pass (@roverdrubber, landed by hand)
+- #329 Report a GPU that finishes nothing for 30 seconds as a device loss (@roverdrubber)
+- #330 Give Mesa's and NVIDIA's shader disk caches 10 GiB of room on Linux unless the player set a size (@roverdrubber, landed by hand)
+- #331 Fetch the pipeline cache's data only while no pipeline is being built on Intel under Windows (@roverdrubber, landed by hand)
+- #332 Destroy the retired swapchain when creating its replacement fails (@roverdrubber, landed by hand)
+- #333 Give FSR 4 an input pass, FSR 3.1's output pass, a Linux library and depth flags (@roverdrubber)
+- #334 Add frame generation's Auto mode and the 3x to 8x multipliers, with the pacing they need (@roverdrubber, landed by hand)
+- #337 Make frames from the game's own HDR picture too (@roverdrubber)
+- #338 Add AMD Anti-Lag 2 as an option (antilag = 1) (@roverdrubber)
+- #339 Add an optional vulkan_driver setting so a Mesa build of the player's own can run the game on Linux without a wrapper script (@roverdrubber)
+- #340 Give the window a choice of scaling filter, with Sharpness at any window size and the game's own HDR picture for the filters chosen (@roverdrubber)
+- #341 Add a Breakdown mode to the performance overlay (@roverdrubber)
+- #342 Add Hookshot's CRT filters to the present (crt_filter) (@roverdrubber)
+- #343 Keep the frame generation display thread from taking the start lock under the present lock (@roverdrubber)
+- #345 Run DLSS, FSR 3.1 and FSR 4 as native anti-aliasing at scene_res = full (@roverdrubber)
+- #346 Add AMD FSR 3.1 frame interpolation as a way to make frame generation's 2x frames (frame_gen_by = fsr3) (@roverdrubber)
+- #347 Pace the audio renderer evenly instead of in bursts after each device period (@Gabinou22s)
+- #356 Refill a behind audio queue at once, drop the dead device pacing path (@Gabinou22s)
+- #348 Give AMD FSR 3.1 frame interpolation the frames without their HUD, so the HUD is not moved with the scene (@roverdrubber)
+- #349 Add Frame generation and its Made by row to the Display tab (@roverdrubber)
+- #350 Add a Counter value to the performance overlay: a large FPS number with a small label, after Hookshot's (@roverdrubber)
+- #351 Let an upscaler no longer chosen release its images, feature or context after 120 frames (@roverdrubber)
+- #352 Count frame generation's set waits, name Auto's flight thumbnails, and correct its pacing comment and docs (@roverdrubber)
+
+### Issues closed or answered by this release
+
+Thank you to everyone who reported a problem. Open ones wait for the reporter to retest.
+
+- #133 Linux audio static with a 1024-frame period (@xenovorx), closed; #272 the same on Windows (@q1209786034-netizen), open, retest asked (#347)
+- #152 DLSS not working properly (@Gavury), closed, and #306 DLSS/DLAA is not working (@badman101011), open: the upscaler row stays open on Bananza and DLSS says in the log why it does not run
+- #84 (@philneitz) and #155 (@bubblesnout), closed: AMD RDNA 1 and 2 are left out of the default replay threads
+- #291 Touchpad button in the controls (@Dimiduh), closed
+- #270 FSR 4 / FSR 3.1 temporal upscaler (@MatyMeatBoy), open: fsr3 and fsr4 are on `bananza`
+- #285 HD rumble request (@vink2212), open: Switch Pro Controller and Joy-Con only, untested
+- #293 AppImage error on step 1 (@Nikoroq), open
+- #310 Ingot Isle cave-in missing textures (@shiwntr), open
+- #317 FPS drops after a while (@li-beihai), open: one null edge in the job graph builder is guarded
+- #318 No AVX2 (@Enzo1383), open
+- #335 Polish language (@nario999), open
+- #136 Forest Layer snow tunnel crash (@luis-7654), open
+- #214 Blurry text at 1440p (@Felitendo), open: `DKB_FONT_SCALE=1`
+
+### Thanks
+
+Pull requests since 0.4.0: roverdrubber, Zorkats, GlebShekovtsov, thatbananaman08, Gabinou22s. Thank you.
+
+---
+
 DKB Recomp 0.4.0: a static recompilation of *Donkey Kong Bananza* (Switch 2) to a native Windows exe with a Vulkan renderer. It is still experimental (0.x). On recent NVIDIA cards players get well past the first level (Glacier, Snow World, Tempest), and it can crash.
 
 **The packages hold no game data, and no release ever will.** You build the game on your own PC from your own dump of **1.0.0 or the 3.2.0 update**, given as a `.nup` file or as ExeFS and RomFS folders. Other updates are not supported.

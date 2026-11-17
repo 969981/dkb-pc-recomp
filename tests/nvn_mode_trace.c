@@ -62,6 +62,7 @@ int hdr_trace_hit(const Cpu *c,const char *name) {(void)c;(void)name;return 0;} 
 void hdr_trace_dump(const char *name,const void *p) {(void)name;(void)p;}
 void nvn_called(uint8_t *seen,const char *name) {(void)seen;(void)name;__atomic_fetch_add(&normal_calls,1,__ATOMIC_RELAXED);}
 int cfg_bool(const char *name) {
+    if(!strcmp(name,"TOTK_CALL_REF"))return 0;   // nvn_api_cmd.c inline_recording: copies, as before
     if(strcmp(name,"TOTK_NVN2_MODE_TRACE"))abort();__atomic_fetch_add(&config_calls,1,__ATOMIC_RELAXED);return on;
 }
 int cfg_int(const char *name) {

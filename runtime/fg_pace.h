@@ -34,7 +34,9 @@ static inline int fg_pace_over_refresh(int64_t interval, double refresh_hz) {
 // refresh's time, but never over 100 ms ahead of now (a game frame time gone wrong is not held back); otherwise on the
 // even line, next_show (the frame shown before plus the set's step, interval / frames), but never later than one step
 // past one game frame after the set was made (job_at + interval + step), so the line stays at most one game frame
-// behind what the game handed over and starts again from now when it fell behind; never before now.
+// behind what the game handed over. Hookshot's order: the floor at now comes first, so when the display thread is
+// later than that cap (a present held up) the time returned is past, and the set's frames go out at once and count as
+// late.
 static inline int64_t fg_pace_show_due(int timed, int64_t set_due, int64_t next_show, int64_t now, int64_t job_at,
                                        int64_t interval, int64_t step) {
     int64_t due = timed ? set_due : next_show;

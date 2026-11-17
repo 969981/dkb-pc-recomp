@@ -113,6 +113,7 @@
 
 #define MAX_BINDINGS 128
 #define MAX_DESC 1024
+#define TK_N 2048   // token_of's slot tokens per context, by texture id (a power of two)
 #define CHUNK_BYTES (4u << 20)
 #define ZERO_BYTES 65536u
 #define QUAD_MAX 65536u   // quads the shared index list covers (1.5 MiB); a longer draw builds its own list
@@ -432,8 +433,8 @@ typedef struct DrawCtx {
     SkipList skip_vs, skip_fs, skip_cs;
     uint64_t wait_frame, wait_left_ns;   // prepare_draw: the frame the full-screen wait budget belongs to, what is left
     struct { int on, filtered; uint64_t filter; unsigned records; } GCL;   // geometry_context_log; on -1: not read yet
-    // token_of: slot tokens by texture id, with the pool, slot generation and memory generation they were read under.
-    struct { uint64_t pool, mg, tok; uint32_t id, sg; VkSlotStamp st; } tk[256];
+    // token_of: slot tokens by texture id, with the pool, slot generation and pool generation they were read under.
+    struct { uint64_t pool, mg, tok; uint32_t id, sg; VkSlotStamp st; } tk[TK_N];
     // twin_prepare: textures found to need no depth twin, by texture id, with the token they resolved under.
     struct { uint64_t pool, tok; uint32_t id; } tw[64];
     int slice;                           // a slice thread's context (vk_exec_draw_slice_ctx)
@@ -482,27 +483,40 @@ DRAW_SHARED Chunk spare_chunk[SPARE_CHUNKS];
 DRAW_SHARED int nspare_pool, nspare_chunk;
 
 
-// The switches of the descriptor memo work. Each is off by default, which is bananza's behaviour, and "ab" turns it on
-// in the B blocks only (TOTK_AB), so its gain is measured inside one run. Each one is safe to flip between draws: what
-// it remembers is checked or reset whichever way it was last set.
-static int knob_on(int *mode, const char *name) {
-    if (*mode < 0) *mode = rt_knob(name, "0");
+// The switches of the descriptor memo work. Off is bananza's earlier behaviour, and "ab" turns one on in the B blocks
+// only (TOTK_AB), so its gain is measured inside one run. Each one is safe to flip between draws: what it remembers is
+// checked or reset whichever way it was last set. def is the default ("0" or "1").
+static int knob_on(int *mode, const char *name, const char *def) {
+    if (*mode < 0) *mode = rt_knob(name, def);
     return RT_KNOB_ON(*mode);
 }
 // TOTK_DESC_C0_SERIAL: a graphics stage's c0 is reused while no storage buffer of the stage was bound (ssbo_serial).
 static int c0_serial_on(void) {
     static int mode = -1;
-    return knob_on(&mode, "DESC_C0_SERIAL");
+    return knob_on(&mode, "DESC_C0_SERIAL", "0");
 }
-// TOTK_DESC_TD_HASH: the texture descriptor memo hashes the resource type into its index.
+// TOTK_DESC_TD_HASH (on by default): the texture descriptor memo hashes the resource type into its index. With it and
+// TOTK_DESC_SAMP_GEN off, 29% of the slice threads' texture lookups on Canyon Layer missed the memo and took the
+// texture lock (56% of the misses for a sampler generation moved by texture registrations, 40% for an entry taken by
+// another handle or type); with both on, 16%, and the replay took 10.5 ms a frame instead of 11.0 (four runs each,
+// interleaved; Hilltop did not change).
 static int td_hash_on(void) {
     static int mode = -1;
-    return knob_on(&mode, "DESC_TD_HASH");
+    return knob_on(&mode, "DESC_TD_HASH", "1");
+}
+// TOTK_TEX_CHECK_SHARE (on by default): a slice thread's descriptor memo hit skips the texture lock for a slot's first
+// binding in a submission when another thread already made the slot's storage check (tex_info_hit). On Canyon Layer,
+// with TOTK_DESC_SAMP_GEN and TOTK_DESC_TD_HASH on, 55% of those first bindings found the check made, the slice
+// lookups that took the lock fell from 15% to 9%, and the replay took 10.5 ms a frame instead of 10.8 (two rounds of
+// four interleaved runs each, one run of each round left out for a busy machine).
+static int tex_check_share_on(void) {
+    static int mode = -1;
+    return knob_on(&mode, "TEX_CHECK_SHARE", "1");
 }
 // TOTK_DESC_STAGE_ORIGIN: the stage memo keeps each shader's NVN 2 origin and has 2048 entries instead of 512.
 static int stage_origin_on(void) {
     static int mode = -1;
-    return knob_on(&mode, "DESC_STAGE_ORIGIN");
+    return knob_on(&mode, "DESC_STAGE_ORIGIN", "0");
 }
 
 
@@ -1166,19 +1180,32 @@ static uint64_t stage_origin(DrawCtx *dc, const prog_t *p, int nvn_stage) {
 
 
 // vk_texture_slot_token of the slot a texture or image handle names; an empty handle always resolves to nothing.
-// Each context keeps the tokens while the slot and memory generations stay: a token changes only with a registration or
-// an entry change, which bump vk_texture_slots_gen, or with a remapped pool (vk_mem_gen). A profile on eight threads
-// had 7% of the slices' recording, and then 4% of the submitting thread's replay, waiting for the texture lock here.
+// Each context keeps the tokens while the slot and pool generations stay: a token changes only with a registration or
+// an entry change, which bump vk_texture_slots_gen, or with a remapped pool (vk_mem_pool_gen: the slot lookup,
+// vk_mem_descriptor_key, reads only the pool index and page tables). A profile on eight threads had 7% of the slices'
+// recording, and then 4% of the submitting thread's replay, waiting for the texture lock here.
 // When the slot generation moved (Bananza registers descriptors all through a frame), the token is checked again without
 // the lock while its own slot was not registered again (vk_texture_slot_token_again); a later profile still had a fifth
-// of the slices' time waiting for the lock in the locked read.
+// of the slices' time waiting for the lock in the locked read. The tokens were then kept on vk_mem_gen, which also moves
+// at every submission's start and with the buffer mirrors, so every slice thread read each texture's token again under
+// the lock once a submission; keyed on the pool generation, the locked read took 3.7% of the slices' recording on
+// Canyon Layer instead of 4.4%. Most of the rest were collisions: with 256 entries, two texture ids sharing one sent
+// a tenth of the lookups to the lock. With TK_N (2048) 1.1% go there, and the Canyon Layer replay took 10.6 ms a frame
+// instead of 11.3 (three runs each, interleaved). TOTK_DESC_KEEP=0 keys them on vk_mem_gen again, with the descriptor
+// memos (desc_keep, descriptor_state), so that they start every submission empty as before.
+static int desc_keep(void) {
+    static int mode = -1;
+    if (mode < 0) mode = rt_knob("DESC_KEEP", "1");
+    return RT_KNOB_ON(mode);
+}
+
 static uint64_t token_of(const VkExec *ex, uint64_t h) {
     if (!h) return 1;
     DrawCtx *const dc = DC_OF(ex);
     int id = (int)(h & 0xfffff);
     uint32_t sg = vk_texture_slots_gen();
-    uint64_t mg = vk_mem_gen();
-    typeof(dc->tk[0]) *k = &dc->tk[(id ^ id >> 8) & 255];
+    uint64_t mg = desc_keep() ? vk_mem_pool_gen() : vk_mem_gen();
+    typeof(dc->tk[0]) *k = &dc->tk[(id ^ id >> 11) & (TK_N - 1)];
     if (k->tok && k->pool == ex->tex_pool.addr && k->id == (uint32_t)id && k->mg == mg) {
         if (k->sg == sg) return k->tok;
         uint64_t t = vk_texture_slot_token_again(&k->st);
@@ -2008,8 +2035,14 @@ static int tex_info_hit(VkExec *ex, const GfxShaderRes *r, uint64_t h, int separ
                                 : h * 0x9E3779B97F4A7C15ull ^ (uint64_t)r->type << 7 ^ (uint64_t)separate;   // as tex_info_lookup
     typeof(dc->TD[0]) *m = &dc->TD[key >> 51];
     if (!m->valid || m->context != dc->descriptor_serial || m->h != h || m->type != r->type || m->separate != separate ||
-        m->sgen != sg || m->epoch != ep || !slot_still(ex, &m->gen, m->tok, h, gen))
+        m->sgen != sg || !slot_still(ex, &m->gen, m->tok, h, gen))
         return 0;
+    // The slot's first binding in this submission by this thread: its storage check is due unless another thread has
+    // made it (vk_texture_slot_checked; the token, checked above, still names the registration it was made for).
+    if (m->epoch != ep) {
+        if (!tex_check_share_on() || !vk_texture_slot_checked((uint32_t)(m->tok >> 32), ep)) return 0;
+        m->epoch = ep;
+    }
     *out = m->out;
     out->imageLayout = m->image && ex->nfbl && in_fbl(ex, m->image) ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
                                                                       : VK_IMAGE_LAYOUT_GENERAL;
@@ -3674,14 +3707,13 @@ static int skip_fs_listed(const VkExec *ex) {
 // and their address mappings stay unchanged. A sampler table switch also changes combined image descriptors.
 // The mappings are vk_mem_pool_gen's: vk_mem_gen also moves at every submission's start and with the buffer mirrors,
 // which no descriptor key reads, and under it every memo here started each submission empty.
-// TOTK_DESC_KEEP=0 keys them on vk_mem_gen as before, so that they start every submission empty again; ab alternates
-// the two with the A/B blocks, which is how the gain of keeping them is measured inside one run.
+// TOTK_DESC_KEEP=0 keys them on vk_mem_gen as before, so that they start every submission empty again, and the texture
+// slot tokens with them (token_of); ab alternates the two with the A/B blocks, which is how the gain of keeping them is
+// measured inside one run.
 static void descriptor_state(VkExec *ex) {
     DrawCtx *const dc = DC_OF(ex);
     typeof(dc->desc_last) *const last = &dc->desc_last;
-    static int mode = -1;
-    if (mode < 0) mode = rt_knob("DESC_KEEP", "1");
-    int keep = RT_KNOB_ON(mode);
+    int keep = desc_keep();
     uint64_t mg = keep ? vk_mem_pool_gen() : vk_mem_gen();
     uint32_t sg = vk_texture_slots_gen();
     if (last->ex != ex || last->tex.addr != ex->tex_pool.addr || last->tex.count != ex->tex_pool.count ||
@@ -4414,10 +4446,13 @@ static int game_upscaler(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info
     const VkTexImage *a = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
     const VkTexImage *b = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
     // The output must be strictly larger: with equal sizes this shape (one B10G11R11 texture in, one written image out,
-    // 256 or more wide) is also any same-size post-process compute pass, so it could not be told from the upscaler.
+    // 256 or more wide) is also any same-size post-process compute pass, so it could not be told from the upscaler. The
+    // one exception is native anti-aliasing (dkb_wide.c dkb_native_aa): the game's upscale step is then made to run at
+    // full size, and that dispatch is known by the guest address that issues it, not by its shape.
+    int same = a && b && b->width == a->width && b->height == a->height && dkb_native_aa_issued_by(d->caller);
     if (!a || !b || a->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || b->format != a->format || a->samples > 1 ||
         b->samples > 1 || a->type != VK_IMAGE_TYPE_2D || b->type != VK_IMAGE_TYPE_2D || a->width < 256 ||
-        a->height < 256 || b->width <= a->width || b->height <= a->height)
+        a->height < 256 || (!same && (b->width <= a->width || b->height <= a->height)))
         return 0;
     double aspect = (double)a->width / a->height - (double)b->width / b->height;
     if (aspect < -0.02 || aspect > 0.02) return 0;
@@ -4427,9 +4462,9 @@ static int game_upscaler(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info
     while (i < ntold && told[i] != h) i++;
     if (i == ntold && ntold < 4) {
         told[ntold++] = h;
-        rt_log("upscaler: compute shader %016llx is taken for the game's upscaler by its images (%ux%u -> %ux%u, "
+        rt_log("upscaler: compute shader %016llx is taken for the game's upscaler by its images (%ux%u -> %ux%u%s, "
                "issued at %#llx)", (unsigned long long)h, a->width, a->height, b->width, b->height,
-               (unsigned long long)d->caller);
+               same ? ": the same size, native anti-aliasing" : "", (unsigned long long)d->caller);
     }
     return 1;
 }
@@ -4512,6 +4547,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     // the dispatch's binds, and the bound state is forgotten when it recorded. The replay thread's copy only: a
     // TOTK_REPLAY_PAR helper translating a dispatch leaves it to the replay thread.
     if (!OFF_MAIN(dc) && vk_dlss_wanted() && vk_dlss_warm(ex->cb, ex->fence)) vk_exec_draw_new_cb(ex), ex->dirty = VK_EXEC_DIRTY_ALL;
+    if (!OFF_MAIN(dc)) vk_temporal_idle_tick(ex->fence);   // once a frame: an upscaler not chosen lets go (vk_dlss.c)
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     dc->c0_dim[0] = (uint32_t)d->x, dc->c0_dim[1] = (uint32_t)d->y, dc->c0_dim[2] = (uint32_t)d->z;
     c0_lay_set(ex, cs);

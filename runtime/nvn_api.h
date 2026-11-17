@@ -73,8 +73,8 @@ uint64_t nvn_tex_view_offset(const tex_t *t, const view_t *v);
 
 // ---- nvn_api_cmd.c, nvn_ext.c: command buffers and their replay contract
 // A command handle (what QueueSubmitCommands receives) points at a host copy of one recording: a flat sequence of
-// 8-byte-aligned records {op_hdr, payload}, OP_BEGIN first and OP_END last. Called recordings are inlined, so a copy
-// holds no OP_CALL or OP_JUMP. Texture pointers in payloads (p_set_rt, p_copy_b2t, p_copy_t2t, p_clear_tex) are
+// 8-byte-aligned records {op_hdr, payload}, OP_BEGIN first and OP_END last. Called recordings are inlined, or with
+// TOTK_CALL_REF named by an OP_CALL record (p_jump, nested at most 6 deep); a copy holds no OP_JUMP. Texture pointers in payloads (p_set_rt, p_copy_b2t, p_copy_t2t, p_clear_tex) are
 // immutable host copies that live for the run, one per tex_t.serial. Deferred binds and pushes (payload src != 0)
 // hold the source data read at submit (nvn_submit_prepare). Payloads of the ops nvn_obj.h does not define:
 typedef struct { volatile uint32_t *val; uint32_t mode, value; } p_signal_event;   // OP_SIGNAL_EVENT; mode: NVNeventSignalMode
@@ -104,6 +104,10 @@ static inline const op_hdr *nvn_op_next(const op_hdr *h) { return (const op_hdr 
 static inline const void *nvn_op_payload(const op_hdr *h) { return h + 1; }
 int nvn_handle_live(uint64_t handle);                      // 1 while the handle's copy exists (its control memory was
                                                            // not added again)
+int nvn_call_ref_on(void);                                 // TOTK_CALL_REF: CallCommands may record OP_CALL (nvn_api_cmd.c)
+uint32_t nvn_copy_refs(uint64_t handle);                   // tests: OP_CALL records naming a copy (TOTK_CALL_REF)
+uint32_t nvn_copy_depth(uint64_t handle);                  // tests: the longest OP_CALL chain below a copy
+uint32_t nvn_copy_zombies(void);                           // tests: released copies still named or read
 uint64_t nvn_handle_bytes(uint64_t handle);                // bytes of the copy, OP_BEGIN to OP_END; 0 if not live
 uint64_t nvn_submit_count(void);                           // QueueSubmitCommands calls so far
 const char *nvn_op_name(uint32_t op);                      // "DRAW_IDX", ...; "?" past OP_COUNT_

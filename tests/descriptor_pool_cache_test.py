@@ -39,7 +39,7 @@ static uint64_t mirror_generation;     // what vk_mem_gen counts on top of them 
 static uint32_t slots_generation=7, sampler_generation=9, texture_epoch=1;
 static uint32_t address_generation;   // vk_texture.c agen of the texture's address: moves when it is destroyed
 static int keep_ab=1;                 // TOTK_DESC_KEEP is "ab" here: on while this is 1
-static unsigned remapped, replaced, sampler_overwritten, lookup_count, full_count, locked;
+static unsigned remapped, replaced, sampler_overwritten, lookup_count, full_count, locked, token_reads;
 static unsigned checks, failures;
 #define CHECK(c,message) do { checks++; if (!(c)) { failures++; fprintf(stderr,"FAIL: %s\n",message); } } while (0)
 #define HANDLE ((UINT64_C(257)<<20)|UINT64_C(257))
@@ -70,6 +70,7 @@ uint64_t vk_texture_slot_token(const dpool_ref *pool,int id) {
 }
 uint64_t vk_texture_slot_token_stamped(const dpool_ref *pool,int id,VkSlotStamp *st) {
     if (st) memset(st,0,sizeof *st);   // never checked again without the lock: every check reads the token anew
+    token_reads++;
     return vk_texture_slot_token(pool,id);
 }
 uint64_t vk_texture_slot_token_again(const VkSlotStamp *st) { (void)st; return 0; }
@@ -137,7 +138,7 @@ static const RsList *rs_list(const VkExec *ex,const VkPipeInfo *info) {
 }
 '''
     pieces = [function(draw, prefix) for prefix in (
-        'static int nvn_stage_of(', 'static int gfx_type_of(', 'static uint64_t token_of(', 'static int slot_still(',
+        'static int nvn_stage_of(', 'static int gfx_type_of(', 'static int desc_keep(', 'static uint64_t token_of(', 'static int slot_still(',
         'static uint8_t type_of_handle(', 'static int in_fbl(', 'static SubRange sub_of(',
         'static uint32_t attached_as(', 'static void descriptor_state(VkExec *ex) {', 'static void answers_for(',
         'static SubRange sampled_sub(', 'static uint32_t feedback_scan(', 'static void tex_info_lookup(',
@@ -241,6 +242,19 @@ int main(void) {
     mirror_generation++, texture_epoch++;
     expect(&ex,GFX_TEX_2D,202,505,2);
     CHECK(full_count==builds+1,"keep off: vk_mem_gen moving drops the texture descriptors, as before the switch");
+    // The slot tokens follow the same switch (token_of): kept, a vk_mem_gen move keeps them; off, each is read again.
+    keep_ab=1;
+    token_of(&ex,HANDLE);
+    unsigned reads=token_reads;
+    mirror_generation++;
+    token_of(&ex,HANDLE);
+    CHECK(token_reads==reads,"keep on: vk_mem_gen moving keeps the slot tokens");
+    keep_ab=0;
+    token_of(&ex,HANDLE);
+    reads=token_reads;
+    mirror_generation++;
+    token_of(&ex,HANDLE);
+    CHECK(token_reads==reads+1,"keep off: vk_mem_gen moving reads the slot tokens again, as before the switch");
 
     // A texture destroyed between submissions and another made in its slot: its address's generation moves, so the slot
     // token differs and the descriptor is built again, kept or not.

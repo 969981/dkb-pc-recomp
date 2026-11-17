@@ -61,6 +61,8 @@ typedef struct PoolRec {
     VkBuffer mbuf;                     // MS_ON: device-local copy of [import_lo, import_hi), same offsets as buf
     VmaAllocation malloc_;
     uint32_t acc_sub;                  // replay: the last submission that synced the mirror (mirror_sync)
+    uint32_t sub_hist;                 // mirror_lock: the submissions that synced it, bit i for acc_sub - i
+    uint32_t snap_sub;                 // replay: the last submission vk_mem_mirror_begin pre-snapped it for
     uint32_t wb_sub;                   // replay: the last submission that wrote mirror bytes back to guest memory
     uint32_t mgen;                     // gen_lock: every page write stamped up to this generation is in the mirror
                                        // (or in a copy queued before its next use)
@@ -929,6 +931,14 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
 static uint32_t *gen_chunk[GEN_CHUNKS];
 static uint32_t gen_now;                 // last generation handed out
 static PlatMutex gen_lock = PLAT_MUTEX_INIT;
+// The exclusive takes that run write-watch queries: TOTK_TRACE=perf counts the waits over 100 us (perf_lock_wait), to see
+// whether a query held under another lock moved its wait here (#317).
+static void gen_lock_x(void) {
+    if (plat_mutex_trylock(&gen_lock)) return;
+    uint64_t t0 = kern_now_ns();
+    plat_mutex_lock(&gen_lock);
+    if (rt_trace & RT_TRACE_PERF) perf_lock_wait(PERF_LOCK_GEN, kern_now_ns() - t0);
+}
 static uint64_t gen_pages[1024];
 // The newest generation stamped on any page of each 2 MiB region (the write-watch snapshot regions below): the mirror
 // sync skips regions with nothing newer than its pool's mirror.
@@ -1004,7 +1014,7 @@ void vk_guest_written(uint64_t addr, uint64_t size) {
 int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) {
     if (!size) { *now = since; return 0; }
     uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
-    plat_mutex_lock(&gen_lock);
+    gen_lock_x();
     uint32_t g = ++gen_now;
     int tracked = 1, frozen = 1;
     for (uint64_t a = lo & ~((1ull << REG_SHIFT) - 1); a < hi && frozen; a += 1ull << REG_SHIFT) frozen = mem_frozen(a);
@@ -1084,7 +1094,7 @@ int vk_mem_changed_snap(uint64_t addr, uint64_t size, uint32_t since, uint32_t e
         if (snap_at[r] != epoch) { excl = 1; break; }
     if (excl) {
         plat_mutex_unlock_shared(&gen_lock);
-        plat_mutex_lock(&gen_lock);
+        gen_lock_x();
         n_snap_calls += snap_regions(r0, r1, epoch);
     }
     int untracked = 0, changed = 0;
@@ -1529,7 +1539,7 @@ void vk_mem_dirty_submit(void) {
         PoolRec *r = pool_index.e[i].buf;
         if (r->kind == POOL_IMPORT && r->bufbound) dlist[n++] = r;
     }
-    plat_mutex_lock(&gen_lock);
+    gen_lock_x();
     uint32_t g = ++gen_now, since = dirty_gen;
     dirty_gen = g;
     for (int i = 0; i < n;) {   // one query per run of pools (sorted by address)
@@ -1648,7 +1658,8 @@ static void dirty_frame(uint64_t frame) {
 //   that stamp reported a GPU write the mirror already holds (vk_gpu_written_into); so do the
 //   nvnMemoryPoolFlushMappedRange ranges. The first use copies the whole range. The copies run in a prologue command
 //   buffer that vk_sync.c submits right before the part that accessed the mirror first, between full barriers.
-//   vk_mem_mirror_begin snaps the regions of the pools the previous submission accessed in a few merged queries.
+//   vk_mem_mirror_begin snaps, in a few merged queries, the regions of the pools the next submission is likely to
+//   access (presnap_wanted): those accessed every P submissions, for P up to TOTK_MIRROR_PRESNAP.
 // - GPU -> guest: what the replay writes into a mirror (storage buffers its shaders write, buffer copies, fills,
 //   uniform updates, texture-to-buffer copies: vk_mem_gpu_wrote) goes back into the imported buffer at the end of the
 //   submission, exact byte ranges, before the fence signals (vk_mem_mirror_end).
@@ -1665,6 +1676,7 @@ int vk_mirror_on;
 static int mirror_verify;
 static int mirror_sparse;
 static int mirror_gap = 2;             // pre-snap: hot pools at most this many 2 MiB regions apart share one query
+static int mirror_presnap = 8;         // pre-snap: longest submission period predicted (TOTK_MIRROR_PRESNAP, presnap_wanted)
 static int mirror_own = 1;             // TOTK_MIRROR_OWN: mirror_sync skips the pages own_chunk notes (rt_knob mode)
 static PoolRec **mlist;                // pool_lock: mirrored pools by import_lo
 static int nm, mcap;
@@ -1700,6 +1712,7 @@ static void mirror_unlock(int locked) {
 typedef struct {
     uint64_t subs, syncs, upload_bytes, upload_copies, first_n, first_bytes, wb_bytes, wb_copies, wb_ranges;
     uint64_t presnap_queries, sync_queries, presnap_t, sync_t, prologues, presnap_bytes, own_bytes;
+    uint64_t sync_bytes, presnap_pools, presnap_used, presnap_unused_bytes;
 } MirrorAcc;
 static MirrorAcc mrep;                 // replay: this submission
 static MirrorAcc macc;                 // mirror_stat_lock: since the last summary
@@ -1738,6 +1751,9 @@ static void mirror_mode(int discrete, uint32_t vendor) {
     const char *g = cfg_get("TOTK_MIRROR_GAP");
     mirror_gap = g && *g ? atoi(g) : 2;
     if (mirror_gap < 0) mirror_gap = 0;
+    const char *ps = cfg_get("TOTK_MIRROR_PRESNAP");
+    mirror_presnap = ps && *ps ? atoi(ps) : 8;
+    if (mirror_presnap < 0) mirror_presnap = 0;
     // Submissions a region stays unwritten before it is frozen. 60 rather than 300: in a fight 100 of the 257 MiB
     // queried a frame lay in regions idle for 30-299 submissions, and a thaw by a write costs about 60 us.
     const char *fi = cfg_get("TOTK_FREEZE_IDLE");
@@ -2094,7 +2110,7 @@ static void mirror_create(PoolRec *r) {
                  n / 1048576.0, used / 1048576.0, budget / 1048576.0);
         return refuse(r, MR_BUDGET, why);
     }
-    plat_mutex_lock(&gen_lock);
+    gen_lock_x();
     mrep.sync_queries += snap_regions(r0, r1, mepoch);
     int untracked = 0;
     for (uint64_t k = r0; k <= r1; k++) untracked |= snap_untracked[k];
@@ -2120,7 +2136,7 @@ static void mirror_create(PoolRec *r) {
     mlist[at] = r;
     nm++;
     plat_mutex_unlock(&pool_lock);
-    r->acc_sub = msub;
+    r->acc_sub = msub, r->sub_hist = 1;
     ms_set(r, MS_ON);   // after mbuf and acc_sub: what a reader of MS_ON goes on to read
     range_add(&pend, &npend, &cpend, r, 0, n);
     mrep.first_n++, mrep.first_bytes += n;
@@ -2191,8 +2207,27 @@ static void kept_cut(PoolRec *r, const MRange *run, int n) {
     r->nkept = o;
 }
 
-// Replay thread, the first access of this submission: queues the copies of the pages written since the last sync.
+// The first access of this submission (the replay thread, or a slice worker through vk_mem_use and vk_mem_pick):
+// queues the copies of the pages written since the last sync.
+// The write-watch snapshot of the pool's regions runs before mirror_lock (#317: late in a long session one
+// GetWriteWatch took 0.38 ms, and held under mirror_lock it made the replay thread and six slice workers wait 2.7 s per
+// 60 frames). mepoch only changes on the replay thread between submissions, and the body below re-checks snap_at under
+// gen_lock, so it queries again for any region the early snapshot did not cover. Lock order stays mirror, then gen:
+// gen_lock is taken and dropped here before mirror_lock.
 static void mirror_sync(PoolRec *r) {
+    {
+        uint64_t e0 = r->import_lo >> SNAP_SHIFT, e1 = (r->import_hi - 1) >> SNAP_SHIFT;
+        int need = 0;
+        plat_mutex_lock_shared(&gen_lock);
+        for (uint64_t k = e0; k <= e1; k++)
+            if (snap_at[k] != mepoch) { need = 1; break; }
+        plat_mutex_unlock_shared(&gen_lock);
+        if (need) {
+            gen_lock_x();
+            mrep.sync_queries += snap_regions(e0, e1, mepoch);   // gen_lock held exclusively, as the other increments
+            plat_mutex_unlock(&gen_lock);
+        }
+    }
     int locked = mirror_lock_if_shared();
     if (__atomic_load_n(&r->acc_sub, __ATOMIC_ACQUIRE) == msub) {   // the other thread did it meanwhile
         mirror_unlock(locked);
@@ -2207,8 +2242,10 @@ static void mirror_sync(PoolRec *r) {
         if (snap_at[k] != mepoch) { excl = 1; break; }
     if (excl) {
         plat_mutex_unlock_shared(&gen_lock);
-        plat_mutex_lock(&gen_lock);
+        gen_lock_x();
+        uint64_t b0 = ww_bytes;
         mrep.sync_queries += snap_regions(r0, r1, mepoch);
+        mrep.sync_bytes += ww_bytes - b0;
     }
     uint32_t since = r->mgen;
     int p0 = npend > 0 && pend[npend - 1].r == r ? npend - 1 : npend;   // range_add may extend the last entry
@@ -2264,6 +2301,8 @@ static void mirror_sync(PoolRec *r) {
     }
     mrep.syncs++;
     mrep.sync_t += qpc() - t0;
+    uint32_t d = msub - r->acc_sub;
+    r->sub_hist = d >= 32 ? 1u : r->sub_hist << d | 1u;
     __atomic_store_n(&r->acc_sub, msub, __ATOMIC_RELEASE);
     mirror_unlock(locked);
 }
@@ -2457,10 +2496,32 @@ static void freeze_pass(void) {
     }
 }
 
+// Whether vk_mem_mirror_begin snaps pool r's regions for the submission after prev: the submissions p and 2p before the
+// next one synced it, for some p from 1 to TOTK_MIRROR_PRESNAP (8 by default), as with a pool one of a frame's
+// submissions uses every frame. TOTK_MIRROR_PRESNAP=0 snaps the previous submission's pools instead, as before. A pool
+// missed here is snapped by its first sync (mirror_sync), in the middle of the recording, under mirror_lock and
+// gen_lock, and the slice workers wait for the lock while one runs. Bananza's submissions (4 a frame on Hilltop and
+// Canyon Layer) use disjoint pools: none of the previous submission's pools was synced by the next one, so that
+// pre-snapshot (about 200 MiB a frame) was all waste and the syncs still made about 55 queries a frame.
+// With periods up to 8, 99% of the pre-snapped pools were synced by the submission, the syncs made 2.5 queries a
+// frame, and on Canyon Layer the tracking took 0.8 ms a frame instead of 1.4 to 1.55, the waits over 100 us for
+// mirror_lock fell from about 30 to 2 per 60 frames, and the replay took 11.3 ms a frame instead of 11.9 (two
+// rounds); Hilltop's frame time did not change.
+// No slice records here, so sub_hist is read unlocked.
+static int presnap_wanted(const PoolRec *r, uint32_t prev) {
+    uint32_t d = prev - r->acc_sub;
+    if (!r->acc_sub || d >= 32) return 0;
+    uint32_t h = r->sub_hist << d;   // bit i: submission prev - i synced it
+    if (!mirror_presnap) return h & 1;
+    for (int p = 1; p <= mirror_presnap && 2 * p <= 32; p++)
+        if ((h >> (p - 1) & 1) && (h >> (2 * p - 1) & 1)) return 1;
+    return 0;
+}
+
 void vk_mem_mirror_begin(void) {
     if (!vk_mirror_on) {   // import mode: the texture checks' snapshots still skip frozen regions
         if (!freeze_idle) return;
-        plat_mutex_lock(&gen_lock);
+        gen_lock_x();
         ww_ep++;
         freeze_pass();
         plat_mutex_unlock(&gen_lock);
@@ -2474,12 +2535,18 @@ void vk_mem_mirror_begin(void) {
     uint64_t q = 0, run0 = 0, run1 = 0;
     int have = 0;
     pool_lock_shared();
-    plat_mutex_lock(&gen_lock);
+    gen_lock_x();
     ww_ep++;
     uint64_t b0 = ww_bytes;
     for (int i = 0; i < nm; i++) {
-        const PoolRec *r = mlist[i];
-        if (r->acc_sub != prev) continue;
+        PoolRec *r = mlist[i];
+        if (r->snap_sub == prev && prev) {   // pre-snapped for the previous submission: did it use the pool?
+            if (r->acc_sub == prev) mrep.presnap_used++;
+            else mrep.presnap_unused_bytes += r->import_hi - r->import_lo;
+        }
+        if (!presnap_wanted(r, prev)) continue;
+        r->snap_sub = msub;
+        mrep.presnap_pools++;
         uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
         if (have && a <= run1 + 1 + (uint64_t)mirror_gap) {
             if (b > run1) run1 = b;
@@ -2697,14 +2764,16 @@ static void mirror_log(uint64_t frame) {
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
            "first use %.2f pools %.3f MiB, own GPU writes not copied in %.3f MiB, write-back %.3f MiB in %.1f ranges, "
            "flush calls %.1f (%.3f MiB), queries %.1f pre-snap (%.1f MiB) + %.1f sync, prologues %.2f, tracking cpu "
-           "%.3f ms (pre-snap %.3f, syncs %.3f)%s",
+           "%.3f ms (pre-snap %.3f, syncs %.3f), sync snaps %.1f MiB, pre-snapped pools %.1f (used %.1f, unused "
+           "%.1f MiB)%s",
            (unsigned long long)frame, (long long)m_live_n, m_live_bytes / M, (long long)m_refused_n[MR_BUDGET],
            m_refused_bytes[MR_BUDGET] / M, (long long)m_refused_n[MR_UNTRACKED], (long long)m_refused_n[MR_OVERLAP],
            (long long)m_refused_n[MR_ALLOC], a.subs / f, a.syncs / f, a.upload_bytes / f / M, a.upload_copies / f,
            a.first_n / f, a.first_bytes / f / M, a.own_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, fc / f,
            fb / f / M,
            a.presnap_queries / f, a.presnap_bytes / f / M, a.sync_queries / f, a.prologues / f, qpc_ms(a.presnap_t + a.sync_t) / f,
-           qpc_ms(a.presnap_t) / f, qpc_ms(a.sync_t) / f, ver);
+           qpc_ms(a.presnap_t) / f, qpc_ms(a.sync_t) / f, a.sync_bytes / f / M, a.presnap_pools / f, a.presnap_used / f,
+           a.presnap_unused_bytes / f / M, ver);
 
 }
 
@@ -2954,6 +3023,10 @@ VkCommandBuffer vk_upload_begin(void) {
 }
 
 void vk_upload_end(void) { plat_rmutex_unlock(&cmd_lock); }
+
+// The open batch was numbered when vk_upload_begin opened it, and whichever thread flushes it, vk_upload_flush returns
+// that number: a caller can hold it for vk_upload_done without flushing the batch itself.
+uint64_t vk_upload_seq(void) { return open_b.seq; }
 
 // Staging memory comes from a pool of its own that keeps STG_MIN_BLOCKS blocks from its first use (at boot). In the
 // default pools VMA creates a block under the lock of its memory type (VmaBlockVector::Allocate), so a block made by

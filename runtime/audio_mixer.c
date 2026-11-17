@@ -10,9 +10,10 @@
 // ring without taking any lock: an empty ring plays silence and never blocks the render thread or the guest.
 // TOTK_AUDIO=none (or TOTK_AUDIO_OFF) mixes without a device; TOTK_AUDIO_PREFILL_MS (0..500, default 20) is the
 // queued audio the output waits for after start or underrun.
-// The device's clock paces the render thread, as the audio hardware paces the Switch's DSP (audio_mixer_pace_ns): a
-// frame is rendered when the ring holds less than the output target, max(prefill, two device periods), so the queue and
-// the delay from the game to the speakers stay there and the host and device clocks cannot drift apart. LASRecomp and
+// The device's clock paces the render thread, as the audio hardware paces the Switch's DSP (audio_mixer_fill, audren.c
+// render_thread): one frame every frame period of host time, nudged by at most 5 % toward the output target, max(prefill,
+// two device periods), so the queue and the delay from the game to the speakers stay there and the host and device
+// clocks cannot drift apart, without the bursts of frames a large device period gave (#133, #272). LASRecomp and
 // SavageWindRecomp pace their renderers by the SDL stream the same way. Without a device, while the renderer is
 // stopped and while the device takes nothing (a stall), the render thread keeps real time on its own timer; what piled
 // up meanwhile is skipped on the SDL thread once the device resumes (more than QUEUE_SLACK_MS above the target plus the
@@ -212,10 +213,10 @@ static void output_open(Mixer *m, int rate) {
         return;
     }
 #if defined(__linux__) && defined(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES)
-    // PipeWire gave a 1024-frame period, and with it the renderer works in bursts of four or five 240-frame blocks and
-    // the output clicked at every block edge (issue #133: static on all sound; 240 frames, or 768 through PulseAudio,
-    // measured clean). Ask for one block per period unless the player's SDL_AUDIO_DEVICE_SAMPLE_FRAMES says otherwise
-    // (the default priority loses to the environment variable). A guess about the cause; the measured fix is the period.
+    // PipeWire gives a 1024-frame period. Rendering in bursts of four or five 240-frame blocks after each period made
+    // the output click at every block edge (#133); render_thread now paces blocks evenly, which is clean at 1024 frames
+    // too. Asking for one block per period stays as a smaller delay to the speakers where the server grants it, unless
+    // the player's SDL_AUDIO_DEVICE_SAMPLE_FRAMES says otherwise (the default priority loses to the environment variable).
     SDL_SetHintWithPriority(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "240", SDL_HINT_DEFAULT);
 #endif
     SDL_AudioSpec spec = {SDL_AUDIO_F32, m->channels, rate};
@@ -271,15 +272,15 @@ static void output_open(Mixer *m, int rate) {
            dev.channels, m->prefill * 5, period, m->target * 1000.0 / rate);
 }
 
-int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now) {
+int audio_mixer_fill(AudioRenderer *r, uint64_t now, int64_t *have, int64_t *target, int64_t *period) {
     Mixer *m = r->mixer;
-    if (!m || !m->device_ok || !atomic_load_explicit(&m->playing, memory_order_acquire)) return -1;
+    if (!m || !m->device_ok || !atomic_load_explicit(&m->playing, memory_order_acquire)) return 0;
     uint64_t pulled = atomic_load_explicit(&m->pulled_ns, memory_order_acquire);
-    if (!pulled || (now > pulled && now - pulled > m->stall_ns)) return -1;
-    uint64_t have = atomic_load(&m->wr) - atomic_load_explicit(&m->rd, memory_order_acquire);
-    if (have < (uint64_t)m->target) return 0;
-    int64_t ns = (int64_t)((have - (uint64_t)m->target + 1) * 1000000000ull / (uint64_t)m->rate);
-    return ns < 500000 ? 500000 : ns;   // until the device has taken it below the target
+    if (!pulled || (now > pulled && now - pulled > m->stall_ns)) return 0;
+    *have = (int64_t)(atomic_load(&m->wr) - atomic_load_explicit(&m->rd, memory_order_acquire));
+    *target = m->target;
+    *period = m->period > 0 ? m->period : m->frame;
+    return 1;
 }
 
 // Render thread only.

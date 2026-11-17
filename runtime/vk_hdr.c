@@ -55,6 +55,9 @@ static Nits nits(void) {
     return N.snap[__atomic_load_n(&N.cur, __ATOMIC_ACQUIRE)];
 }
 
+// The paper white the game is told with native HDR, and the lifted picture's white otherwise (hdr_game_nits).
+float vk_hdr_game_nits(void) { return nits().game; }
+
 // ---- swapchain
 
 // With hdr = 1, the HDR10 format among the surface's (10-bit UNORM, ST 2084): 1 with *out set, else 0 and the

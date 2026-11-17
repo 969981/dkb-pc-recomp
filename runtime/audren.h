@@ -181,9 +181,8 @@ void audio_mixer_update_effects(AudioRenderer *r);
 void audio_mixer_effect_result(AudioRenderer *r, int id, void *output, unsigned size);
 uint32_t audio_mixer_sink_written(AudioRenderer *r, int id);
 void audio_mixer_render(AudioRenderer *r, double seconds);   // after audio_voices_prepare, before voices advance
-// Device pacing for the render thread at kern_now_ns `now`: 0 renders the next frame now, a positive value waits that
-// many ns (the ring is at its target), -1 leaves the pace to the render thread's timer (no device, renderer stopped,
-// device stalled).
-int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now);
+// While the output device paces rendering: 1, with the queued output frames, the output target and the device period.
+// 0 when the device does not pace (no device, stopped, stalled): the render thread keeps its own timer then.
+int audio_mixer_fill(AudioRenderer *r, uint64_t now, int64_t *have, int64_t *target, int64_t *period);
 int audio_buffer_empty(const AudrenWaveBuffer *b);   // no samples to decode: played as soon as it is reached
 void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // IAudioDevice

@@ -27,14 +27,14 @@ __attribute__((weak)) void prof_sampler_frame(uint64_t frame, uint64_t now, uint
 // TOTK_TRACE=perf, TOTK_FLIGHT=1 or the full performance overlay: event counts are taken. Wait times are always taken
 // (frame-time summary). perf_base: the part fixed at start.
 static int perf_on, perf_base;
-static int overlay;   // performance overlay mode (perf_set_overlay): 0 off, 1 fps, 2 full
+static int overlay;   // performance overlay mode (perf_set_overlay): 0 off, 1 fps, 2 full, 3 breakdown
 
 void perf_set_overlay(int mode) {
     __atomic_store_n(&overlay, mode, __ATOMIC_RELAXED);
-    __atomic_store_n(&perf_on, perf_base || mode == 2, __ATOMIC_RELAXED);
+    __atomic_store_n(&perf_on, perf_base || mode >= 2, __ATOMIC_RELAXED);
 }
 
-int perf_gpu_timing(void) { return (rt_trace & RT_TRACE_PERF) || __atomic_load_n(&overlay, __ATOMIC_RELAXED) == 2; }
+int perf_gpu_timing(void) { return (rt_trace & RT_TRACE_PERF) || __atomic_load_n(&overlay, __ATOMIC_RELAXED) >= 2; }
 
 static volatile int64_t gpu_busy_total;
 
@@ -50,7 +50,7 @@ void prof_start(void) {
     flight_init();
     atexit(perf_summary_flush);   // boot.c's _exit path goes through prof_write instead
     perf_base = (rt_trace & RT_TRACE_PERF) || flight_on;
-    perf_on = perf_base || overlay == 2;
+    perf_on = perf_base || overlay >= 2;
     if (prof_sampler_start()) atexit(prof_write);   // a --seconds run ends in _exit: boot.c calls prof_write itself first
 }
 
@@ -307,7 +307,7 @@ void perf_lock_wait(int lock, uint64_t ns) {
 }
 
 static void lock_waits_log(uint64_t frame) {
-    static const char *const name[PERF_LOCK_N] = {"texture", "memory pools", "mirror"};
+    static const char *const name[PERF_LOCK_N] = {"texture", "memory pools", "mirror", "generations"};
     char line[300];
     size_t o = 0;
     for (int i = 0; i < PERF_LOCK_N; i++) {

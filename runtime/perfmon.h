@@ -14,6 +14,13 @@ extern "C" {
 
 #define PERF_HISTORY 120   // frame times kept for the graph
 
+// The Breakdown overlay (mode 3): each frame's time in parts, from the render thread's own waits (host.h PERF_*),
+// bottom to top in the graph. Game: what is left of the frame, the game's own work. Replay: the frame's GPU commands
+// made (NVN to Vulkan), less the waits inside it, which go under their cause. Present: waits for the present thread.
+// Pacing: the frame rate limit.
+enum { PERF_PART_GAME, PERF_PART_REPLAY, PERF_PART_XLATE, PERF_PART_PIPE, PERF_PART_TEX, PERF_PART_FENCE,
+       PERF_PART_PRESENT, PERF_PART_PACE, PERF_PARTS };
+
 typedef struct {
     // the game's frames (presents), over the last second
     float fps, frame_ms_avg, frame_ms_max;
@@ -31,11 +38,16 @@ typedef struct {
     // without them), the render thread's waits for pipeline builds, shader translation and texture uploads, and the
     // textures uploaded
     float replay_ms, gpu_ms, pipe_wait_ms, xlate_ms, tex_ms, tex_uploads;
+    // Breakdown: each frame's parts in ms (they add up to frame_ms; oldest first), and the parts' means over the last
+    // second
+    float frame_part[PERF_HISTORY][PERF_PARTS];
+    float part_ms[PERF_PARTS];
 } PerfStats;
 
-// Overlay mode 0 off, 1 fps, 2 full (TOTK_PERF_OVERLAY), from the present path when the setting changes. Full starts
-// the machine sampling thread (twice a second) and turns on the event counts and GPU timestamps; leaving full stops
-// them. Off: perf_present skips perfmon_frame and nothing samples.
+// Overlay mode 0 off, 1 fps, 2 full, 3 breakdown, 4 counter (TOTK_PERF_OVERLAY), from the present path when the setting
+// changes. Full and breakdown start the machine sampling thread (twice a second) and turn on the event counts and GPU
+// timestamps; leaving them stops those. The counter is like fps: no hardware sampler. Off: perf_present skips
+// perfmon_frame and nothing samples.
 void perfmon_mode(int mode);
 // The Vulkan device the game renders on: its name, its LUID (8 bytes; NULL when the driver gives none), its PCI bus
 // (-1 unknown) and its device-local memory. Before the first perfmon_mode(2).

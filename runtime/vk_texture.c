@@ -151,6 +151,15 @@ static void rgen_bump(const void *d) {   // texture lock held
     __atomic_store_n(g, *g + 1, __ATOMIC_RELEASE);
 }
 
+// The registrations whose storage check vk_texture_by_id_locked made in this submission, as serial << 32 | submit_epoch,
+// by the registration serial (hashed): vk_texture_slot_checked answers without the texture lock. With the slice
+// threads' descriptor memos kept across submissions (vk_exec_draw.c tex_info_hit), each thread took the lock at its
+// first binding of every slot in a submission only to find the check done by another thread.
+#define CHK_N 4096
+static uint64_t chk[CHK_N];
+
+static uint32_t chk_idx(uint32_t serial) { return (uint32_t)(serial * 0x9E3779B97F4A7C15ull >> 52); }
+
 static void tex_gen_bump(uint64_t addr) {
     if (!++tex_gen) tex_gen = 1;
     slots_gen++;
@@ -1303,9 +1312,10 @@ static void descriptor_registered(DescSlot *d, uint32_t kind) {
     // A sampler lookup answers from sampler slots only (vk_sampler_by_id_locked), so a texture registered over a slot
     // that held no sampler changes no sampler answer. Bananza registers texture descriptors all through a frame, and
     // bumping samp_gen with each one made every kept texture descriptor look its sampler up again (vk_exec_draw.c TD).
-    // TOTK_DESC_SAMP_GEN (0|1|ab, off by default) bumps it for samplers only; off, every registration bumps it.
+    // TOTK_DESC_SAMP_GEN (0|1|ab, on by default; vk_exec_draw.c td_hash_on has its measure) bumps it for samplers
+    // only; off, every registration bumps it.
     static int mode = -1;
-    if (mode < 0) mode = rt_knob("DESC_SAMP_GEN", "0");
+    if (mode < 0) mode = rt_knob("DESC_SAMP_GEN", "1");
     int samplers = kind == DESC_SAMPLER || d->kind == DESC_SAMPLER;
     rgen_bump(d);   // before the slot changes: a token checked against the old generation is no longer taken
     VkDescKey key = d->key;   // the slot's identity in descriptors and desc_buckets outlives a registration
@@ -1407,6 +1417,10 @@ uint64_t vk_texture_slot_token_again(const VkSlotStamp *st) {
 }
 uint32_t vk_sampler_gen(void) { return __atomic_load_n(&samp_gen, __ATOMIC_RELAXED); }
 
+int vk_texture_slot_checked(uint32_t serial, uint32_t epoch) {
+    return serial && __atomic_load_n(&chk[chk_idx(serial)], __ATOMIC_ACQUIRE) == ((uint64_t)serial << 32 | epoch);
+}
+
 const VkTexImage *vk_texture_by_id(const dpool_ref *pool, int id, view_t *view, int *has_view) {
     lock();
     const VkTexImage *r = vk_texture_by_id_locked(pool, id, view, has_view);
@@ -1437,6 +1451,7 @@ const VkTexImage *vk_texture_by_id_locked(const dpool_ref *pool, int id, view_t 
             e->checked = submit_epoch;
         }
         s->cepoch = submit_epoch;
+        __atomic_store_n(&chk[chk_idx(d->serial)], (uint64_t)d->serial << 32 | submit_epoch, __ATOMIC_RELEASE);
     }
     if (view) *view = has_view ? s->cview : s->v;
     if (has_view) *has_view = view ? s->chas_view : s->has_view;
@@ -1835,7 +1850,7 @@ typedef struct {
     uint8_t *stg;
     size_t slice, ib;
     uint32_t gen;                 // e->gpu_gen when recorded: CPU writes after it keep the storage
-    uint64_t gseq, seq;           // e->gpu_seq when recorded; upload batch holding the copy
+    uint64_t gseq, seq;           // e->gpu_seq when recorded; upload batch holding the copy (vk_upload_seq)
     int keep;                     // vk_texture_wb_poll's decision for a completed copy: the CPU rewrote the storage
 } WbPend;
 static WbPend *wbp;
@@ -1870,10 +1885,11 @@ static int wb_record(Tex *e, const Region *g, const NVNcopyRegion *r, WbPend *p)
     vkCmdCopyImageToBuffer(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, sb, (uint32_t)g->nz, rg);
     barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT,
             VK_ACCESS_2_HOST_READ_BIT);
+    uint64_t seq = vk_upload_seq();
     vk_upload_end();
     free(rg);
     *p = (WbPend){.e = e, .g = *g, .r = *r, .sb = sb, .sa = sa, .stg = stg, .slice = slice, .ib = ib,
-                  .gen = e->gpu_gen, .gseq = e->gpu_seq};
+                  .gen = e->gpu_gen, .gseq = e->gpu_seq, .seq = seq};
     return 1;
 }
 
@@ -1904,7 +1920,7 @@ static int wb_queue(Tex *e) {
                 if (!nw) rt_fatal("vk: out of memory for a texture write-back");
                 wbp = nw, cwbp = nc;
             }
-            if (wb_record(e, &g, &r, &wbp[nwbp])) wbp[nwbp++].seq = 0;
+            if (wb_record(e, &g, &r, &wbp[nwbp])) nwbp++;
         }
     return 1;
 }
@@ -1945,12 +1961,20 @@ void vk_texture_write_back_async(uint64_t addr, uint64_t size) {
         write_back(hit[i]);
         perf_count(PERF_CNT_WB);
     }
-    if (nwbp > first) {
-        uint64_t seq = vk_upload_flush(0);
+    // The copies are submitted after the texture lock is let go: vk_upload_flush waits for cmd_lock and for the
+    // recorder thread's submission (vk_rec.c rec_submit_wait), about 240 us once a frame in Canyon Layer, while the
+    // slice workers wait for the texture lock. Each copy already holds its batch's number (wb_record), and another
+    // thread flushing the batch first changes nothing. Batches complete in order, so the newest of these numbers
+    // stands for all of them: vk_texture_wb_poll decides a texture's regions together, by entry and batch.
+    int queued = nwbp > first;
+    if (queued) {
+        uint64_t seq = 0;
+        for (int i = first; i < nwbp; i++) seq = wbp[i].seq > seq ? wbp[i].seq : seq;
         for (int i = first; i < nwbp; i++) wbp[i].seq = seq;
     }
     free(hit);
     unlock();
+    if (queued) vk_upload_flush(0);
 }
 
 void vk_texture_wb_poll(void) {

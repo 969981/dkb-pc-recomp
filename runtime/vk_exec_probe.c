@@ -126,8 +126,11 @@ static int test_present(const GfxBackend *b, uint8_t *guest, int *w_out, int *h_
     vk_upload_end();
 
     uint64_t frames = gfx_stats().frames;
-    // the exact colour check needs the bilinear blit: FSR's approximate reciprocals move a flat colour by 1/255
-    plat_setenv("TOTK_UPSCALER", "bilinear");
+    // the exact colour check needs the plain bilinear blit: a scaling pass's float arithmetic can move a flat colour by
+    // 1/255
+    plat_setenv("TOTK_UPSCALER", "fsr");
+    plat_setenv("TOTK_WINDOW_FILTER", "linear");
+    plat_setenv("TOTK_SHARPNESS", "0");
     plat_setenv("TOTK_SMAA", "off");
     vk_present_capture(1);
     const int crop[4] = {0, 0, TEX_W, TEX_H};

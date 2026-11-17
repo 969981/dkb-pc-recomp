@@ -1,0 +1,126 @@
+// The window scaling filter of the present (runtime/vk_fsr.c vk_fsr_record): scales the picture, a crop rectangle of
+// the game's image, to the size of this pass's output with linear, Catmull-Rom or Lanczos 2 (each stretched over the
+// picture's pixels one output pixel covers when the picture is the larger, so a smaller window is filtered properly
+// too), then sharpens with the Sharpness setting by a contrast-adaptive filter in the manner of AMD FidelityFX RCAS
+// that cannot go past the light around the pixel, so it adds no halos, no clipping and no flashes. Works at any size,
+// 1:1 included.
+//
+// WIN_SCALE_PQ (compiled by tools/build_shaders.py into win_scale_pq_spv.h): the game's own HDR picture (hdr_native =
+// 1, Rec. 2020 PQ code values in A2B10G10R10) instead of the SDR picture. The source is read as the code values, as the
+// view's UNORM format gives them, and filtered and sharpened as codes, not as light: PQ is a perceptual coding like
+// sRGB, so the slider and the filters act on it as they do on the SDR picture's codes (Hookshot's FG_SCALE_PQ does the
+// same; its to_light and to_code serve only the loading cover's dimming, which this pass has no use for). The result
+// goes into an RGB10A2 image, which keeps the codes' 10 bits: the blit from it to the HDR10 swapchain is between two
+// images of the same format. The sharpen cannot go past the pixels around it, so no code leaves 0..1.
+//
+// Adapted from Hookshot (GPL-3.0), gpu/vk/shaders/fg_scale.comp (filtered, kernel, lanczos2, catmull, tent, sharpen,
+// and the FG_SCALE_PQ destination), commit d6c5ec91: without its ultrawide menu sides and loading cover, reading the
+// crop rectangle of a larger image.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D src;
+#ifdef WIN_SCALE_PQ
+layout(set = 0, binding = 1, rgb10_a2) uniform writeonly image2D dst;   // vk_fsr.c: A2B10G10R10, the codes' own 10 bits
+#else
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D dst;
+#endif
+
+layout(push_constant) uniform P {
+    ivec4 crop;    // the picture in src: x, y, width, height in texels
+    int mode;      // 0 linear, 1 Catmull-Rom, 2 Lanczos 2
+    float sharp;   // 0 to 1: 0 the picture as filtered, 1 the strongest lobe
+    int pad0, pad1;
+} pc;
+
+const float PI = 3.14159265;
+
+// One pixel of the picture; positions past its edge take the edge's pixel
+vec3 pixel(ivec2 t) {
+    return texelFetch(src, pc.crop.xy + clamp(t, ivec2(0), pc.crop.zw - 1), 0).rgb;
+}
+
+// The picture at uv (0 to 1 over the crop) through the linear filter
+vec3 bilinear(vec2 uv) {
+    const vec2 p = uv * vec2(pc.crop.zw) - 0.5;
+    const ivec2 b = ivec2(floor(p));
+    const vec2 f = p - vec2(b);
+    return mix(mix(pixel(b), pixel(b + ivec2(1, 0)), f.x), mix(pixel(b + ivec2(0, 1)), pixel(b + ivec2(1, 1)), f.x), f.y);
+}
+
+float lanczos2(float x) {
+    x = abs(x);
+    if (x < 1e-4) return 1.0;
+    if (x >= 2.0) return 0.0;
+    const float p = PI * x;
+    return 2.0 * sin(p) * sin(p * 0.5) / (p * p);
+}
+float catmull(float x) {
+    x = abs(x);
+    if (x < 1.0) return 1.5 * x * x * x - 2.5 * x * x + 1.0;
+    if (x < 2.0) return -0.5 * x * x * x + 2.5 * x * x - 4.0 * x + 2.0;
+    return 0.0;
+}
+float tent(float x) { return max(1.0 - abs(x), 0.0); }
+// The filter's weight at d picture pixels, and how far it reaches (in picture pixels at stretch 1)
+float kernel(float d) { return pc.mode == 2 ? lanczos2(d) : pc.mode == 1 ? catmull(d) : tent(d); }
+float reach() { return pc.mode == 0 ? 1.0 : 2.0; }
+
+// Shrinking, the filter is stretched by the picture's pixels per output pixel: at the picture's own spacing its taps
+// skip most of the picture and fine detail turns into shimmer and moire. Up to 4 (16 x 16 taps); a smaller window than
+// a quarter of the picture aliases again.
+const float kMaxStretch = 4.0;
+vec3 filtered(vec2 uv) {
+    const vec2 size = vec2(pc.crop.zw);
+    const vec2 s = clamp(size / vec2(imageSize(dst)), vec2(1.0), vec2(kMaxStretch));
+    if (pc.mode == 0 && s == vec2(1.0)) return bilinear(uv);
+    const vec2 p = uv * size - 0.5;
+    const ivec2 lo = ivec2(floor(p - reach() * s)) + 1, hi = ivec2(floor(p + reach() * s));
+    vec3 sum = vec3(0.0);
+    float weight = 0.0;
+    for (int y = lo.y; y <= hi.y; y++) {
+        const float wy = kernel((float(y) - p.y) / s.y);
+        for (int x = lo.x; x <= hi.x; x++) {
+            const float w = kernel((float(x) - p.x) / s.x) * wy;
+            sum += w * pixel(ivec2(x, y));
+            weight += w;
+        }
+    }
+    return sum / weight;
+}
+
+// The Sharpness slider (pc.sharp 0 to 1) is RCAS's strength: 0 the picture as filtered, 1 its strongest lobe.
+const float kMaxLobe = 0.25 - 1.0 / 16.0;
+vec3 sharpen(vec3 c, vec3 n, vec3 s, vec3 w, vec3 e, float amount) {
+    // RCAS: the four neighbours weighted by a negative lobe, the largest that keeps the result inside 0..1 for this
+    // neighbourhood (smaller where the light is near black or white), then normalized. Two differences from RCAS's own
+    // maths: the room to black divides by 4 x the lightest of the pixel and its neighbours (RCAS: of the neighbours
+    // alone), never more room than RCAS gives, so only more careful; and like RCAS the room is the smallest of the
+    // three channels, so a saturated colour is sharpened little
+    const vec3 lo4 = min(min(n, s), min(w, e)), hi4 = max(max(n, s), max(w, e));
+    const vec3 lo = min(lo4, c), hi = max(hi4, c);
+    const vec3 to_black = lo / max(4.0 * hi, vec3(1.0 / 1024.0));
+    const vec3 to_white = (1.0 - hi) / max(4.0 - 4.0 * lo4, vec3(1.0 / 1024.0));
+    const vec3 room = min(to_black, to_white);
+    const float lobe = -clamp(min(min(room.r, room.g), room.b), 0.0, kMaxLobe) * clamp(amount, 0.0, 1.0);
+    const vec3 sharp = (c + lobe * (n + s + w + e)) / (1.0 + 4.0 * lobe);
+    // and no further than the lightest and darkest pixel around it: an edge gets steeper, no halo beside it
+    return clamp(sharp, lo, hi);
+}
+
+void main() {
+    const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 d = imageSize(dst);
+    if (any(greaterThanEqual(g, d))) return;
+    const vec2 uv = (vec2(g) + 0.5) / vec2(d);
+    vec3 c = filtered(uv);
+    if (pc.sharp > 0.0) {
+        // The neighbours one picture pixel away (one output pixel when the output is the smaller): what the slider
+        // does then hangs on the picture, not on the window's size
+        const vec2 e = max(1.0 / vec2(pc.crop.zw), 1.0 / vec2(d));
+        const vec3 n = bilinear(uv + vec2(0.0, -e.y)), s = bilinear(uv + vec2(0.0, e.y));
+        const vec3 w = bilinear(uv + vec2(-e.x, 0.0)), r = bilinear(uv + vec2(e.x, 0.0));
+        c = sharpen(c, n, s, w, r, pc.sharp);
+    }
+    imageStore(dst, g, vec4(c, 1.0));
+}

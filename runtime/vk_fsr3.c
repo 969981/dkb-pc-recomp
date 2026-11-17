@@ -4,7 +4,8 @@
 // runtime/third_party/fidelityfx and compiled by tools/build_shaders.py into fsr3_*_spv.h), recorded here as dispatches
 // of our own with push descriptors; nothing of AMD's is linked or loaded at run time. The inputs are DLSS's: the
 // scene's jitter, depth and camera motion vectors come from vk_dlss.c (vk_temporal_inputs); the projection gives FSR its
-// near and far distances (camera_factors). A frame without a scene at the input size is left to the game's upscaler.
+// near and far distances (vk_fsr3_camera_factors). A frame without a scene at the input size is left to the game's
+// upscaler.
 //
 // Derived from Hookshot's FSR 3.1 integration (gpu/vk/vk_fsr3.cpp and fsr3_math.h, https://github.com/NotRexed/Hookshot
 // @ fab8cb37641714bd839ae83c2a7bc582bedc4d70, Copyright 2026 Hookshot contributors, GPL-3.0-or-later), rewritten in C
@@ -21,6 +22,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "nvn_api.h"
+#include "temporal_idle.h"
 #include "vk.h"
 
 #include "fsr3_accumulate_spv.h"
@@ -174,7 +176,7 @@ static int fail(const char *why) {
 // passes' device_to_view_depth ([1] / (depth - [0])). [2] and [3] scale ndc x and y to view x and y per unit distance.
 // 0 for a matrix that is not a perspective projection. (Hookshot fsr3_math.h camera_from_projection, which also flips a
 // forward depth to FSR's reversed one: the passes here are built for the forward depth.)
-static int camera_factors(const float p[16], float f[4]) {
+int vk_fsr3_camera_factors(const float p[16], float f[4]) {
     if (p[12] != 0.0f || p[13] != 0.0f || p[14] != -1.0f || p[15] != 0.0f) return 0;
     if (!(p[0] > 0.0f) || !(p[5] > 0.0f) || !isfinite(p[0]) || !isfinite(p[5])) return 0;
     double a = (1.0 - (double)p[10]) * 0.5, b = (double)p[11] * 0.5;
@@ -299,6 +301,7 @@ static int make_pass(int i) {
 }
 
 static int make_out(void) {
+    if (G.out.pipe) return 1;   // made already by vk_fsr3_io_init
     VkDescriptorSetLayoutBinding b[2] = {{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
                                          {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
     return make_pipe(&G.out, fsr3_out_spv, sizeof fsr3_out_spv, b, 2, 8, "output");
@@ -660,6 +663,28 @@ static VkImageView color_view(VkImage image, VkFormat fmt, VkImageUsageFlags usa
     return vkCreateImageView(vk_ctx()->device, &vi, NULL, &v) == VK_SUCCESS ? v : VK_NULL_HANDLE;
 }
 
+// The output pass (shaders/fsr3_out.comp), made once per device. FSR 3.1's last step and also what upscaler = fsr4
+// (vk_fsr4.c) ends with, so it does not wait for the checks of the SDK's passes: push descriptors are all it needs. 0
+// without a log line when it cannot be made (the caller says why its upscaler is off).
+int vk_fsr3_io_init(void) { return vk_pipeline_push_fn() && make_out(); }
+
+// The upscaler's picture (src, a sampled view of an image in GENERAL at the output size) into the game's output image
+// (ov, a storage view). After vk_fsr3_io_init. The caller's full barrier follows.
+void vk_fsr3_io_out(VkCommandBuffer cb, VkImageView src, VkImageView ov, uint32_t ow, uint32_t oh) {
+    int32_t size[2] = {(int32_t)ow, (int32_t)oh};
+    VkDescriptorImageInfo ii[2] = {{VK_NULL_HANDLE, src, VK_IMAGE_LAYOUT_GENERAL},
+                                   {VK_NULL_HANDLE, ov, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet wr[2] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &ii[0]},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ii[1]}};
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, G.out.pipe);
+    rec_push(vk_pipeline_push_fn(), cb, VK_PIPELINE_BIND_POINT_COMPUTE, G.out.layout, 0, 2, wr);
+    vkCmdPushConstants(cb, G.out.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof size, size);
+    vkCmdDispatch(cb, (ow + 7) / 8, (oh + 7) / 8, 1);
+}
+
 // A free slot of the constants' ring (the submission that used it is done), or -1.
 static int ring_take(uint64_t fence) {
     uint64_t done = vk_sync_fence_done();
@@ -713,7 +738,7 @@ int vk_fsr3_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
     // Without a scene at the input size (a menu, a cutscene's own passes) the game's upscaler runs this frame, and the
     // next temporal one starts from a reset. A scene whose projection FSR cannot use is the same, but the motion pass
     // may have bound its own pipeline: -1, and the caller binds the game's again.
-    if (!t.temporal || !camera_factors(t.proj, dtv)) {
+    if (!t.temporal || !vk_fsr3_camera_factors(t.proj, dtv)) {
         int bound = t.temporal;
         t.temporal = 0;   // no jitter for the next frame either
         vk_temporal_done(&t, w, h, ow);
@@ -723,21 +748,10 @@ int vk_fsr3_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
         return bound ? -1 : 0;
     }
     evaluate(cb, iv, &t, dtv, (unsigned)slot);
-    // FSR's picture into the game's output image.
-    int32_t size[2] = {(int32_t)ow, (int32_t)oh};
-    VkDescriptorImageInfo ii[2] = {{VK_NULL_HANDLE, G.output.view, VK_IMAGE_LAYOUT_GENERAL},
-                                   {VK_NULL_HANDLE, ov, VK_IMAGE_LAYOUT_GENERAL}};
-    VkWriteDescriptorSet wr[2] = {
-        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &ii[0]},
-        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ii[1]}};
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, G.out.pipe);
-    rec_push(vk_pipeline_push_fn(), cb, VK_PIPELINE_BIND_POINT_COMPUTE, G.out.layout, 0, 2, wr);
-    vkCmdPushConstants(cb, G.out.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof size, size);
-    vkCmdDispatch(cb, (ow + 7) / 8, (oh + 7) / 8, 1);
+    vk_fsr3_io_out(cb, G.output.view, ov, ow, oh);   // FSR's picture into the game's output image
     vk_defer_view(iv), vk_defer_view(ov);
     vk_temporal_done(&t, w, h, ow);
+    vk_fsr3fi_note_picture(cb, out);   // the picture before the game's HUD, for AMD's frame interpolation
     G.frames++, G.temporal++, G.resets += t.reset;
     if (G.frames == 1 || G.frames % 1800 == 0)
         rt_log("fsr3: %llu frames, %llu temporal, %llu resets; %ux%u -> %ux%u, jitter %+.3f %+.3f px of %u phases",
@@ -746,11 +760,33 @@ int vk_fsr3_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
     return 1;
 }
 
+// Whether the internal images exist.
+int vk_fsr3_holding(void) { return G.output.image != VK_NULL_HANDLE; }
+
+// The setting has chosen another upscaler for a while (vk_dlss.c vk_temporal_idle_tick): the internal images, about 40
+// to 60 MB at 1280x800 and some 320 MB at 4K, are freed once the submissions recorded so far are done (drop_image,
+// which is vk_defer_image and vk_defer_view: the objects go when the recorded work that may use them is done), and the
+// next evaluation makes them again (make_images, with a new history: G.first). The passes, samplers and constants
+// buffer stay: they are small, and building pipelines again would stall the frame that brings FSR 3.1 back. The
+// constants ring needs nothing: a slot is free once its submission is done, and the idle frames have used none.
+// Longshot's equivalent is release() in gpu/vk/vk_fsr3.cpp (commit e314e2b7), which hands its retired images to the
+// chain's later().
+void vk_fsr3_idle_release(void) {
+    if (!G.output.image || vk_fsr3_wanted()) return;
+    size_t n;
+    Img *const *all = all_images(&n);
+    for (size_t i = 0; i < n; i++) drop_image(all[i]);
+    G.rw = G.rh = G.uw = G.uh = 0;
+    rt_log("fsr3: not used for %u frames: its images let go; the next upscale with it makes them again",
+           TEMPORAL_IDLE_FRAMES);
+}
+
 void vk_fsr3_release(void) {   // device idle
-    if (!G.tried) return;
+    if (!G.tried && !G.out.pipe) return;   // (the output pass alone is made when upscaler = fsr4 never needed FSR 3.1)
     VkCtx *c = vk_ctx();
-    rt_log("fsr3: %llu frames, %llu temporal, %llu resets (%llu left to the game's upscaler)", (unsigned long long)G.frames,
-           (unsigned long long)G.temporal, (unsigned long long)G.resets, (unsigned long long)G.spatial);
+    if (G.tried)
+        rt_log("fsr3: %llu frames, %llu temporal, %llu resets (%llu left to the game's upscaler)", (unsigned long long)G.frames,
+               (unsigned long long)G.temporal, (unsigned long long)G.resets, (unsigned long long)G.spatial);
     size_t n;
     Img *const *all = all_images(&n);
     for (size_t i = 0; i < n; i++) destroy_now(all[i]);

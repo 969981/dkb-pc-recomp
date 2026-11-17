@@ -53,7 +53,7 @@ void perf_count(int kind);
 // TOTK_TRACE=perf: a contended acquire of one of the replay's shared locks waited ns (callers time only after a failed
 // try). The perf line counts the waits over 100 us per lock and the longest: slices of parallel passes stalled for
 // milliseconds now and then, and a lock held by another thread is one cause.
-enum { PERF_LOCK_TEXTURE, PERF_LOCK_POOL, PERF_LOCK_MIRROR, PERF_LOCK_N };
+enum { PERF_LOCK_TEXTURE, PERF_LOCK_POOL, PERF_LOCK_MIRROR, PERF_LOCK_GEN, PERF_LOCK_N };
 void perf_lock_wait(int lock, uint64_t ns);
 void perf_present(uint64_t frame);
 void perf_summary_flush(void);                  // prints the frame-time summary of the running period (exit); the 60 s lines come from perf_present
@@ -291,6 +291,9 @@ const char *res_heapdef_path(void);                        // the game's HeapDef
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
 void dkb_wide_init(void);                                  // Bananza-only virtual display and camera patch values
 uint64_t dkb_wide_heap_extra_kib(void);                    // Bananza: what the render-target pool needs added to GSys
+int dkb_native_aa(void);                                   // Bananza: the game's upscale step runs at full size now
+int dkb_native_aa_issued_by(uint64_t caller);              // ... and a dispatch issued at that guest address is it
+void dkb_native_aa_live(void);                             // re-read the Upscaler setting (frame_step_present)
 int dkb_wide_output(unsigned out[2]);                      // active mode; optional output gets its size or the stock size
 int res_sizes(unsigned out[2], unsigned scene[2]);         // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on). Bananza: the game's

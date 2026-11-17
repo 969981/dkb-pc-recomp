@@ -40,7 +40,7 @@ static VkSwapchainKHR g_sc;
 static VkFormat g_sc_fmt;
 static int g_sc_hdr;                        // HDR10 (hdr, vk_hdr.c): PQ code values in Rec. 2020; stored atomically
 static VkExtent2D g_sc_ext;
-static int g_scaler;                        // the last present: 0 the game image 1:1, 1 scaled by the blit, 2 by FSR
+static int g_scaler;                        // the last present: 0 the picture 1:1, 1 blit, 2 FSR 1, 3 to 5 window pass
 static uint32_t g_sc_n;
 static VkImage g_sc_img[MAX_IMAGES];
 static VkImageView g_sc_view[MAX_IMAGES];   // colour attachment views for the menu overlay
@@ -430,7 +430,8 @@ static void save_capture(const char *path) {
 }
 
 // The rectangle {x, y, w, h} of a dw x dh swapchain image the cw x ch picture goes into; gfx_window.c fits it.
-static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
+static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer,
+                          int held) {
     if (gfx_window_exiting()) return;
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     if (hdr_trace_on()) {   // DKB_HDR_TRACE: the window texture's format when it changes (HDR10 in the game's HDR mode)
@@ -440,7 +441,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
             last_fmt = (int)fmt, last_w = w, last_h = h;
         }
     }
-    gfx_window_start();
+    if (!held) gfx_window_start();   // held: the caller started the window before it took the present lock
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
     if (gfx_window_exiting()) { plat_rmutex_unlock(&g_pl); return; }
@@ -510,12 +511,13 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     uint64_t crumb = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     vk_crumb(cb, VK_CRUMB_PRESENT, crumb);
     VkImage dst = g_sc_img[idx];
-    // Native HDR (DKB_HDR_NATIVE, ov_gfx.c hdr_native_on): in its HDR mode the game writes Rec. 2020 PQ
-    // code values into an A2B10G10R10 window texture, which is what an HDR10 swapchain takes, so the picture is blitted
-    // to it as it is. Colour adjustment, FSR and SMAA are skipped: they expect a display-referred SDR picture, and PQ is
-    // not one. The format alone does not say PQ (TotK presents through here too), hence the setting. The blit needs
-    // BLIT_DST on the swapchain's format, which Vulkan does not require of A2R10G10B10; without it the output falls back
-    // to SDR, the game is told so (gfx_window_hdr10) and switches back to its SDR picture.
+    // Native HDR (DKB_HDR_NATIVE, ov_gfx.c hdr_native_on): in its HDR mode the game writes Rec. 2020 PQ code values
+    // into an A2B10G10R10 window texture, which is what an HDR10 swapchain takes, so the picture goes to it as the
+    // codes it is: blitted, or scaled and sharpened by vk_fsr.c's PQ pass when window_filter and Sharpness ask for it.
+    // Colour adjustment, SMAA and the CRT filter are skipped: they expect a display-referred SDR picture, and PQ is not
+    // one. The format alone does not say PQ (TotK presents through here too), hence the setting. The blit needs
+    // BLIT_DST on the swapchain's format, which Vulkan does not require of A2R10G10B10; without it the output falls
+    // back to SDR, the game is told so (gfx_window_hdr10) and switches back to its SDR picture.
     int native_hdr = g_sc_hdr && hdr_native_on() && fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
     if (native_hdr && !(sfp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
         static int logged;
@@ -551,10 +553,12 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkImage psrc = graded ? graded : src;
     VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
     const int *prect = graded ? grect : rect;
-    // FSR (TOTK_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
-    int fsr = general && !native_hdr && vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, tgt, to);
-    g_scaler = fsr ? 2 : cw != to[2] || ch != to[3];
-    if (!fsr) {
+    // The window scaling (TOTK_WINDOW_FILTER, TOTK_SHARPNESS, vk_fsr.c): FSR 1 or the scaling pass when the setting and
+    // the sizes need one (the game's own HDR picture: the pass for PQ codes, never FSR 1); else the plain bilinear blit
+    int scaled = general ? vk_fsr_record(cb, slot, psrc, pfmt, native_hdr, graded ? cw : w, graded ? ch : h, prect, tgt, to)
+                         : 0;
+    g_scaler = scaled ? scaled : cw != to[2] || ch != to[3];
+    if (!scaled) {
         if (general)   // a GENERAL source (vk_texture.c images): earlier submissions' writes become visible to the blit here
             sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -570,11 +574,14 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     }
     // SMAA (TOTK_SMAA, vk_smaa.c) on the scaled picture, before the menu overlay; it leaves the image in TRANSFER_DST
     if (!native_hdr) vk_smaa_record(cb, tgt, to);
+    // CRT filters (TOTK_CRT_FILTER, vk_crt.c) after SMAA, on the same picture, also SDR only; same layout contract
+    if (!native_hdr) vk_crt_record(cb, tgt, to);
+    else vk_crt_idle();   // the game's own HDR picture skips the SDR filter: no images kept for it meanwhile
     // last: dst's layout, and the stage and access of its last write, as each step leaves it
     VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     VkAccessFlags2 last_write = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    // HDR pass (vk_hdr.c) after FSR and SMAA, before the menu: hdr_img onto dst as PQ code values
+    // HDR pass (vk_hdr.c) after FSR, SMAA and the CRT filter, before the menu: hdr_img onto dst as PQ code values
     if (hdr_img) {
         if (vk_hdr_record(cb, dst, g_sc_view[idx], g_sc_fmt, g_sc_ext.width, g_sc_ext.height)) {
             last = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -670,15 +677,23 @@ out:
 }
 
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
-    present_image(src, layout, fmt, w, h, crop, 0);
+    present_image(src, layout, fmt, w, h, crop, 0, 0);
+}
+
+// vk_present_image for a caller that holds the present lock and called gfx_window_start before it took it
+// (vk_framegen.c display_main). gfx_window_start takes the start lock, which must never be taken under the present
+// lock: the exit (gfx_exit_release) holds the start lock while vk_present_release waits for the present lock.
+void vk_present_image_held(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
+    present_image(src, layout, fmt, w, h, crop, 0, 1);
 }
 
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
-    present_image(src, layout, fmt, w, h, crop, 1);
+    present_image(src, layout, fmt, w, h, crop, 1, 0);
 }
 
 // The present lock, for a caller that must not present after vk_present_release freed what it presents (vk_framegen.c
-// display_main): the release runs under it.
+// display_main): the release runs under it. The caller presents with vk_present_image_held, having called
+// gfx_window_start before taking it.
 void vk_present_lock(void) { plat_rmutex_lock(&g_pl); }
 void vk_present_unlock(void) { plat_rmutex_unlock(&g_pl); }
 
@@ -717,7 +732,9 @@ void vk_present_release(void) {
         menu_vk_release();
         vk_fsr_release();
         vk_smaa_release();
+        vk_crt_release();
         vk_fg_release();
+        vk_fsr3fi_release();
         vk_color_release();
         vk_hdr_release();
         free_capture();

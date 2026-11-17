@@ -27,6 +27,8 @@ PROC(nvnCommandBufferBeginRecording);
 PROC(nvnCommandBufferEndRecording);
 PROC(nvnCommandBufferGetCommandMemoryUsed);
 PROC(nvnCommandBufferWaitSync);
+PROC(nvnCommandBufferBarrier);
+PROC(nvnCommandBufferCallCommands);
 PROC(nvnCommandBufferPushGraphicsConstantsDeferred);
 PROC(nvnQueueSubmitCommands);
 PROC(nvnQueueFenceSync);
@@ -72,7 +74,11 @@ void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
     (void)p; (void)off; (void)size; rt_fatal("unexpected pool flush");
 }
 uint64_t rt_original(Cpu *c) { (void)c; rt_fatal("unexpected guest observer"); return 0; }
-int cfg_bool(const char *name) { (void)name; rt_fatal("unexpected setting lookup"); return 0; }
+int cfg_bool(const char *name) {   // TOTK_CALL_REF on: recordings with deferred pushes are copied in either way
+    if (!strcmp(name, "TOTK_CALL_REF")) return 1;
+    rt_fatal("unexpected setting lookup");
+    return 0;
+}
 void plat_sleep_ms(uint32_t ms) { (void)ms; rt_fatal("unexpected sleep"); }
 
 // Actual concurrent locks, not no-op stubs: the completion thread also acquires the recording-copy lock.
@@ -303,9 +309,105 @@ static void scenario(int async) {
     }
     free_sync(s);
 }
+
+// TOTK_CALL_REF: a call to a recording without deferred records is one OP_CALL naming its copy, counted in the copy.
+static uint64_t record_calls(NVNcommandBuffer *cmd, void *ctl, int n, const uint64_t *callees, int deferred) {
+    begin(cmd, ctl);
+    CALL(nvnCommandBufferBarrier, U(cmd), 1);
+    if (n) CALL(nvnCommandBufferCallCommands, U(cmd), n, U(callees));
+    if (deferred) CALL(nvnCommandBufferPushGraphicsConstantsDeferred, U(cmd), 0, 0, 4, U(&source));
+    return CALL(nvnCommandBufferEndRecording, U(cmd));
+}
+static int calls_to(uint64_t h, uint64_t target) {
+    int n = 0;
+    for (const op_hdr *op = nvn_op_first(h); op->op != OP_END; op = nvn_op_next(op))
+        n += op->op == OP_CALL && ((const p_jump *)nvn_op_payload(op))->target == target;
+    return n;
+}
+static void release(NVNcommandBuffer *cmd, void *ctl) {   // adding the control memory again retires its recordings
+    CALL(nvnCommandBufferAddControlMemory, U(cmd), U(ctl), 0x1000);
+}
+static void all_replayed(void) { plat_mutex_lock(&latch); replayed = nvn_submit_count(); plat_mutex_unlock(&latch); }
+
+static void call_ref_scenario(void) {
+    enum { N = 10 };
+    static NVNcommandBuffer cmd[N];
+    static _Alignas(16) uint8_t ctl[N][0x1000];
+    async_mode = 1;
+    all_replayed();
+    CALL(nvnCommandBufferInitialize, U(&cmd[0]), 0);
+    release(&cmd[0], ctl[0]);   // sweeps what the scenarios above left
+    CHECK(nvn_copy_zombies() == 0, "no released copy is left once every submission was replayed");
+
+    // a copy released while a caller names it stays until the caller goes
+    uint64_t a = record_calls(&cmd[0], ctl[0], 0, NULL, 0);
+    uint64_t b = record_calls(&cmd[1], ctl[1], 1, &a, 0);
+    CHECK(calls_to(b, a) == 1 && nvn_copy_refs(a) == 1 && nvn_copy_depth(b) == 1 && nvn_copy_depth(a) == 0,
+          "CallCommands of a recording without deferred records is one counted OP_CALL");
+    release(&cmd[0], ctl[0]);
+    CHECK(!nvn_handle_live(a) && nvn_copy_zombies() == 1 && nvn_copy_refs(a) == 1, "a released copy that is called stays");
+    gfx_null_backend.submit(&b, 1, 0);   // the null back end walks into the released copy
+    release(&cmd[1], ctl[1]);
+    CHECK(!nvn_handle_live(b) && nvn_copy_refs(a) == 0, "a freed caller gives its callee's count back");
+    release(&cmd[1], ctl[1]);
+    CHECK(nvn_copy_zombies() == 0, "the next sweep frees the callee");
+
+    // a nest of released copies goes in one sweep
+    uint64_t c[3];
+    for (int i = 0; i < 3; i++) c[i] = record_calls(&cmd[i], ctl[i], i ? 1 : 0, i ? &c[i - 1] : NULL, 0);
+    release(&cmd[0], ctl[0]);
+    release(&cmd[1], ctl[1]);
+    release(&cmd[2], ctl[2]);
+    CHECK(nvn_copy_zombies() == 2, "two called copies wait for their callers");
+    release(&cmd[2], ctl[2]);
+    CHECK(nvn_copy_zombies() == 0, "one sweep frees a nest of released copies");
+
+    // nesting stops at 6: the seventh level is copied in, with the OP_CALL it holds
+    uint64_t h[9];
+    for (int i = 0; i < 9; i++) h[i] = record_calls(&cmd[i], ctl[i], i ? 1 : 0, i ? &h[i - 1] : NULL, 0);
+    int deepest = 0;
+    for (int i = 0; i < 9; i++) deepest = (int)nvn_copy_depth(h[i]) > deepest ? (int)nvn_copy_depth(h[i]) : deepest;
+    CHECK(calls_to(h[6], h[5]) == 1 && nvn_copy_depth(h[6]) == 6, "a call to a copy 5 deep is referenced");
+    CHECK(calls_to(h[7], h[6]) == 0 && calls_to(h[7], h[5]) == 1 && calls_to(h[8], h[5]) == 1 && nvn_copy_refs(h[5]) == 3,
+          "a call to a copy 6 deep is copied in, and each OP_CALL record copied with it counts its callee again");
+    CHECK(deepest == 6, "no copy is nested deeper than 6");
+    gfx_null_backend.submit(&h[8], 1, 0);
+    for (int i = 0; i < 9; i++) release(&cmd[i], ctl[i]);
+    release(&cmd[0], ctl[0]);
+    CHECK(nvn_copy_zombies() == 0, "the chain is freed");
+
+    // a per-submission clone (deferred records, asynchronous replay) counts the copies it calls
+    a = record_calls(&cmd[0], ctl[0], 0, NULL, 0);
+    b = record_calls(&cmd[1], ctl[1], 1, &a, 1);
+    CHECK(calls_to(b, a) == 1 && nvn_copy_refs(a) == 1, "a recording with deferred pushes still references a callee without");
+    uint64_t out[2];
+    nvn_submit_prepare_async(&b, &out[0], 1);
+    nvn_submit_prepare_async(&b, &out[1], 1);   // the first is not replayed yet: this one gets a clone
+    CHECK(out[0] == b && out[1] != b && nvn_copy_refs(a) == 2, "a clone counts its callee");
+    all_replayed();
+    release(&cmd[1], ctl[1]);
+    CHECK(nvn_copy_refs(a) == 0 && nvn_handle_live(a), "the clone and its caller give their counts back");
+    release(&cmd[0], ctl[0]);
+    CHECK(nvn_copy_zombies() == 0, "nothing waits once the clone was replayed");
+
+    // an abandoned recording gives its counts back
+    a = record_calls(&cmd[0], ctl[0], 0, NULL, 0);
+    begin(&cmd[1], ctl[1]);
+    CALL(nvnCommandBufferCallCommands, U(&cmd[1]), 1, U(&a));
+    CALL(nvnCommandBufferBeginRecording, U(&cmd[1]));
+    CHECK(nvn_copy_refs(a) == 0, "BeginRecording while recording gives the counts back");
+    CALL(nvnCommandBufferCallCommands, U(&cmd[1]), 1, U(&a));
+    CALL(nvnCommandBufferFinalize, U(&cmd[1]));
+    CHECK(nvn_copy_refs(a) == 0, "Finalize while recording gives the counts back");
+    release(&cmd[0], ctl[0]);
+    CHECK(nvn_copy_zombies() == 0, "an uncalled copy is freed at its release");
+    for (int i = 0; i < N; i++) CALL(nvnCommandBufferFinalize, U(&cmd[i]));
+}
+
 int main(void) {
     scenario(0);
     scenario(1);
+    call_ref_scenario();
     printf("WaitSync: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

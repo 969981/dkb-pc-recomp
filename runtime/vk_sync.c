@@ -100,7 +100,7 @@ static void ts_setup(VkCtx *c) {
 // size 0: an indirect draw's arguments at addr, drawn by stages a/b; else a storage write of [addr, addr+size) by
 // stage a, in recording order with the draws.
 typedef struct { uint64_t addr, a, b, size; } NoteArg;
-typedef struct {
+typedef struct VkSyncNote {
     uint32_t draws, draws_ind, dispatches, dispatches_ind, pairs;
     uint64_t max_work, max_a, max_b;               // the largest direct draw (vertices x instances) or dispatch (groups)
     uint64_t a[NOTE_PAIRS], b[NOTE_PAIRS];         // the first distinct stage names: vertex/fragment, or compute/0
@@ -110,36 +110,72 @@ typedef struct {
 } PartNote;
 static PartNote note;   // the part being recorded (sub_lock, like ts_cur)
 
-int vk_sync_noting(void) { return ts_cur >= 0; }
+// A slice of a sliced pass (vk_exec.c par_record) records on a worker while the replay thread records other parts, so it
+// notes into a note of its own (vk_sync_slice_note_begin), NULL when the pass's part is untimed. The replay thread folds
+// it into the part that executes the slice (vk_sync_note_merge). The replay thread records slices too: the switch is
+// per thread.
+static _Thread_local int note_in_slice;
+static _Thread_local PartNote *note_slice;
 
-static void note_push(NoteArg e) {
-    if (ts_cur < 0 || note.nargs >= NOTE_ARGS) return;
-    if (note.nargs == note.cap) {
-        uint32_t cap = note.cap ? 2 * note.cap : 256;
-        NoteArg *p = realloc(note.args, cap * sizeof *p);
+static PartNote *note_cur(void) { return note_in_slice ? note_slice : ts_cur >= 0 ? &note : NULL; }
+
+int vk_sync_noting(void) { return note_cur() != NULL; }
+
+static void note_push_to(PartNote *n, NoteArg e) {
+    if (!n || n->nargs >= NOTE_ARGS) return;
+    if (n->nargs == n->cap) {
+        uint32_t cap = n->cap ? 2 * n->cap : 256;
+        NoteArg *p = realloc(n->args, cap * sizeof *p);
         if (!p) return;
-        note.args = p, note.cap = cap;
+        n->args = p, n->cap = cap;
     }
-    note.args[note.nargs++] = e;
+    n->args[n->nargs++] = e;
 }
 
-void vk_sync_note_args(uint64_t addr) { note_push((NoteArg){addr, note.last_a, note.last_b, 0}); }
+void vk_sync_note_args(uint64_t addr) {
+    PartNote *n = note_cur();
+    if (n) note_push_to(n, (NoteArg){addr, n->last_a, n->last_b, 0});
+}
 
 void vk_sync_note_write(uint64_t addr, uint64_t size, uint64_t stage) {
-    if (size) note_push((NoteArg){addr, stage, 0, size});
+    if (size) note_push_to(note_cur(), (NoteArg){addr, stage, 0, size});
+}
+
+static void note_pair(PartNote *n, uint64_t a, uint64_t b) {
+    for (uint32_t i = 0; i < n->pairs; i++)
+        if (n->a[i] == a && n->b[i] == b) return;
+    if (n->pairs < NOTE_PAIRS) n->a[n->pairs] = a, n->b[n->pairs] = b, n->pairs++;
 }
 
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work) {
-    if (ts_cur < 0) return;
-    note.last_a = a, note.last_b = b;
-    if (kind == 0) note.draws++;
-    else if (kind == 1) note.draws_ind++;
-    else if (kind == 2) note.dispatches++;
-    else note.dispatches_ind++;
-    if (work > note.max_work) note.max_work = work, note.max_a = a, note.max_b = b;
-    for (uint32_t i = 0; i < note.pairs; i++)
-        if (note.a[i] == a && note.b[i] == b) return;
-    if (note.pairs < NOTE_PAIRS) note.a[note.pairs] = a, note.b[note.pairs] = b, note.pairs++;
+    PartNote *n = note_cur();
+    if (!n) return;
+    n->last_a = a, n->last_b = b;
+    if (kind == 0) n->draws++;
+    else if (kind == 1) n->draws_ind++;
+    else if (kind == 2) n->dispatches++;
+    else n->dispatches_ind++;
+    if (work > n->max_work) n->max_work = work, n->max_a = a, n->max_b = b;
+    note_pair(n, a, b);
+}
+
+VkSyncNote *vk_sync_slice_note_begin(int on) {
+    note_in_slice = 1;
+    note_slice = on ? calloc(1, sizeof *note_slice) : NULL;   // out of memory: the slice goes unnoted
+    return note_slice;
+}
+
+void vk_sync_slice_note_end(void) { note_in_slice = 0, note_slice = NULL; }
+
+// Adds a slice's note to `to`, in slice order: the slices' secondaries run where the pass ends, after what the part
+// noted before, so the storage writes stay ahead of the indirect draws that follow them.
+static void note_fold(PartNote *to, const PartNote *n) {
+    to->draws += n->draws, to->draws_ind += n->draws_ind;
+    to->dispatches += n->dispatches, to->dispatches_ind += n->dispatches_ind;
+    if (n->max_work > to->max_work) to->max_work = n->max_work, to->max_a = n->max_a, to->max_b = n->max_b;
+    for (uint32_t i = 0; i < n->pairs; i++) note_pair(to, n->a[i], n->b[i]);
+    for (uint32_t i = 0; i < n->nargs; i++) note_push_to(to, n->args[i]);
+    if (n->draws + n->draws_ind + n->dispatches + n->dispatches_ind) to->last_a = n->last_a, to->last_b = n->last_b;
 }
 
 typedef struct { uint32_t pair, noted; uint64_t fence; PartNote note; } TsRead;
@@ -461,6 +497,19 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
 #define HELD_MAX 8
 static struct { int ts; VkCommandBuffer cb; uint64_t fence; PartNote note; } held[HELD_MAX];
 static int held_head, held_n;
+
+// Replay thread (sub_lock), as it collects a pass's slices (vk_exec.c par_notes). held_front: the slices execute in the
+// oldest held part (vk_sync_split_finish), else in the part being recorded. An untimed target drops the note.
+void vk_sync_note_merge(VkSyncNote *n, int held_front) {
+    if (!n) return;
+    PartNote *to = NULL;
+    if (held_front) {
+        if (held_n && held[held_head].ts >= 0) to = &held[held_head].note;
+    } else if (ts_cur >= 0) to = &note;
+    if (to) note_fold(to, n);
+    free(n->args);
+    free(n);
+}
 
 static void held_none(const char *where) {
     if (held_n) rt_fatal("vk: %s while %d split parts are still held back (vk_sync_split_finish)", where, held_n);

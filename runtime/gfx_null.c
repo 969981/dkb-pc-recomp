@@ -72,6 +72,7 @@ static void null_replay(uint64_t handle) {
         const void *a = nvn_op_payload(h);
         switch (h->op) {
         case OP_END: return;
+        case OP_CALL: null_replay(((const p_jump *)a)->target); break;   // TOTK_CALL_REF: the called copy, in place
         case OP_WAIT_SYNC: break;   // fulfilled by submit preparation; never reread its source here
         case OP_SIGNAL_EVENT: {
             const p_signal_event *e = a;

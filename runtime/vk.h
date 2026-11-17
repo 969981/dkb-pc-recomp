@@ -41,7 +41,8 @@ typedef struct VkCtx {
         debug_utils,                       // VK_EXT_debug_utils enabled on the instance (validation or the checkpoints)
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
-        has_swapchain_colorspace;           // VK_EXT_swapchain_colorspace enabled on the instance (HDR10 formats)
+        has_swapchain_colorspace,           // VK_EXT_swapchain_colorspace enabled on the instance (HDR10 formats)
+        has_anti_lag;                       // VK_AMD_anti_lag enabled and its antiLag feature there (vk_antilag.c)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -65,6 +66,7 @@ typedef struct {
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
     int moltenvk;                      // the driver is MoltenVK (VK_DRIVER_ID_MOLTENVK)
     int radv;                          // Mesa's RADV (VK_DRIVER_ID_MESA_RADV)
+    int amd_slices;                    // the AMD GPU and driver sliced passes were measured on (vk_exec.c par_threads)
 } VkCaps;
 extern VkCaps vk_caps;
 void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc
@@ -128,27 +130,69 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
 // vk_present_image split in two: vk_present_blit submits the blit and leaves the present waiting, vk_present_flip
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
-// FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the rectangle out
-// {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded
-// (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.
-int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
-                  VkImage dst, const int out[4]);
+// The window scaling on the present (vk_fsr.c, window_filter.h): src's crop rectangle {x, y, w, h} scaled into the
+// rectangle out {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format; pq: src
+// is the game's own HDR picture (PQ code values in A2B10G10R10), which has its own pass and no AMD FSR 1. Returns what
+// ran: 2 FSR 1 (EASU + RCAS), 3 the scaling pass with the linear filter, 4 with Catmull-Rom, 5 with Lanczos 2 (each
+// sharpens by the Sharpness setting); 0 = nothing recorded (the picture needs no pass: the window is its size and the
+// sharpness is 0, or linear scaling with no sharpen; or the pass is not available): the caller blits.
+int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int pq, int sw, int sh,
+                  const int crop[4], VkImage dst, const int out[4]);
+void vk_fsr_idle(void);      // the picture skips the pass: its images go back
 void vk_fsr_release(void);   // before the device goes away
 // SMAA on the present (vk_smaa.c): with TOTK_SMAA = low|medium|high, records SMAA of the rectangle to {x, y, w, h} of the
 // swapchain image dst, which is in TRANSFER_DST and holds the scaled picture, and leaves it there; 0 = nothing recorded.
 int vk_smaa_record(VkCommandBuffer cb, VkImage dst, const int to[4]);
 void vk_smaa_release(void);   // before the device goes away
+// The scene inputs of one frame for AMD FSR 3.1's frame interpolation (vk_fsr3fi.c), as a temporal upscaler was given
+// them (VkTemporalIn, below): depth, a sampled view of the game's depth image, and motion, a sampled view of the motion
+// vector image in render pixels (previous position minus this one, no jitter), both in GENERAL at the render size, and
+// the camera factors of the scene's projection (the upscaler's, vk_fsr3_camera_factors).
+typedef struct {
+    int valid;
+    VkImageView depth, motion;
+    uint32_t render_width, render_height;
+    float device_to_view_depth[4], tan_half_fov_x;
+    float jitter[2];   // pixels, the viewport offset the scene was drawn with
+    float frame_ms;    // since the frame before
+    int reset;         // the upscaler's own history started again this frame
+    uint64_t sequence; // set by vk_fsr3fi_note: its count of the frames noted
+    // set by vk_fsr3fi_note_picture: the upscaled picture as the upscaler wrote it, before the game drew its HUD into
+    // it (the game's format, a sampled view in GENERAL), for the frame without its HUD; NULL: none
+    VkImageView picture;
+    uint32_t picture_w, picture_h;
+} VkFiInputs;
+// CRT filters on the present (vk_crt.c): with TOTK_CRT_FILTER = lottes_grille|lottes_tv|hyllian|zfast, records the
+// filter over the rectangle {x, y, w, h} of the swapchain image dst, which is in TRANSFER_DST and holds the scaled SDR
+// picture, and leaves it there; 0 = nothing recorded. vk_crt_idle: this frame's picture is the game's own HDR one,
+// which the filter skips (logged once); it hands the filter's images back. vk_crt_release: before the device goes away.
+int vk_crt_record(VkCommandBuffer cb, VkImage dst, const int to[4]);
+void vk_crt_idle(void);
+void vk_crt_release(void);
 // Frame generation (vk_framegen.c, TOTK_FRAME_GEN = auto or 2x to 8x), called by the present thread. vk_fg_record:
 // before the game's frame is presented, copies the crop of src (the window texture, in GENERAL, fmt its format, w x h)
 // into its history and, when the frame before is there, makes the frames between them; frame_no (0: none) goes to
-// vk_thumbs_frame for the game's frame. Returns 1 at 2x when a made frame exists (then the caller calls vk_fg_show in
+// vk_thumbs_frame for the game's frame. fi: the scene's depth and motion of this frame (vk_fsr3fi_take), NULL or not
+// valid for none: at 2x with frame_gen_by = fsr3, AMD FSR 3.1's interpolation makes the frame from them (vk_fsr3fi.c).
+// Returns 1 at 2x when a made frame exists (then the caller calls vk_fg_show in
 // place of the blit), 2 when the frames go to the display thread, which presents them (the caller neither blits nor
 // flips), 0 for the plain present (off, no history, a hitch, a failure). The game's texture is read only by the command
 // buffer it submits. vk_fg_show: presents the made frame, then the game's, whose flip waits half a frame interval, or
-// until pending() says another job is waiting.
-int vk_fg_record(VkImage src, VkFormat fmt, int w, int h, const int crop[4], uint64_t frame_no);
-void vk_fg_show(int (*pending)(void), uint64_t frame);
+// until pending() says another job is waiting. antilag (both): the game frame's AMD Anti-Lag 2 index, given as its
+// present stage right before the game's own frame is presented (vk_fg_show, or the display thread for a set); made
+// frames get none.
+int vk_fg_record(VkImage src, VkFormat fmt, int w, int h, const int crop[4], const VkFiInputs *fi, uint64_t frame_no, uint64_t antilag);
+void vk_fg_show(int (*pending)(void), uint64_t frame, uint64_t antilag);
 void vk_fg_release(void);   // before the device goes away
+// AMD Anti-Lag 2 (vk_antilag.c, TOTK_ANTILAG). vk_antilag_available: the device can run it (0 before the device).
+// vk_antilag_frame: the index of the game frame being made now (its input stage was given), 0 while off or none; a
+// present job keeps it. vk_antilag_input: after the game presented, the next frame's input stage, where the driver
+// waits until that frame should start. vk_antilag_present: before the present of game frame `frame` (0: none, as for
+// a made frame), its present stage.
+int vk_antilag_available(void);
+uint64_t vk_antilag_frame(void);
+void vk_antilag_input(void);
+void vk_antilag_present(uint64_t frame);
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
@@ -168,9 +212,15 @@ int vk_hdr_record(VkCommandBuffer cb, VkImage dst, VkImageView dst_view, VkForma
 VkImageView vk_hdr_ui_target(VkCommandBuffer cb, uint32_t w, uint32_t h);
 void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h);
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
+float vk_hdr_game_nits(void);   // hdr_game_nits, the paper white (vk_framegen.c compares the HDR picture by it)
 void vk_hdr_release(void);   // before the device goes away
 void vk_present_flip(void);
 void vk_present_lock(void);     // the lock vk_present_release runs under (vk_framegen.c display_main)
+// vk_present_image under vk_present_lock, gfx_window_start called before the lock was taken (the start lock is never
+// taken under the present lock)
+void vk_present_image_held(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
+// vk_backend.c: until kern_now_ns() reaches at: a sleep to 1 ms before it, then yields
+void vk_wait_until(uint64_t at);
 void vk_present_unlock(void);
 // TOTK_FLIGHT thumbnails (GfxBackend.thumbs_enable, thumbs_read; flight.c): the present thread blits every presented
 // frame into a host-visible ring of n thumbnails.
@@ -371,6 +421,9 @@ void vk_upload_end(void);
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
 uint64_t vk_upload_flush(int wait);
 int vk_upload_done(uint64_t seq);                 // the upload batch seq (vk_upload_flush's value) has completed
+// The sequence number of the open upload batch, the value vk_upload_flush will return for it. Only between
+// vk_upload_begin and vk_upload_end.
+uint64_t vk_upload_seq(void);
 // Upload batch figures since the previous call (the perf line): GPU time of the timed ones, batches submitted, time
 // threads waited in vk_upload_flush(1), bytes of staging allocated.
 void vk_upload_perf(uint64_t *gpu_ns, uint64_t *timed, uint64_t *batches, uint64_t *wait_ns, uint64_t *bytes);
@@ -471,6 +524,10 @@ typedef struct { uint32_t serial, ridx, rgen, aidx, valid; } VkSlotStamp;
 uint64_t vk_texture_slot_token_stamped(const dpool_ref *pool, int id, VkSlotStamp *st);
 uint64_t vk_texture_slot_token_again(const VkSlotStamp *st);
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
+// Whether the registration with this serial (a token's high half) had its once-a-submission storage check in submission
+// epoch (vk_texture_epoch), so that vk_texture_by_id_locked has nothing left to do for it while its token holds.
+// Unlocked; 0 may also mean the answer was overwritten by another registration's.
+int vk_texture_slot_checked(uint32_t serial, uint32_t epoch);
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
 // The same for a part the helper thread recorded (vk_spec.h): _ready asks, on the helper, whether the marking can wait
 // until the replay thread takes the part; _late does it then, and only for an entry that is still GPU-owned.
@@ -539,6 +596,27 @@ typedef struct {
 } VkTemporalIn;
 int vk_temporal_inputs(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int fresh, VkTemporalIn *t);
 void vk_temporal_done(const VkTemporalIn *t, uint32_t w, uint32_t h, uint32_t ow);
+// AMD FSR 3.1 frame interpolation (vk_fsr3fi.c, frame_gen_by = fsr3), over the inputs above. vk_fsr3fi_wanted: the
+// setting asks for it and the device can run it. vk_fsr3fi_note: vk_temporal_done's hand-over of this frame's inputs
+// (w x h: the render size) for the frame's present. vk_fsr3fi_take: the inputs noted since the last take, once
+// (vk_backend.c present_image, on the thread that recorded the frame); 0 when none. vk_fsr3fi_generate: records the
+// frame between `previous` and `color` (sampled views of width x height images in GENERAL) into `out` (a storage and
+// sampled view, 8-bit UNORM, GENERAL), on a command buffer whose earlier use is done; hudless and hudless_previous: the
+// same two frames before the game's HUD was drawn, in the same size, or NULL for none; 1 when it made it, 0 when it did
+// not (not wanted, no inputs, a reset), which leaves the frame to the caller. vk_fsr3fi_note_picture: after a temporal
+// upscaler (vk_fsr3.c, vk_fsr4.c, vk_dlss.c) wrote the game's upscale output `out` and called vk_temporal_done: with
+// frame_gen_by = fsr3 at 2x, records a copy of it into cb, before the game draws its HUD into that image, and notes the
+// copy with this frame's inputs (VkFiInputs.picture). vk_fsr3_camera_factors (vk_fsr3.c): the camera factors of a
+// projection for the passes, 0 for one they cannot use.
+int vk_fsr3fi_wanted(void);
+void vk_fsr3fi_note(const VkTemporalIn *t, uint32_t w, uint32_t h);
+int vk_fsr3fi_take(VkFiInputs *out);
+int vk_fsr3fi_generate(VkCommandBuffer cb, const VkFiInputs *in, VkImageView color, VkImageView previous,
+                       VkImageView hudless, VkImageView hudless_previous, VkImageView out, uint32_t width,
+                       uint32_t height);
+void vk_fsr3fi_note_picture(VkCommandBuffer cb, const VkTexImage *out);
+void vk_fsr3fi_release(void);   // device idle, before it goes away
+int vk_fsr3_camera_factors(const float p[16], float f[4]);
 
 // FSR 3.1 in place of the game's upscaler (vk_fsr3.c, upscaler = fsr3), over the inputs above. vk_fsr3_wanted: the
 // setting asks for it (read once a frame) and nothing has failed. vk_fsr3_record is vk_dlss_record's counterpart with
@@ -548,12 +626,35 @@ void vk_temporal_done(const VkTemporalIn *t, uint32_t w, uint32_t h, uint32_t ow
 int vk_fsr3_wanted(void);
 int vk_fsr3_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, const VkTexImage *out);
 void vk_fsr3_release(void);
-// FSR 4 through AMD's own DLLs (vk_fsr4.c, upscaler = fsr4), over the same inputs. vk_fsr4_wanted: the setting asks for it,
-// the DLLs and a 4.x provider are there and nothing has failed; when not, upscaler = fsr4 runs vk_fsr3.c instead
-// (vk_fsr3_wanted). vk_fsr4_record and vk_fsr4_release as the FSR 3.1 ones.
+// The output pass of vk_fsr3.c, which upscaler = fsr4 (vk_fsr4.c) shares so both end the same way. vk_fsr3_io_init:
+// makes it (1 when it can be used; 0 without push descriptors or when it cannot be made). vk_fsr3_io_out: the
+// upscaler's picture src (sampled view of an image in GENERAL, the output size) into the game's output image, ov (a
+// storage view).
+int vk_fsr3_io_init(void);
+void vk_fsr3_io_out(VkCommandBuffer cb, VkImageView src, VkImageView ov, uint32_t ow, uint32_t oh);
+// FSR 4 through AMD's own library (vk_fsr4.c, upscaler = fsr4: the DLLs on Windows, a Vulkan FSR 4 build on Linux),
+// over the same inputs. vk_fsr4_wanted: the setting asks for it, the library and a 4.x provider are there and nothing
+// has failed; when not, upscaler = fsr4 runs vk_fsr3.c instead (vk_fsr3_wanted). vk_fsr4_record and vk_fsr4_release as
+// the FSR 3.1 ones. vk_fsr4_wants_descriptor_buffer: before the device is made, whether VK_EXT_descriptor_buffer should
+// be enabled for the library (Linux, upscaler = fsr4 at the start, the library found); vk_fsr4_descriptor_buffer:
+// whether it was.
 int vk_fsr4_wanted(void);
 int vk_fsr4_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, const VkTexImage *out);
+int vk_fsr4_wants_descriptor_buffer(void);
+void vk_fsr4_descriptor_buffer(int enabled);
 void vk_fsr4_release(void);
+// An upscaler the setting no longer chooses gives back what it holds (temporal_idle.h for the rule).
+// vk_temporal_idle_tick (vk_dlss.c) asks once per presented frame, on the replay thread, from op_dispatch; fence is
+// the submission being recorded, which everything that may still use the released objects was recorded in or before.
+// xxx_holding: there is something to give back. xxx_idle_release: gives it back once the GPU is done with it
+// (vk_defer_*, or the fence), and does nothing while the upscaler is chosen again. The next evaluation makes it again.
+// FSR 4's has only its context (its images are the temporal inputs of vk_dlss.c, which the tick frees once no temporal
+// upscaler is chosen).
+void vk_temporal_idle_tick(uint64_t fence);
+int vk_fsr3_holding(void);
+void vk_fsr3_idle_release(void);
+int vk_fsr4_holding(void);
+void vk_fsr4_idle_release(uint64_t fence);
 // An FSR upscaler (3.1 or 4) is chosen: the scene's draws are jittered and noted for it.
 static inline int vk_fsr_wanted(void) { return vk_fsr3_wanted() || vk_fsr4_wanted(); }
 // Any temporal upscaler is chosen.
@@ -610,6 +711,15 @@ int vk_sync_noting(void);
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work);
 void vk_sync_note_args(uint64_t addr);
 void vk_sync_note_write(uint64_t addr, uint64_t size, uint64_t stage);
+// A slice of a sliced pass notes into its own note, not the part's, which the replay thread keeps recording meanwhile.
+// vk_sync_slice_note_begin(on), on the thread that records the slice: from here to vk_sync_slice_note_end, this
+// thread's notes go to the note it returns (NULL, and nothing noted, when !on: the pass's part is untimed). The replay
+// thread passes each to vk_sync_note_merge in slice order, which adds it to the part that executes the slices (the
+// oldest held part when held_front, else the part being recorded) and frees it.
+typedef struct VkSyncNote VkSyncNote;
+VkSyncNote *vk_sync_slice_note_begin(int on);
+void vk_sync_slice_note_end(void);
+void vk_sync_note_merge(VkSyncNote *n, int held_front);
 // Runs fn(arg) on the completion thread once fence is done on the GPU (event writes, counter reports, sync state).
 // Callbacks run in the order they were added, after those of earlier values; a value already done runs at once there.
 void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg);
