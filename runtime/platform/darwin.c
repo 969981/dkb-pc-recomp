@@ -989,6 +989,9 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
 }
 
 void plat_mem_prewrite(uint64_t addr, uint64_t n) { (void)addr, (void)n; }   // a watched write costs nothing extra here
+// Not on this platform: the lazy write-back stays off.
+int plat_mem_seal(uint64_t addr, uint64_t n, int on) { (void)addr, (void)n, (void)on; return 0; }
+int plat_mem_access_hook(int (*fn)(uint64_t addr)) { (void)fn; return 0; }
 
 // No userfaultfd, no PAGEMAP_SCAN: the pages the CPU wrote since the last reset cannot be read back. The caller
 // (vk_memory.c) uploads the whole range again when it sees this.

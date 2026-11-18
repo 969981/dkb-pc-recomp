@@ -49,10 +49,10 @@ both FSR upscalers as native anti-aliasing on 3.2.0 when `scene_res = full`, fra
 window scaling filters (`window_filter`), sharper text above 1080p behind `DKB_FONT_SCALE=1` (#214), Polish
 (`lang = pl`, #335), evenly paced audio (#133), HD rumble on Switch Pro Controllers and Joy-Con (#285, untested),
 the AppImage setup fix (#293) and the setup check on CPUs without AVX2 (#318). The CRT and window filters and the
-FSR 3.1 frame interpolation come from community pull requests and have had little testing in play. On `bananza` since 0.4.1: HD rumble falls back to two motors for the session
+FSR 3.1 frame interpolation come from community pull requests and have had little testing in play. On `bananza` since 0.4.1: HD rumble is off by default (`rumble_hd = auto` turns it on; third-party pads broke with it, #363, #383) and falls back to two motors for the session
 after a pad drops (#363), and fewer lock waits and scans in the replay (#354, #361, #365). The Landfill Layer device loss
 on NVIDIA 50-series (#304) is avoided by skipping one vertex stage (45e1a6f48cb7872e), `console = 0` works with Windows
-Terminal (#238), and 15 more community pull requests landed (samplers, Linux memory, GPU write bookkeeping). The smash blur ends above 60 fps on 1.0.0 too (#389, #390), and DLC from a container whose base package has title id 0 installs (#388).
+Terminal (#238), and 23 more community pull requests landed (samplers, Linux memory and lazy write-back, GPU write bookkeeping, fewer VirtualQuery calls, HDR screenshots, DLSS warm-up). The smash blur ends above 60 fps on 1.0.0 too (#389, #390), and DLC from a container whose base package has title id 0 installs (#388).
 
 RecompLauncher on Linux and macOS: [docs/recomp-launcher.md](docs/recomp-launcher.md). Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 18 November 2026.
 

@@ -6,9 +6,22 @@ Draft, not released. The 0.4.1 notes follow below, unchanged.
 - #372 Leave the translator's emulated compare-exchange loop after 1024 attempts (@roverdrubber)
 - dotnet no longer adds a dead folder to the user's PATH on each install (c222918).
 - The draws of vertex stage 45e1a6f48cb7872e are skipped on NVIDIA, for the device loss at the Landfill Layer's first checkpoint on 3.2.0 (#304).
+- #393 Copy the indirect reset's disjoint records in address order (@wrothgaril)
+- #400 Log where a large pool's first GPU use spends its time, and resume write-watch queries where a full answer stopped (@wrothgaril)
+- #409 Save TOTK_SHOTS and --shot pictures of an RGB10A2 (HDR) presented image (@wrothgaril)
+- #378 Lazy write-back of shader storage writes on Linux, off by default (@roverdrubber)
+- #405 Thaw a pool's whole frozen regions without VirtualQuery (@wrothgaril)
+- #406 Split the replay of a slow frame into its parts in the perf trace (@wrothgaril)
+- #407 Create the DLSS feature and the motion pass's pipeline ahead of the first upscale (@wrothgaril)
+- #408 Skip mem_touch's VirtualQuery for lazy-heap chunks known to be committed (@wrothgaril)
+- #377 Keep an opaque ASTC texture as BC1 instead of BC3 with `astc_bc1 = 1` (off by default) (@roverdrubber)
+- #413 Switch 2 controllers over Bluetooth LE (`switch2 = 1`, off by default), ported from mkw-recomp (@zigzagulouszagger)
+- #414 Start a new guest thread on its ideal core alone, as Horizon does (@wrothgaril)
 - HD rumble is off by default (`rumble_hd = auto` turns it on): three third-party Switch Pro pads broke with it (#363, #383).
 - HD rumble sends neutral values while the motors are silent, so a frequency change at zero amplitude no longer floods the pad (#363).
 - A refused `output_res` now says which sizes work (#403).
+- PCs with 4 to 7 logical processors (many laptops, 6-core CPUs without SMT) now record big render passes on 3 threads by default instead of one: on the heaviest scene tested, frames over 50 ms in the first minute fell about tenfold on 6 logical processors and fourfold on 4 (docs/dkb-lowend.md).
+- On a first run with an empty pipeline cache, a draw that has to wait for its pipeline (a cutscene or menu quad) builds it itself instead of queueing behind dozens of pipelines of skipped draws: on the AMD path the longest wait fell from 2.4 s to 0.23 s (#309). A ~10 s stall on the very first heavy frame remains.
 - The radial blur a smash starts ends above 60 fps with `realtime = 1` on 1.0.0 too, as #159 did for 3.2.0 (#389, #390).
 - The installer keeps the DLC of a container whose base package has title id 0, warns for any add-on it cannot place, and the game logs a missing add-on (#388, fix by @Ki1z).
 - #357 Slice passes whose draws sample an image through a depth twin (@GlebShekovtsov)

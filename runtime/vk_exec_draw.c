@@ -622,12 +622,14 @@ static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *
 }
 
 static uint32_t written_hash(uint64_t addr, uint64_t size) {
+    size &= ~VK_WB_LAZY;
     uint64_t h = (addr ^ size * 0xc2b2ae3d27d4eb4full) * 0x9e3779b97f4a7c15ull;
     return (uint32_t)(h >> 32);
 }
 
 // Each distinct range once per command buffer, in first-write order. A scene with thousands of written ranges and tens
 // of thousands of draws binding them spent most of the replay searching this list, so the search goes through a table.
+// VK_WB_LAZY is not part of the range's key: one non-lazy write makes the merged range non-lazy.
 // buf is the buffer the GPU writes the range through (a pool's VRAM mirror or its imported buffer, vk_memory.c
 // vk_gpu_written_into); a range written through two keeps none.
 static void note_written(VkExec *ex, uint64_t addr, uint64_t size, VkBuffer buf) {
@@ -649,7 +651,8 @@ static void note_written(VkExec *ex, uint64_t addr, uint64_t size, VkBuffer buf)
     uint32_t mask = r->written_slots - 1, at = written_hash(addr, size) & mask;
     for (; r->written_slot[at]; at = (at + 1) & mask) {
         Range *w = &r->written[r->written_slot[at] - 1];
-        if (w->addr == addr && w->size == size) {
+        if (w->addr == addr && (w->size & ~VK_WB_LAZY) == (size & ~VK_WB_LAZY)) {
+            w->size &= size | ~VK_WB_LAZY;
             if (w->buf != buf) w->buf = VK_NULL_HANDLE;
             return;
         }
@@ -657,7 +660,7 @@ static void note_written(VkExec *ex, uint64_t addr, uint64_t size, VkBuffer buf)
     if (r->nwritten == r->cwritten) r->written = grow(r->written, &r->cwritten, sizeof *r->written);
     r->written[r->nwritten++] = (Range){addr, size, buf};
     r->written_slot[at] = (uint32_t)r->nwritten;
-    vk_mem_gpu_pending(addr, size);
+    vk_mem_gpu_pending(addr, size & ~VK_WB_LAZY);   // the flag travels in the list only
 }
 
 static int reset_mapped(void *context, uint64_t addr, uint32_t size) {
@@ -690,8 +693,85 @@ static int reset_targets_overlap(const uint64_t *pointers, uint32_t count) {
 static int written_overlaps(VkExec *ex, uint64_t addr, uint64_t size) {
     const CbRes *r = cb_res(ex);
     for (int i = 0; i < r->nwritten; i++)
-        if (r->written[i].addr < addr + size && addr < r->written[i].addr + r->written[i].size) return 1;
+        if (r->written[i].addr < addr + size && addr < r->written[i].addr + (r->written[i].size & ~VK_WB_LAZY))
+            return 1;
     return 0;
+}
+
+// TOTK_RESET_BATCH: the nonnull targets in address order (*out, the replaying thread's buffer, *n of them), and whether
+// two share a byte, as reset_targets_overlap answers. msort returns at once on a list already in order.
+static int reset_sort(const uint64_t *pointers, uint32_t count, const uint64_t **out, uint32_t *n) {
+    static uint64_t *sorted, *sbuf;   // the replaying thread's
+    static size_t cap, scap;
+    if (cap < count) {
+        free(sorted);
+        cap = count;
+        if (!(sorted = malloc(cap * sizeof *sorted))) rt_fatal("vk: out of memory checking indirect-reset targets");
+    }
+    uint32_t m = 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (pointers[i]) sorted[m++] = pointers[i];
+    sort_u64(sorted, m, &sbuf, &scap);
+    int overlap = 0;
+    for (uint32_t i = 1; i < m && !overlap; i++) overlap = sorted[i] - sorted[i - 1] < NVN_INDIRECT_RESET_RECORD_BYTES;
+    *out = sorted, *n = m;
+    return overlap;
+}
+
+// The bookkeeping of the records the reset just copied, sorted and disjoint: once per run of records that touch end
+// to start, with the run's span, instead of once per record. A run covers exactly the bytes its records do, so the
+// mirror's write-back (vk_mem_gpu_wrote), the written ranges of the command buffer (note_written) and the uniform
+// snapshot's GPU writes (vk_usnap_drop_many, one lock for the reset) name the same bytes as before; only the census
+// counts a run once. A run that does not lie in its first record's pool and buffer is noted record by record. With as
+// many runs as records, what is saved is the copy commands (vk_exec_reset_indirect) and the snapshot's cost per
+// record: the reset takes drop_lock once, where record by record each record took it (TOTK_USNAP_DROP_LOCAL=0) or, by
+// default, went into the thread's own list and took the lock only when a uniform copy covered it; each record is then
+// resolved a second time here. With TOTK_TRACE=perf the log says every 3600 resets how many records and runs a reset
+// had.
+static void reset_batch(VkExec *ex, const uint64_t *sorted, uint32_t n) {
+    DrawCtx *const dc = DC_OF(ex);   // for vk_mem_count
+    const uint64_t rec = NVN_INDIRECT_RESET_RECORD_BYTES;
+    static uint64_t (*runs)[2];   // the replaying thread's
+    static uint32_t cruns;
+    static uint64_t n_resets, n_records, n_runs;
+    if (cruns < n) {
+        free(runs);
+        cruns = n;
+        if (!(runs = malloc(sizeof *runs * cruns))) rt_fatal("vk: out of memory noting indirect-reset writes");
+    }
+    uint32_t nr = 0;
+    for (uint32_t i = 0, j; i < n; i = j) {
+        uint64_t lo = sorted[i], hi = lo + rec;
+        for (j = i + 1; j < n && sorted[j] == hi; j++) hi += rec;
+        // The run's first record resolves as its copy did. A run of more records is noted with that span only when
+        // the whole run resolves to the same pool and buffer: were pools ever to nest, the run could resolve to an
+        // outer pool than its records do, and the bookkeeping would name a buffer the copies did not write.
+        VkMemSpan span, whole;
+        if (!vk_mem_resolve(lo, rec, &span)) rt_fatal("vk: an indirect-reset mapping changed during replay");
+        if (j == i + 1 ||
+            (vk_mem_resolve(lo, hi - lo, &whole) && whole.pool == span.pool && whole.buffer == span.buffer)) {
+            VK_MEM_USE(span);
+            vk_mem_gpu_wrote(&span, hi - lo);
+            vk_mem_count(span.cls, VK_MUSE_GPU_WRITE, hi - lo);
+            note_written(ex, lo, hi - lo, span.buffer);
+        } else {
+            for (uint32_t k = i; k < j; k++) {
+                if (!vk_mem_resolve(sorted[k], rec, &span)) rt_fatal("vk: an indirect-reset mapping changed during replay");
+                VK_MEM_USE(span);
+                vk_mem_gpu_wrote(&span, rec);
+                vk_mem_count(span.cls, VK_MUSE_GPU_WRITE, rec);
+                note_written(ex, sorted[k], rec, span.buffer);
+            }
+        }
+        runs[nr][0] = lo, runs[nr][1] = hi, nr++;
+    }
+    vk_usnap_drop_many((const uint64_t (*)[2])runs, nr);
+    n_records += n, n_runs += nr;
+    if ((rt_trace & RT_TRACE_PERF) && ++n_resets >= 3600) {
+        rt_log("vk: indirect resets: %.1f records in %.1f runs of adjacent records a reset (TOTK_RESET_BATCH)",
+               (double)n_records / (double)n_resets, (double)n_runs / (double)n_resets);
+        n_resets = n_records = n_runs = 0;
+    }
 }
 
 // The pointer list may have been written earlier in this submission. Read its GPU-visible contents after submitting
@@ -753,13 +833,22 @@ int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_b
     Chunk *chunk = &resources->chunks[resources->nchunks - 1];
     if (vmaFlushAllocation(vk_ctx()->vma, chunk->alloc, source_offset, sizeof record) != VK_SUCCESS)
         rt_fatal("vk: flushing indirect-reset values failed");
-    int ordered = reset_targets_overlap(pointers, list.count);
+    // TOTK_RESET_BATCH (on by default; 0 as before; ab alternates with the A/B blocks): disjoint targets are copied in
+    // address order, so the copies into one buffer share commands of up to 128 regions, and their bookkeeping is done
+    // once per run of adjacent records (reset_batch) instead of once per record.
+    static int batch_mode = -1;
+    uint32_t nsorted = 0;
+    const uint64_t *sorted = NULL;
+    int ordered;
+    if (knob_on(&batch_mode, "RESET_BATCH", "1")) ordered = reset_sort(pointers, list.count, &sorted, &nsorted);
+    else ordered = reset_targets_overlap(pointers, list.count);
+    int batch = sorted && !ordered;   // overlapping targets keep their input order, one barrier apart, as before
     VkBuffer dst = VK_NULL_HANDLE;
     VkBufferCopy regions[128];
     uint32_t nregions = 0;
     vk_exec_barrier(ex);   // the copies follow every earlier access to the records
-    for (uint32_t i = 0; i < list.count; i++) {
-        uint64_t addr = pointers[i];
+    for (uint32_t i = 0, n = batch ? nsorted : list.count; i < n; i++) {
+        uint64_t addr = batch ? sorted[i] : pointers[i];
         if (!addr) continue;
         VkMemSpan span;
         if (!vk_mem_resolve(addr, sizeof record, &span))
@@ -770,8 +859,9 @@ int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_b
         if (ordered) vk_exec_barrier(ex);   // preserves the input order of duplicate or overlapping target ranges
         VkBufferCopy copy = {source_offset, span.offset, sizeof record};
         if (!ordered) {
-            // Do not reorder targets. Within one command the destination ranges must be disjoint,
-            // including when different guest addresses resolve to the same Vulkan buffer.
+            // Do not reorder overlapping targets (disjoint ones may go in any order: the bytes end the same). Within
+            // one command the destination ranges must be disjoint, including when different guest addresses resolve
+            // to the same Vulkan buffer.
             if (nregions && (dst != span.buffer || nregions == sizeof regions / sizeof regions[0] ||
                 span.offset < regions[nregions - 1].dstOffset + sizeof record)) {
                 vkCmdCopyBuffer(ex->cb, source, dst, nregions, regions);
@@ -784,6 +874,7 @@ int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_b
             vkCmdCopyBuffer(ex->cb, source, span.buffer, 1, &copy);
             ex->recorded++;
         }
+        if (batch) continue;   // reset_batch notes the writes below
         vk_mem_gpu_wrote(&span, sizeof record);
         vk_usnap_drop(addr, sizeof record);
         vk_mem_count(span.cls, VK_MUSE_GPU_WRITE, sizeof record);
@@ -793,6 +884,7 @@ int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_b
         vkCmdCopyBuffer(ex->cb, source, dst, nregions, regions);
         ex->recorded++;
     }
+    if (batch) reset_batch(ex, sorted, nsorted);
     free(pointers);
     vk_exec_barrier(ex);   // subsequent shader accesses and indirect reads see every completed record
     return 1;
@@ -1445,9 +1537,11 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
     int gs = st == NVN_STAGE_VS ? GFX_STAGE_VS : st == NVN_STAGE_FS ? GFX_STAGE_FS :
              st == NVN_STAGE_GS ? GFX_STAGE_GS : st == NVN_STAGE_CS ? GFX_STAGE_CS : -1;
     if (gs < 0) return NULL;
+    uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame); a translation inside counts apart
     const GfxShader *s = await ? gfx_shader_await(gs, ctl, code, len, &a)
                        : pending && vk_pipeline_async_on() ? gfx_shader_get_async(gs, ctl, code, len, &a, pending)
                                                            : gfx_shader_get(gs, ctl, code, len, NULL, &a);
+    perf_ph_end(PERF_PH_SHADER, ph);
     if (pending && *pending) return NULL;
     if (s) slot_mask_learn(dc, serial, st, s);
     if (!s) warn_once(W_SHADER, "a stage %d shader of program %llu failed to translate: draws with it are skipped", st,
@@ -1884,7 +1978,7 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
                        how, guarded, &bi)) {
             if (written && bi.buffer != VK_NULL_HANDLE) {
-                note_written(ex, b->addr - lead, bi.range, bi.buffer);
+                note_written(ex, b->addr - lead, bi.range | VK_WB_LAZY, bi.buffer);   // a shader's storage write: vk.h
                 const uint8_t *ctl, *code;
                 uint32_t len;
                 uint64_t o;
@@ -4568,45 +4662,58 @@ static int mvk_upscale_blit(VkExec *ex, const GfxShader *cs) {
 // over more than a few workgroups, from a single-sampled 2D B10G11R11 texture of at least 256 pixels a side into a
 // larger B10G11R11 image of the same aspect ratio (1280x720 or the dynamic 1397x786 into 1920x1080). The MoltenVK blit
 // (mvk_upscale_blit) keeps to the hashes: it replaces the dispatch without the further checks DLSS and FSR 3.1 make.
-static int game_upscaler(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info, const p_dispatch *d) {
+// The declared slots and then the images are looked at before the hash, which only adds the listed shaders to the ones
+// the images take: hashing a shader's SPIR-V (once per shader, gfx_shader_spirv_fnv) costs about a nanosecond a byte,
+// and every new compute shader of a layer's first frame paid it here on the replay thread: 26 hashes, 5.3 ms, the
+// longest 4.6 ms, in the Hilltop Layer's first frame (TOTK_TRACE=perf, 3.2.0), none with this order. The line that
+// names a shader the images took hashes it a frame later (seen_log).
+static uint64_t spirv_hash(const GfxShader *cs) {
+    uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame); cached after the first
     uint64_t h = gfx_shader_spirv_fnv(cs);
-    if (mvk_upscale_cs(h)) return 1;
-    if (!info || !d) return 0;
+    perf_ph_end(PERF_PH_SPIRV_HASH, ph);
+    return h;
+}
+
+// The shaders taken by their images (the first 4), logged by seen_log with their hash a frame later.
+typedef struct { const GfxShader *cs; uint32_t aw, ah, bw, bh; int same; uint64_t caller; } TakenCs;
+static TakenCs taken_cs[4];
+static int ntaken_cs, nlogged_taken;
+
+static int game_upscaler(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info, const p_dispatch *d) {
     int ntex = 0, nimg = 0, fit = 1;
-    for (uint32_t i = 0; i < info->n_bindings; i++) {
+    for (uint32_t i = 0; info && i < info->n_bindings; i++) {
         const VkPipeBinding *bd = &info->bindings[i];
         if (!bd->res) continue;
         if (bd->kind == GFX_RES_TEX) ntex++, fit &= bd->res->slot == 0;
         if (bd->kind == GFX_RES_IMG) nimg++, fit &= bd->res->slot == 1 && (bd->res->flags & 4);   // 4: written
     }
-    if (!fit || ntex != 1 || nimg != 1 || (int64_t)d->x * d->y < 16 || d->z != 1) return 0;
-    uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
-    view_t vs, vd;
-    int hvs = 0, hvd = 0;
-    const VkTexImage *a = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
-    const VkTexImage *b = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
-    // The output must be strictly larger: with equal sizes this shape (one B10G11R11 texture in, one written image out,
-    // 256 or more wide) is also any same-size post-process compute pass, so it could not be told from the upscaler. The
-    // one exception is native anti-aliasing (dkb_wide.c dkb_native_aa): the game's upscale step is then made to run at
-    // full size, and that dispatch is known by the guest address that issues it, not by its shape.
-    int same = a && b && b->width == a->width && b->height == a->height && dkb_native_aa_issued_by(d->caller);
-    if (!a || !b || a->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || b->format != a->format || a->samples > 1 ||
-        b->samples > 1 || a->type != VK_IMAGE_TYPE_2D || b->type != VK_IMAGE_TYPE_2D || a->width < 256 ||
-        a->height < 256 || (!same && (b->width <= a->width || b->height <= a->height)))
-        return 0;
-    double aspect = (double)a->width / a->height - (double)b->width / b->height;
-    if (aspect < -0.02 || aspect > 0.02) return 0;
-    static uint64_t told[4];   // the first few hashes taken by shape, for the list in mvk_upscale_cs
-    static int ntold;
-    int i = 0;
-    while (i < ntold && told[i] != h) i++;
-    if (i == ntold && ntold < 4) {
-        told[ntold++] = h;
-        rt_log("upscaler: compute shader %016llx is taken for the game's upscaler by its images (%ux%u -> %ux%u%s, "
-               "issued at %#llx)", (unsigned long long)h, a->width, a->height, b->width, b->height,
-               same ? ": the same size, native anti-aliasing" : "", (unsigned long long)d->caller);
+    if (info && (!fit || ntex != 1 || nimg != 1)) return 0;
+    // By its images first: a shader taken by them needs no hash (the hash list below only adds shaders).
+    if (info && d && (int64_t)d->x * d->y >= 16 && d->z == 1) {
+        uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
+        view_t vs, vd;
+        int hvs = 0, hvd = 0;
+        const VkTexImage *a = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
+        const VkTexImage *b = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
+        // The output must be strictly larger: with equal sizes this shape (one B10G11R11 texture in, one written image
+        // out, 256 or more wide) is also any same-size post-process compute pass, so it could not be told from the
+        // upscaler. The one exception is native anti-aliasing (dkb_wide.c dkb_native_aa): the game's upscale step is
+        // then made to run at full size, and that dispatch is known by the guest address that issues it, not by its
+        // shape.
+        int same = a && b && b->width == a->width && b->height == a->height && dkb_native_aa_issued_by(d->caller);
+        double aspect = a && b ? (double)a->width / a->height - (double)b->width / b->height : 1.0;
+        if (a && b && a->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && b->format == a->format && a->samples <= 1 &&
+            b->samples <= 1 && a->type == VK_IMAGE_TYPE_2D && b->type == VK_IMAGE_TYPE_2D && a->width >= 256 &&
+            a->height >= 256 && (same || (b->width > a->width && b->height > a->height)) && aspect >= -0.02 &&
+            aspect <= 0.02) {
+            int i = 0;
+            while (i < ntaken_cs && taken_cs[i].cs != cs) i++;
+            if (i == ntaken_cs && ntaken_cs < 4)
+                taken_cs[ntaken_cs++] = (TakenCs){cs, a->width, a->height, b->width, b->height, same, d->caller};
+            return 1;
+        }
     }
-    return 1;
+    return mvk_upscale_cs(spirv_hash(cs));
 }
 
 // upscaler = dlss (experimental): the same dispatch of the game's upscaler is replaced by NVIDIA DLSS on its input
@@ -4615,27 +4722,49 @@ static int game_upscaler(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info
 // runs. NGX binds its own pipelines and descriptors into the command buffer (FSR 3.1 its own pushes), so the caller
 // forgets the bound state (vk_exec_draw_new_cb) after it; -1 (it failed after it may have bound its own): the caller
 // also binds the game's pipeline and resources again before its dispatch.
+// The upscaler is matched by hash or shape (game_upscaler): with DLSS, FSR 3.1 or FSR 4 on, the compute shaders seen
+// that were not it (the first 48 distinct) are listed, so a run that never reaches the upscaler shows which dispatch it
+// missed. The line names a shader by the hash of its SPIR-V, which takes milliseconds for a large shader, and a layer's
+// first frame meets dozens of new ones before its upscale: so a shader is noted at its dispatch with its image sizes,
+// and seen_log, at the first dispatch of each frame, hashes and logs one noted shader. The replay thread only.
+typedef struct { const GfxShader *cs; uint32_t aw, ah, bw, bh; int af, bf; } SeenCs;
+static SeenCs seen_cs[48];
+static int nseen_cs, nlogged_cs;
+
+static void seen_note(VkExec *ex, const GfxShader *cs) {
+    int i = 0;
+    while (i < nseen_cs && seen_cs[i].cs != cs) i++;
+    if (i < nseen_cs || nseen_cs == 48) return;
+    uint64_t ds = ex->tex[NVN_STAGE_CS][0], dd = ex->img[NVN_STAGE_CS][1];
+    view_t ws, wd;
+    int hws = 0, hwd = 0;
+    const VkTexImage *a = ds ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(ds), &ws, &hws) : NULL;
+    const VkTexImage *b = dd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(dd), &wd, &hwd) : NULL;
+    seen_cs[nseen_cs++] = (SeenCs){cs, a ? a->width : 0, a ? a->height : 0, b ? b->width : 0, b ? b->height : 0,
+                                   a ? (int)a->format : 0, b ? (int)b->format : 0};
+}
+
+static void seen_log(void) {
+    static uint64_t last = UINT64_MAX;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if ((nlogged_cs == nseen_cs && nlogged_taken == ntaken_cs) || f == last) return;
+    last = f;
+    if (nlogged_taken < ntaken_cs) {   // the first few hashes taken by shape, for the list in mvk_upscale_cs
+        const TakenCs *t = &taken_cs[nlogged_taken++];
+        rt_log("upscaler: compute shader %016llx is taken for the game's upscaler by its images (%ux%u -> %ux%u%s, "
+               "issued at %#llx)", (unsigned long long)spirv_hash(t->cs), t->aw, t->ah, t->bw, t->bh,
+               t->same ? ": the same size, native anti-aliasing" : "", (unsigned long long)t->caller);
+        return;
+    }
+    const SeenCs *s = &seen_cs[nlogged_cs++];
+    rt_log("dlss: (DLSS, FSR 3.1 and FSR 4) compute shader %016llx is not the game's upscaler (tex0 %ux%u fmt %d, img1 %ux%u fmt %d)",
+           (unsigned long long)spirv_hash(s->cs), s->aw, s->ah, s->af, s->bw, s->bh, s->bf);
+}
+
 static int dlss_upscale(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info, const p_dispatch *d) {
     if (!vk_temporal_wanted()) return 0;
     if (!game_upscaler(ex, cs, info, d)) {
-        // The upscaler is matched by hash or shape (game_upscaler): with DLSS, FSR 3.1 or FSR 4 on, list the compute shaders
-        // seen (the first 48 distinct) so a run that never reaches the upscaler shows which dispatch it missed.
-        static uint64_t seen[48];
-        static int nseen;
-        uint64_t h = gfx_shader_spirv_fnv(cs);
-        int i = 0;
-        while (i < nseen && seen[i] != h) i++;
-        if (i == nseen && nseen < 48) {
-            seen[nseen++] = h;
-            uint64_t ds = ex->tex[NVN_STAGE_CS][0], dd = ex->img[NVN_STAGE_CS][1];
-            view_t ws, wd;
-            int hws = 0, hwd = 0;
-            const VkTexImage *a = ds ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(ds), &ws, &hws) : NULL;
-            const VkTexImage *b = dd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(dd), &wd, &hwd) : NULL;
-            rt_log("dlss: (DLSS, FSR 3.1 and FSR 4) compute shader %016llx is not the game's upscaler (tex0 %ux%u fmt %d, img1 %ux%u fmt %d)",
-                   (unsigned long long)h, a ? a->width : 0, a ? a->height : 0, a ? (int)a->format : 0,
-                   b ? b->width : 0, b ? b->height : 0, b ? (int)b->format : 0);
-        }
+        seen_note(ex, cs);
         return 0;
     }
     uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
@@ -4716,7 +4845,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     // the dispatch's binds, and the bound state is forgotten when it recorded. The replay thread's copy only: a
     // TOTK_REPLAY_PAR helper translating a dispatch leaves it to the replay thread.
     if (!OFF_MAIN(dc) && vk_dlss_wanted() && vk_dlss_warm(ex->cb, ex->fence)) vk_exec_draw_new_cb(ex), ex->dirty = VK_EXEC_DIRTY_ALL;
-    if (!OFF_MAIN(dc)) vk_temporal_idle_tick(ex->fence);   // once a frame: an upscaler not chosen lets go (vk_dlss.c)
+    if (!OFF_MAIN(dc)) vk_temporal_idle_tick(ex->fence), seen_log();   // once a frame: an upscaler not chosen lets go (vk_dlss.c)
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     dc->c0_dim[0] = (uint32_t)d->x, dc->c0_dim[1] = (uint32_t)d->y, dc->c0_dim[2] = (uint32_t)d->z;
     c0_lay_set(ex, cs);

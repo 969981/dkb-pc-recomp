@@ -115,6 +115,7 @@ static int pass_secondary;                      // the next vk_exec_pass_begin o
 static int pass_tried, pass_sliced;             // the open pass: par_start looked at it; it has secondary contents
 static int pass_why;                            // why par_start left the open pass alone (PAR_WHY_*), for the log
 static uint32_t pass_draws;                     // draws of the open pass, for par_hist
+static uint64_t pass_t0;                        // TOTK_TRACE=perf: when the open pass began (perf_ph_unsliced)
 // The slices and ops of the passes collected since nothing was held back (a batch, par_room): indices run on from pass
 // to pass while earlier passes' slices may still be recorded (par_defer).
 #define PAR_MAX_SLICES 1024      // a pass with more draws than these hold keeps adding to its last slice
@@ -902,7 +903,10 @@ void vk_exec_pass_begin(VkExec *ex) {
                           .flags = pass_secondary ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT : 0};
     vkCmdBeginRendering(ex->cb, &ri);
     // The replay thread's pass bookkeeping (par_start, vk_exec_pass_end): a helper's part opens passes of its own.
-    if (ex == &X) pass_draws = 0, pass_tried = 0, pass_sliced = pass_secondary, pass_why = PAR_WHY_UNSEEN;
+    if (ex == &X) {
+        pass_draws = 0, pass_tried = 0, pass_sliced = pass_secondary, pass_why = PAR_WHY_UNSEEN;
+        pass_t0 = rt_trace & RT_TRACE_PERF ? kern_now_ns() : 0;
+    }
     FRAME->passes++;
     ex->recorded++;
     ex->in_pass = 1;
@@ -929,6 +933,10 @@ void vk_exec_pass_end(VkExec *ex) {
         }
         if (!pass_sliced && par_mode > 0)
             par_unsliced[pass_draws < 64 ? 0 : pass_draws < 256 ? 1 : pass_draws < 1024 ? 2 : 3] += pass_draws;
+        // A layer's first frame draws into render targets made for it: their passes have no history, so all of them
+        // are recorded here, unsliced (par_start, PAR_WHY_NEW). TOTK_TRACE=perf adds up their time for a slow frame.
+        if (pass_t0 && !pass_sliced && pass_why == PAR_WHY_NEW && pass_draws >= PAR_MIN_DRAWS)
+            perf_ph_unsliced(kern_now_ns() - pass_t0, pass_draws);
         ParHist *e = par_find(sig, pass_draws >= PAR_MIN_DRAWS);
         if (e) e->draws = pass_draws >= e->draws ? pass_draws : e->draws - e->draws / 8;
         if (e && par_seen.n && par_seen_sig == sig) {   // twins its draws needed (vk_exec_par_twin_seen)
@@ -1988,7 +1996,10 @@ static int par_nworkers;
 
 // At a draw outside a pass: 1 when the pass it opens is sliced (the pass is then open, with secondary contents).
 // TOTK_REPLAY_THREADS (0: off), read once. Unset, it is 6 when the process may run on 12 or more logical processors, 4
-// on 8 to 11 and 0 below that: in the layer -101 scene (RTX 5060 Ti, 1920x1080, 60 fps limit) 4 threads gave 57.0 and
+// on 8 to 11, 3 on 4 to 7 and 0 below that. On 6 and 4 (a Ryzen 7 5700X held to its first 6 or 4 logical processors,
+// RTX 5060 Ti, the layer -200 recording at 1920x1080, 60 fps limit), 3 threads cut the first minute's frames over 50 ms
+// from 155 to 169 to 15 to 17 (6) and from 148 to 203 to 47 (4), at 43 against 40 fps and 41 against 38; 2 threads
+// gave nothing and 4 on 6 matched 3. Above that: in the layer -101 scene (RTX 5060 Ti, 1920x1080, 60 fps limit) 4 threads gave 57.0 and
 // 57.2 fps and 63 to 77 frames over 25 ms a minute, against 52.7 and 53.6 fps and 177 to 226 frames without
 // (docs/dkb-lowend.md). On 16 (Ryzen 7 9800X3D, RTX 5090) the Hilltop Layer of Surf Hills (3.2.0, 28,500 draws a frame)
 // replayed in 12.4 ms a frame with 6 against 14.9 with 4 (45 to 47 fps against 42), the route's Lake Level in 5.9 to 6.0
@@ -2007,7 +2018,7 @@ static int par_threads(void) {
     if (par_mode < 0) {
         const char *e = cfg_get("TOTK_REPLAY_THREADS");
         uint32_t cpus = plat_cpu_usable();
-        par_mode = e && *e ? atoi(e) : vk_caps.amd && !vk_caps.amd_slices ? 0 : cpus >= 12 ? 6 : cpus >= 8 ? 4 : 0;
+        par_mode = e && *e ? atoi(e) : vk_caps.amd && !vk_caps.amd_slices ? 0 : cpus >= 12 ? 6 : cpus >= 8 ? 4 : cpus >= 4 ? 3 : 0;
         if (par_mode < 0) par_mode = 0;
         if (par_mode) rt_log("vk: passes of %d or more draws are recorded in slices of up to %d draws into secondary command buffers "
                              "(TOTK_REPLAY_THREADS=%d%s: recorded by that many threads)", PAR_MIN_DRAWS, PAR_SLICE_DRAWS, par_mode,
@@ -2074,7 +2085,11 @@ static int par_start(VkExec *ex) {
         PC.ops = malloc(sizeof *PC.ops * PAR_MAX_OPS), PC.snap = malloc(sizeof *PC.snap * PAR_MAX_SLICES);
         if (!PC.ops || !PC.snap) rt_fatal("vk: out of memory");
     }
-    if (par_mode > 1) par_start_workers();
+    if (par_mode > 1 && par_nworkers < par_mode - 1) {
+        uint64_t ph = perf_ph_begin_cpu();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+        par_start_workers();
+        perf_ph_end(PERF_PH_SLICE_START, ph);
+    }
     par_room(ex);
     PC.s0 = PC.nslices;
     PC.upd = (int)(par_pass_seq++ % VK_EXEC_UPD_SNAPS);
@@ -2307,7 +2322,9 @@ static void par_worker(void *arg) {
         int i = pw_next++;
         plat_mutex_unlock(&pw_lock);
         uint64_t t = kern_now_ns();
+        int ph = perf_ph_worker_begin();   // TOTK_TRACE=perf: the workers' parts (perf.c ph_frame)
         par_record(i, &pw->pp, &pw->w, dc);
+        perf_ph_worker_end(ph);
         par_rec_note(1, i, kern_now_ns() - t);
         plat_mutex_lock(&pw_lock);
         par_slice_done(i);
@@ -2640,9 +2657,11 @@ static void par_wait_range(int s0, int s1, uint64_t t1) {
         plat_mutex_lock(&pw_lock);
         par_slice_done(i);
     }
+    uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
     uint64_t t2 = kern_now_ns();
     while (!par_range_done(s0, s1)) plat_cond_wait(&pw_idle, &pw_lock);
     uint64_t t3 = kern_now_ns();
+    perf_ph_end(PERF_PH_SLICE_WAIT, ph);
     par_t_own += t2 - t1, par_t_wait += t3 - t2;
     if (t3 - t2 > par_wait_max) par_wait_max = t3 - t2;
     par_wait_long += t3 - t2 > 200000;

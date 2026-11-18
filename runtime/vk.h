@@ -6,6 +6,7 @@
 #pragma clang diagnostic ignored "-Wnullability-completeness"
 #include "vk_mem_alloc.h"
 #pragma clang diagnostic pop
+#include "astc_opaque.h"   // AstcOpaqueScan (the ASTC BC rules whose interface is below)
 #include "nvn_obj.h"   // pool_t, tex_t, view_t, samp_par, NVNcopyRegion (memory and textures block)
 #include "gfx.h"       // GfxShader, GfxShaderRes, GfxShaderAnswers (pipelines block)
 
@@ -358,6 +359,7 @@ const void *vk_usnap_bytes(uint64_t addr, uint64_t n);   // the copy's bytes for
 void vk_usnap_cpu_reads(void);   // vk_usnap_bytes is read often: keep each copy in cached host memory too
 int vk_usnap_covers(uint64_t addr, uint64_t n);   // a copy of this submission overlaps the range
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
+void vk_usnap_drop_many(const uint64_t (*r)[2], uint32_t n);   // vk_usnap_drop of each [r[i][0], r[i][1]), one lock
 int vk_usnap_gpu_writing(uint64_t addr, uint64_t n);   // a noted GPU write not done yet overlaps the range
 uint64_t vk_usnap_arena_bytes(void);                 // arenas created so far (all kept until shutdown)
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
@@ -388,6 +390,10 @@ void vk_gpu_written_into(uint64_t addr, uint64_t size, VkBuffer buf);
 // made writable in runs before the copies, and the pending list searched once. Without it, the page stamps are taken in
 // batches of ranges under one hold of the locks (TOTK_STAMP_BATCH; 0: one vk_gpu_written_into per range).
 void vk_gpu_written_many(const VkGpuWrite *w, int n);
+// Or-ed into a range's size for vk_gpu_written_many: a storage buffer a shader wrote, which the game rarely reads on
+// the CPU. With the lazy write-back on (vk_memory.c, TOTK_WB_LAZY), such a range may be copied back at the first CPU
+// access to its pages instead of at the fence.
+#define VK_WB_LAZY (1ull << 63)
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
                                           // 1 when it has one
 void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
@@ -450,6 +456,8 @@ int vk_astc_mode(void);                 // decided once per device (logged); VK_
 int vk_astc_native(VkFormat astc_fmt);  // 1: images of this ASTC format are created as such and get the raw blocks
 int vk_astc_gpu(void);                  // 1: ASTC images decoded to RGBA8 by the compute decoder (vk_astc_record)
 int vk_astc_bc(void);                   // 1: those images are BC3 instead, encoded after the decode (TOTK_ASTC_BC=1)
+// 1: with vk_astc_bc, an image whose blocks are all opaque may be BC1 (vk_astc_record bc 2; TOTK_ASTC_BC1=0: off)
+int vk_astc_bc1(void);
 // One image region decoded from raw blocks: tight rows of 16-byte blocks at byte src of the source buffer (slices one
 // after the other), w x h texels and slices deep, written at offset of level / layer.
 typedef struct { VkDeviceSize src; uint32_t w, h, slices, level, layer; VkOffset3D offset; } VkAstcRegion;
@@ -503,6 +511,24 @@ typedef struct {
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin).
                                    // Read and set through vk_tex_fb_learned and vk_tex_fb_learn
 } VkTexImage;
+// vk_astc_bc1.c: the ASTC textures kept as BC (TOTK_ASTC_BC) and the format their images are in (astc_bc 1 = BC3,
+// 2 = BC1). kinds: whether an upload counts the kinds of the blocks it writes. scan: the count of them, stopping at
+// the first block that may carry alpha. choice: what the count says about an entry's image. bc3: the BC1 -> BC3
+// change a write into a BC1 image needs. Each takes what it needs from the entry and puts what it changes back:
+// the new memory through io_alloc, the new format through out_format, the kind the entry is kept in through
+// io_bc, the "stay as it is for good" flag through io_settled; the image itself and its format go to img->image
+// and img->format. Each returns 1 when the caller may go on with the image and 0 when it could not be made again:
+// not a 2D single-sample one, one bound into pool memory, one with no memory of its own, or no memory for the new
+// image. A new image holds nothing and is in VK_IMAGE_LAYOUT_UNDEFINED: its owner transitions it, uploads every
+// level and layer into it and bumps the generation the descriptor memos look it up by.
+int vk_astc_bc_kinds(int agpu, uint8_t astc_bc, const VkTexImage *img, VmaAllocation alloc,
+                     VmaAllocation bound_to, uint8_t bc_settled);
+void vk_astc_bc_scan(AstcOpaqueScan *s, const uint8_t *p, uint64_t n);
+int vk_astc_bc_choice(VkTexImage *img, VkImageCreateFlags flags, VkImageUsageFlags usage, int srgb,
+                      const AstcOpaqueScan *s, VmaAllocation *io_alloc, VkFormat *out_format, uint8_t *io_bc,
+                      uint8_t *io_settled);
+int vk_astc_bc3(VkTexImage *img, VkImageCreateFlags flags, VkImageUsageFlags usage, int srgb,
+                VmaAllocation *io_alloc, VkFormat *out_format, uint8_t *io_bc, uint8_t *io_settled);
 // fb_learned is set by the replay thread (vk_exec_draw.c feedback_prepare) while the helper threads (vk_spec.h) read
 // it for the draws they translate and the passes they begin, so it is loaded and stored atomically. A helper part that
 // read it before the store is dropped: the store is followed by vk_spec_world_changed.
@@ -513,6 +539,11 @@ static inline void vk_tex_fb_learn(VkTexImage *img) { __atomic_store_n(&img->fb_
 // is let go for the wait (vk_texture.c hold_barrier). Any other thread, or no held slice left: returns at once.
 void vk_texture_hold_barrier(void);
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
+// An ASTC image kept as BC1 made BC3 again and uploaded whole, before texels that may carry alpha are written into it
+// (vk_exec_xfer.c's copies into a decoded ASTC image, WriteTexels). Any other image is left as it is. 1 when the image
+// is BC3 and the copy may go on; 0 when it is a BC1 image whose remake failed, or there is no image at all, since a
+// BC1 block is 8 bytes and holds no alpha for the copy's texels.
+int vk_texture_astc_bc3(const VkTexImage *img);
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(const dpool_ref *pool, int id, view_t *view, int *has_view);
 // The replay looks up many slots per draw: it takes the texture lock once around them (vk_texture_lock) and uses the
@@ -682,6 +713,9 @@ uint64_t vk_sync_reserve(void);            // asynchronous replay: the value the
 int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns);   // 1 when done; 0 on timeout or a value never submitted
 uint64_t vk_sync_fence_done(void);         // highest done value
 uint64_t vk_sync_issued(void);             // newest submitted value (the one being recorded is this + 1)
+// vkQueueSubmit2 on the graphics queue under vk_queue_lock; a call over 10 ms is logged with value, the timeline value
+// the part belongs to. vk_sync.c and the recorder thread (vk_rec.c) submit their parts through it.
+VkResult vk_sync_queue_submit(const VkSubmitInfo2 *si, VkFence fence, uint64_t value);
 void vk_sync_finish(void);                 // every submitted value done
 void vk_sync_shutdown(void);               // finish, stop the completion thread, free the command buffers
 // The op-stream replay (vk_exec.c): records the command handles of one submission into cb, which the caller has

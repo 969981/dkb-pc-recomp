@@ -972,11 +972,13 @@ void plat_mem_prewrite(uint64_t addr, uint64_t n) {
 // write-fault hook first (memory.c thaws a frozen region); a fault in this executable's code then goes to the crash
 // hook (main.c); anything else gets the default action. Runs on the thread's signal stack.
 static int (*fault_hook)(uint64_t addr);
+static int (*access_hook)(uint64_t addr);
 static void (*crash_fn)(const PlatCrash *c);
 
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = uc;
     long err = u->uc_mcontext.gregs[REG_ERR];
+    if (sig == SIGSEGV && access_hook && access_hook((uint64_t)(uintptr_t)si->si_addr)) return;   // a sealed page
     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
     Dl_info at, self;
@@ -1002,6 +1004,17 @@ static void fault_install(void) {
     sigaction(SIGBUS, &sa, NULL);
     sigaction(SIGILL, &sa, NULL);
     sigaction(SIGFPE, &sa, NULL);
+}
+
+int plat_mem_seal(uint64_t addr, uint64_t n, int on) {
+    // pstate stays: see platform.h
+    return !mprotect((void *)(uintptr_t)addr, n, on ? PROT_NONE : PROT_READ | PROT_WRITE);
+}
+
+int plat_mem_access_hook(int (*fn)(uint64_t addr)) {
+    access_hook = fn;
+    fault_install();
+    return 1;
 }
 
 void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
