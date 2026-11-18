@@ -5,6 +5,23 @@ Draft, not released. The 0.4.1 notes follow below, unchanged.
 - `console = 0` also closes a Windows Terminal window: the game frees its console instead of hiding the window (#238, #364).
 - #372 Leave the translator's emulated compare-exchange loop after 1024 attempts (@roverdrubber)
 - dotnet no longer adds a dead folder to the user's PATH on each install (c222918).
+- The draws of vertex stage 45e1a6f48cb7872e are skipped on NVIDIA, for the device loss at the Landfill Layer's first checkpoint on 3.2.0 (#304).
+- HD rumble is off by default (`rumble_hd = auto` turns it on): three third-party Switch Pro pads broke with it (#363, #383).
+- HD rumble sends neutral values while the motors are silent, so a frequency change at zero amplitude no longer floods the pad (#363).
+- A refused `output_res` now says which sizes work (#403).
+- The radial blur a smash starts ends above 60 fps with `realtime = 1` on 1.0.0 too, as #159 did for 3.2.0 (#389, #390).
+- The installer keeps the DLC of a container whose base package has title id 0, warns for any add-on it cannot place, and the game logs a missing add-on (#388, fix by @Ki1z).
+- #357 Slice passes whose draws sample an image through a depth twin (@GlebShekovtsov)
+- #360 Scripted game runs with a verdict: tools/scenario.py, save_warp.py and perf_check.py (@thatbananaman08)
+- #373 Skip the futex wake of a Linux condition variable signal when no thread waits (@roverdrubber)
+- #374 Give the heap's freed pages back under Linux memory pressure (@roverdrubber)
+- #376 Share one sampler per create info and retire the least used near the driver's limit (@roverdrubber)
+- #379 Copy the full-size 3D through native anti-aliasing's upscale step (@roverdrubber)
+- #385 Stamp the GPU writes of a command buffer in batches at its fence (@wrothgaril)
+- #386 Write the GPU writes of a held part back to guest memory once the part is submitted (@wrothgaril)
+- #392 Let a recording thread note its GPU writes in a list of its own (@wrothgaril)
+- #399 Keep the window scaling filter row open when the window is the picture size (@wrothgaril)
+- #401 Answer the pointer guards' readability checks without VirtualQuery (@wrothgaril)
 - HD rumble falls back to the two-motor path for the rest of the session when a pad disconnects after HD packets (#363, untested on that pad).
 - #354 Read indirect-reset pointer lists from guest memory instead of through a GPU read-back (TOTK_RESET_CPU_LIST) (@thatbananaman08, landed with a host-pool check)
 - #361 Scan a pool's pages for its mirror sync under the pool's own lock, and take mirror_lock only to queue the copies (@thatbananaman08)

@@ -722,6 +722,31 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
     return R_OK;
 }
 
+// Whether a read anywhere in [a, a + n) is sure not to fault, from this file's own map of the guest: 1 inside the
+// heap's current size (committed, or in the lazy heap reserved until the first access commits it; frozen pages are
+// read-only, still readable) or on mapped alias pages, in both cases outside a moved stack's source; 0 inside the heap
+// block or the alias region otherwise; -1 anywhere else (modules, the stack region, the kernel region, host memory),
+// for the caller to ask the platform. No system call: on Windows plat_mem_readable's VirtualQuery reports the whole
+// run of like pages around a, so a pointer in a long read-write stretch of a committed heap (TOTK_HEAP_LAZY=0: all
+// 9.8 GiB of it) cost milliseconds, and a GetWriteWatch over the same reservation waited for it (#317).
+int mem_guest_readable(uint64_t a, uint64_t n) {
+    if (!n) n = 1;
+    if (a + n < a) return -1;
+    int r = -1;
+    plat_mutex_lock_shared(&lock);
+    if (inside(a, n, (RtRange){L.aslr.base, LOW_SIZE}) && !inside(a, n, L.stack))
+        r = inside(a, n, (RtRange){L.heap.base, heap_size});
+    else if (inside(a, n, L.alias)) {
+        uint64_t first = (a - L.alias.base) / PAGE, last = (a + n - 1 - L.alias.base) / PAGE;
+        r = 1;
+        for (uint64_t p = first; p <= last && r; p++) r = alias_pages[p] != 0;
+    }
+    for (unsigned i = 0; i < nstack_maps && r == 1; i++)
+        if (overlaps(a, n, stack_maps[i].src, stack_maps[i].size)) r = 0;
+    plat_mutex_unlock_shared(&lock);
+    return r;
+}
+
 // ---- GetInfo memory ids
 int mem_info(uint32_t id, uint64_t *out) {
     uint64_t v;

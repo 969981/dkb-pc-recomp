@@ -102,6 +102,7 @@
 #define standins vk_exec_draw_standins
 #define view_of vk_exec_draw_view_of
 #define views_by_image vk_exec_draw_views_by_image
+#define twin_snap vk_exec_draw_twin_snap
 
 // The calls below are the replay thread's alone.
 #define vk_mem_count(cls, use, bytes) (OFF_MAIN(dc) ? (void)0 : vk_mem_count(cls, use, bytes))   // the census is not atomic
@@ -286,6 +287,15 @@ typedef struct {
     VkPipeState pipe;
 } MemoKey;
 
+// Depth twins (twin_prepare): the twins the replay thread keeps, and those a sliced pass's slices sample, by value:
+// the replay thread may copy twins for later passes, or replace one (its image then goes after the submission, which
+// holds this pass), while they record. One snapshot per update snapshot (VK_EXEC_UPD_SNAPS), reused as those are.
+#define TWINS 8
+typedef struct TwinSnap {
+    int n;
+    struct { VkImage src; uint32_t w, h, layers; VkFormat fmt; VkImageView view[2]; } t[TWINS];
+} TwinSnap;
+
 typedef struct DrawCtx {
     // NVN 2 compute parameter layout of the program being dispatched (gfx_shader_c0_layout), NULL for NVN 1: read by
     // c0_fill, set by the dispatch ops around bind_resources like c0_dim.
@@ -409,6 +419,7 @@ typedef struct DrawCtx {
     } BSF;
     UpdList UPD;
     const UpdList *updv;                     // what upd_read reads when set: a slice's pass's snapshot (vk_exec_draw_slice_view)
+    const struct TwinSnap *twv;              // a slice's: the depth twins copied before its pass began (vk_exec_draw_twins_snap)
     struct {
         int on;
         uint32_t n;                        // draws closed
@@ -2072,7 +2083,8 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
 // time handing it to each other and the replay got slower than on one thread. 0: not a plain hit, take the lock.
 static int tex_info_hit(VkExec *ex, const GfxShaderRes *r, uint64_t h, int separate, VkDescriptorImageInfo *out) {
     DrawCtx *const dc = DC_OF(ex);
-    if (!h || td_mode() != 1) return 0;
+    // The memo holds the colour view: a compare-sampled texture of a pass with depth twins goes to tex_info.
+    if (!h || td_mode() != 1 || (dc->twv && dc->twv->n && (r->type & 0x400))) return 0;
     descriptor_state(ex);
     uint32_t gen = vk_texture_slots_gen(), ep = vk_texture_epoch(), sg = vk_sampler_gen();
     uint64_t key = td_hash_on() ? (h ^ (uint64_t)r->type << 32 ^ (uint64_t)separate << 48) * 0x9E3779B97F4A7C15ull
@@ -2177,9 +2189,12 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
 // that samples it (a dispatch is outside any render pass), and the dispatch samples the twin. A copy cannot go inside
 // a render pass, so a draw that samples such an image (and does not render into it) ends its pass first, copies, and
 // opens the pass again (twin_prepare); the pass's later draws sample the same twin (Twin.pass). Cost: one pass restart
-// per pass that samples such an image. A helper's draws that would need a twin are handed back (vk_spec_fail in twin_prepare); a slice's keep the colour image once and ban the pass's targets from slicing (vk_exec_par_ban). Design: Savage Wind Recomp runtime/nvn/vulkan/exec.c depth_twin_update
+// per pass that samples such an image. A helper's draws that would need a twin are handed back (vk_spec_fail in
+// twin_prepare). A slice cannot end its pass either: vk_exec.c par_start copies the twins the target set's slices needed
+// before, ahead of the pass (vk_exec_draw_twins_copy), and the slices read their views from the pass's snapshot
+// (TwinSnap); a draw that finds none keeps the colour image, and the target set learns the texture (vk_exec_par_twin).
+// Design: Savage Wind Recomp runtime/nvn/vulkan/exec.c depth_twin_update
 // (https://github.com/Revivedx/SavageWindRecomp, MIT); the code is ours. TOTK_DEPTH_TWIN=0: off.
-#define TWINS 8
 #define TWIN_MAX (64u << 20)   // bytes of the largest twin
 typedef struct { VkImage src, img; VmaAllocation mem; VkImageView view[2]; uint32_t w, h, layers, pass; VkFormat fmt; } Twin;   // pass: VkExec.pass_serial it was copied for
 static Twin twins[TWINS];
@@ -2188,6 +2203,7 @@ static uint32_t twin_pass;   // the last pass twin_prepare copied twins for (a c
 static VkBuffer twin_buf;
 static VmaAllocation twin_buf_mem;
 static VkDeviceSize twin_buf_cap;
+DRAW_SHARED TwinSnap twin_snap[VK_EXEC_UPD_SNAPS];   // the replay thread writes them (vk_exec_draw_twins_snap), slices read
 
 static void twin_free(void *arg) {   // completion thread, after the last submission that may sample it
     Twin *t = arg;
@@ -2346,24 +2362,40 @@ static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
     return t;
 }
 
+// The entry of snapshot s that is img's depth twin; -1 when it has none.
+static int twin_snap_find(const TwinSnap *s, const VkTexImage *img) {
+    VkFormat df = s && s->n ? twin_format(img) : VK_FORMAT_UNDEFINED;
+    uint32_t layers = img->layers ? img->layers : 1;
+    for (int i = 0; df && i < s->n; i++)
+        if (s->t[i].src == img->image && s->t[i].w == img->width && s->t[i].h == img->height && s->t[i].layers == layers &&
+            s->t[i].fmt == df)
+            return i;
+    return -1;
+}
+
 // The image descriptor of slot h; in a dispatch, a compare-sampled colour image the driver cannot compare is swapped
 // for its depth twin.
 static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, uint32_t gen,
                      uint32_t ep, uint32_t sg, int *locked, VkDescriptorImageInfo *out) {
     DrawCtx *const dc = DC_OF(ex);
     tex_info_lookup(ex, r, h, storage, separate, gen, ep, sg, locked, out);
-    if ((!dc->twin_dispatch && twin_pass != ex->pass_serial) || storage || separate || !h || !(r->type & 0x400)) return;
+    int on = IN_SLICE(dc) ? dc->twv && dc->twv->n : dc->twin_dispatch || twin_pass == ex->pass_serial;
+    if (!on || storage || separate || !h || !(r->type & 0x400)) return;
     VkImageViewType vt = res_view_type(r->type);
     if (vt != VK_IMAGE_VIEW_TYPE_2D && vt != VK_IMAGE_VIEW_TYPE_2D_ARRAY) return;
     if (!*locked) vk_texture_lock(), *locked = 1;
     const VkTexImage *img = vk_texture_by_id_locked(&ex->tex_pool, (int)(h & 0xfffff), NULL, NULL);
     Twin *t = NULL;
-    if (img && dc->twin_dispatch) t = twin_update(ex, img);
+    VkImageView v = VK_NULL_HANDLE;
+    if (img && IN_SLICE(dc)) {   // a slice's draw: the pass's snapshot
+        int i = twin_snap_find(dc->twv, img);
+        if (i >= 0) v = dc->twv->t[i].view[vt == VK_IMAGE_VIEW_TYPE_2D_ARRAY];
+    } else if (img && dc->twin_dispatch) t = twin_update(ex, img);
     else if (img && twin_format(img)) {   // a draw: the twin twin_prepare copied for this pass, if any
         t = twin_find(img, twin_format(img), img->layers ? img->layers : 1);
         if (t && t->pass != ex->pass_serial) t = NULL;
     }
-    VkImageView v = t ? t->view[vt == VK_IMAGE_VIEW_TYPE_2D_ARRAY] : VK_NULL_HANDLE;
+    if (t) v = t->view[vt == VK_IMAGE_VIEW_TYPE_2D_ARRAY];
     if (v) out->imageView = v, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 }
 
@@ -2411,17 +2443,27 @@ static void twin_prepare(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
                     const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
                     skip |= !(i < 8 && i >= ex->pass_ncolor) && t->image == img->image;
                 }
-                Twin *t = IN_SLICE(dc) ? NULL : twin_find(img, df, img->layers ? img->layers : 1);   // twins[] is the replay thread's
-                if (skip || (t && t->pass == ex->pass_serial)) continue;
+                if (skip) continue;
+                if (IN_SLICE(dc)) {   // twins[] is the replay thread's: a slice has its pass's snapshot
+                    if (twin_snap_find(dc->twv, img) >= 0) continue;
+                } else {
+                    Twin *t = twin_find(img, df, img->layers ? img->layers : 1);
+                    if (t && t->pass == ex->pass_serial) continue;
+                }
                 seen[n] = img->image, ids[n++] = h;
             }
         }
     }
     if (locked) vk_texture_unlock();
-    // A slice cannot end the pass: its draw keeps the colour image, and the ban keeps the pass's targets out of
-    // later slices, so the replay thread makes the twin from the next such pass on.
-    if (n && IN_SLICE(dc)) { vk_exec_par_ban(); return; }
+    // A slice cannot end the pass: its draw keeps the colour image, and the target set learns the texture, whose twin
+    // vk_exec.c par_start copies before its next sliced pass begins.
+    if (n && IN_SLICE(dc)) {
+        for (int i = 0; i < n; i++) vk_exec_par_twin((uint32_t)(ids[i] & 0xfffff));
+        return;
+    }
     if (!n || (IS_HELPER(dc) && vk_spec_fail(VK_SPEC_FEEDBACK))) return;   // the replay thread's pass would restart
+    if (!HELPER_COPY)   // the target set learns them for its sliced passes
+        for (int i = 0; i < n; i++) vk_exec_par_twin_seen(ex, (uint32_t)(ids[i] & 0xfffff));
     uint32_t old = ex->pass_serial;
     vk_exec_pass_end(ex);
     Twin *made[TWINS];
@@ -2441,6 +2483,50 @@ static void twin_prepare(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     twin_pass = ex->pass_serial;
     dc->frame->twin_restarts++;
 }
+
+#ifndef VK_EXEC_DRAW_HELPER   // the replay thread's, from vk_exec.c par_start
+// The twins vk_exec_draw_twins_copy copied for the pass about to begin, by value as each was copied: twin_update takes
+// twins[] slots round-robin, so a later id of the same pass may take the slot an earlier one's twin is in (its image
+// then goes after the submission, which holds the pass, and its views stay valid until then). The pointer stamps the
+// slot with the pass only while it still holds that twin.
+static struct { Twin *slot; VkImage img; typeof(((TwinSnap *)0)->t[0]) v; } twin_par[TWINS];
+static int twin_npar;
+
+int vk_exec_draw_twins_copy(VkExec *ex, const uint32_t *ids, int n, uint32_t *gone) {
+    twin_npar = 0, *gone = 0;
+    if (!twin_df(VK_FORMAT_R32_SFLOAT) && !twin_df(VK_FORMAT_R16_UNORM)) return 0;
+    vk_texture_lock();
+    for (int i = 0; i < n && twin_npar < TWINS; i++) {
+        const VkTexImage *img = vk_texture_by_id_locked(&ex->tex_pool, (int)ids[i], NULL, NULL);
+        if (!img || !twin_format(img) ||
+            (VkDeviceSize)img->width * img->height * (img->layers ? img->layers : 1) * 4 > TWIN_MAX) {
+            *gone |= 1u << i;   // the slot holds another texture now, or one twin_prepare would not twin
+            continue;
+        }
+        int skip = 0;   // an attachment of the pass is sampled as it is (twin_prepare)
+        for (uint32_t k = 0; k < 9; k++) skip |= (k < 8 ? &ex->color[k] : &ex->depth)->image == img->image;
+        for (int k = 0; k < twin_npar; k++) skip |= twin_par[k].v.src == img->image;
+        Twin *t = skip ? NULL : twin_update(ex, img);
+        if (t)
+            twin_par[twin_npar++] = (typeof(twin_par[0])){t, t->img, {t->src, t->w, t->h, t->layers, t->fmt, {t->view[0], t->view[1]}}};
+    }
+    vk_texture_unlock();
+    if (twin_npar) DC_OF(ex)->frame->twin_sliced += (uint64_t)twin_npar;
+    return twin_npar;
+}
+
+void vk_exec_draw_twins_snap(VkExec *ex, int snap, int copied) {
+    TwinSnap *s = &twin_snap[snap];
+    s->n = 0;
+    for (int i = 0; i < copied && i < twin_npar; i++) {
+        Twin *t = twin_par[i].slot;
+        if (t->img == twin_par[i].img) t->pass = ex->pass_serial;   // the slot still holds this twin
+        s->t[s->n++] = twin_par[i].v;
+    }
+    if (s->n) twin_pass = ex->pass_serial;
+    twin_npar = 0;
+}
+#endif
 
 #ifndef VK_EXEC_DRAW_HELPER   // draw_main's counts
 #define SLICE_THREADS 16
@@ -3060,7 +3146,8 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     PUT(BSF_TEXGEN, (uint64_t)vk_texture_slots_gen() << 32 | vk_texture_epoch());
     PUT(BSF_SAMPGEN, (uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nfbl);
     PUT(BSF_MEMGEN, vk_mem_gen() + vk_usnap_gen());   // both only grow
-    PUT(BSF_FBL, twin_pass == ex->pass_serial ? ex->pass_serial : 0);   // the colour view or this pass's depth twin of a compare sampler
+    // The colour view or this pass's depth twin of a compare sampler.
+    PUT(BSF_FBL, (IN_SLICE(dc) ? dc->twv && dc->twv->n : twin_pass == ex->pass_serial) ? ex->pass_serial : 0);
     for (int i = 0; i < ex->nfbl && i < 9; i++) PUT(BSF_FBL, (uintptr_t)ex->fbl_img[i]);
     if (l->sup) {
         float in[3];
@@ -3673,6 +3760,11 @@ static int pipe_skip_mode(void) {
 // 5070 Ti, 5080, 5090). On a replayed route that faulted in every run that drew it, zeroing its attribute or uniform
 // values only avoided the fault where that culls the instance (Location 6.w is its draw-or-not test), so as in #9 the
 // fault does not follow the values. Skipping it by name gave 0 faults in 7 runs that reached the spot.
+//
+// Vertex stage 45e1a6f48cb7872e (fragment stage d8fd5bc376a98b3d) loses the device at the first checkpoint of the
+// Landfill Layer on 3.2.0 (#304, RTX 5070 and RTX 5090, driver 621.24): the GPU checkpoints name it as the last draw
+// that started on 0.4.1, and skip_vs of it with 347fa80c9be79539 avoided the device loss for the reporter. It does not
+// fault on our RTX 5060 Ti, so it is skipped by name like ba1dd1e7ae8abb33.
 static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     DrawCtx *const dc = DC_OF(ex);
     static int on = -1;
@@ -3686,6 +3778,10 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     const uint64_t vs_origin = stage_origin(dc, ex->prog, NVN_STAGE_VS);
     if (vs_origin == 0xba1dd1e7ae8abb33ull) {
         warn_once(W_FAULT_SKIP2, "the light quads of NVN 2 vertex stage ba1dd1e7ae8abb33 are skipped (#196, #197)");
+        return 1;
+    }
+    if (vs_origin == 0x45e1a6f48cb7872eull) {
+        warn_once(W_FAULT_SKIP, "the draws of NVN 2 vertex stage 45e1a6f48cb7872e are skipped (#304)");
         return 1;
     }
     // The #9 part (cae0ef8e9fe9147f and the c0+0x530 family) is off unless TOTK_FIX_VS_FAULT=9: on current builds the
@@ -4558,6 +4654,32 @@ static int dlss_upscale(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info,
     return vk_fsr3_wanted() ? vk_fsr3_record(ex->cb, ex->fence, s, t) : vk_dlss_record(ex->cb, ex->fence, s, t);
 }
 
+// Native anti-aliasing (dkb_wide.c dkb_native_aa) makes the game run its upscale step at full size so that DLSS,
+// FSR 3.1 or FSR 4 can take it as anti-aliasing. When none of them did (DLSS without NVIDIA's library or on another
+// GPU, FSR 4 without AMD's, or an upscaler that failed), the game's own shader must not run at that size: it samples
+// the part its constants still give for the smaller 3D of a scaled scene and stretches it over the picture, so the
+// scene came out zoomed toward its top left corner (issue #375). The 3D is already at the output size, so the dispatch
+// becomes a copy of its input into its output, the picture the game shows when it skips the step. 1 when it recorded
+// the copy.
+static int native_aa_copy(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info, const p_dispatch *d) {
+    if (!dkb_native_aa_issued_by(d->caller) || !game_upscaler(ex, cs, info, d)) return 0;
+    uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
+    view_t vs, vd;
+    int hvs = 0, hvd = 0;
+    const VkTexImage *s = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
+    const VkTexImage *t = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
+    if (!s || !t || s->image == t->image || s->width != t->width || s->height != t->height || s->format != t->format)
+        return 0;
+    VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {s->width, s->height, 1}};
+    vkCmdCopyImage(ex->cb, s->image, VK_IMAGE_LAYOUT_GENERAL, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    static int told;
+    if (!told++)
+        rt_log("upscaler: native anti-aliasing has no upscaler to run it (%s): the game's full-size step is a copy of "
+               "the %ux%u 3D instead", cfg_value("TOTK_UPSCALER"), s->width, s->height);
+    return 1;
+}
+
 // Tells the HUD (resolution.c res_note_upscaler) the sizes of every dispatch of the game's upscaler, whatever replaces
 // it (blit, DLSS) or none: same slots as dlss_upscale, the input texture 0 and the output image 1.
 static void note_upscaler(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info, const p_dispatch *d) {
@@ -4612,6 +4734,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
         dc->twin_dispatch = 0;
         dlss = 0;
     }
+    if (!blit && !dlss) blit = native_aa_copy(ex, cs, info, d);   // a transfer write, as the blit
     if (!blit && !dlss) vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
     if (!blit && !dlss) vk_exec_note_dispatch(ex);   // only compute work since the barrier above
@@ -5134,7 +5257,7 @@ void vk_exec_draw_slices_begin(int threads, int snap) {
 
 struct DrawCtx *vk_exec_draw_slice_ctx(int k) { return k >= 0 && k < SLICE_THREADS ? slice_ctx[k] : NULL; }
 
-void vk_exec_draw_slice_view(struct DrawCtx *c, int snap) { c->updv = &upd_snap[snap]; }
+void vk_exec_draw_slice_view(struct DrawCtx *c, int snap) { c->updv = &upd_snap[snap], c->twv = &twin_snap[snap]; }
 
 // Submitting thread, every slice of the pass recorded: the slices' frame counters go to vk_exec_frame.
 void vk_exec_draw_slices_end(int threads) {

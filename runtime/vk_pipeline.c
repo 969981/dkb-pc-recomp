@@ -3221,7 +3221,10 @@ static void lb_worker(void *arg) {
         LB.done++;
         plat_mutex_unlock(&LB.stat);
     }
-    if (!plat_dec32(&LB.running)) lb_report(LB.stop ? "stopped" : "done");
+    if (!plat_dec32(&LB.running)) {
+        lb_report(LB.stop ? "stopped" : "done");
+        vk_mem_trim_after("stage library prebuild");
+    }
     return;
 }
 
@@ -3381,6 +3384,7 @@ static void lb_warm_prepared(const char *dir) {
     else
         printf("prepare-shaders: %zu variants built into the driver cache on %d threads in %.0f ms\n", n, k, now_ms() - LB.t0);
     free(LB.e), LB.e = NULL, LB.n = 0, LB.next = 0, LB.done = 0;
+    vk_mem_trim_after("stage library preparation");
 }
 
 // totk.exe --prepare-shaders (tools/prepare_shaders.py): the device sets the translator's host answers (they are in every

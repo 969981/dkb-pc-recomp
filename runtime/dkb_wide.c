@@ -197,7 +197,10 @@ void dkb_wide_init(void) {
     unsigned width = 0, height = 0;
     if (!dkb_output_size(&width, &height)) {
         rt_patch_switch(set, 0);
-        rt_log("Bananza resolution: use an even 16:9 resolution, or enable ultrawide for a wider resolution; using stock 2880x1620");
+        // Sizes narrower than 16:9 (1360x768, 16:10) never pass, ultrawide or not: say so instead of hinting at 16:9 (#403).
+        rt_log("Bananza resolution: output_res %s is not supported: use even sizes from 1280x720 to 7680x4320, exactly 16:9, "
+               "or wider than 16:9 with ultrawide = 1 (narrower than 16:9 is not supported; aspect = fit letterboxes a "
+               "16:9 picture); using stock 2880x1620", cfg_value("TOTK_OUTPUT_RES"));
         if (scene) rt_log("Bananza resolution: scene_res needs a valid output resolution and is not applied");
         return;
     }

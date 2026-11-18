@@ -194,6 +194,7 @@ static void synthetic_destroy_set_layout(VkDevice d, VkDescriptorSetLayout l, co
 // The sparse mirror cache and the slice threads' write-back lists (vk_memory.c) stay empty in this fixture.
 static int mirror_sparse;
 static void sparse_cache_close(void) {}
+static void wb_shutdown(VkCtx *c) { (void)c; }
 typedef struct WbLocal { void *a; int n, cap; void *k; int nk, ck; struct WbLocal *next; } WbLocal;
 static WbLocal *wb_locals;
 #define cmd_pool memory_cmd_pool
@@ -216,6 +217,7 @@ static int alias_copy(Tex *a, const Tex *b) { (void)a; (void)b; check(0, "no liv
 static void init_image(Tex *image, VkCommandBuffer cb) { (void)image; (void)cb; }
 VkCommandBuffer vk_upload_begin(void) { return (VkCommandBuffer)(uintptr_t)0xC200; }
 void vk_upload_end(void) {}
+void vk_mem_pressure_check(void) {}   // vk_mem_collect calls it after each collection (vk_mem_pressure.c, #374)
 int vk_mem_changed(uint64_t a, uint64_t n, uint32_t before, uint32_t *now) {
     (void)a; (void)n; (void)before; (void)now; check(0, "not a mirrored image"); return 0;
 }
