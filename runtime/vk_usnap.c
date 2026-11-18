@@ -438,15 +438,23 @@ void vk_usnap_end(uint64_t fence) {
     U.on = 0, U.cpu = NULL, gen_bump();
 }
 
-// First region whose end is above a.
+// First region whose end is above a. The region ends rise strictly (usnap_begin merges overlaps), so an index i is the
+// answer exactly when the end before it is at most a and its own end is above a. That test vets the answer found last
+// for an address in the same 64 KiB block (fa_hint, per thread) before the binary search: every uniform binding of a
+// draw asks (vk_exec_draw.c ubo_info), about 100,000 times a frame in the heavy part of -200, mostly for addresses
+// next to the previous draw's. A hint left by an earlier submission's table fails the test like any wrong guess.
+static _Thread_local int fa_hint[64];
+
 static int first_above(uint64_t a) {
-    int lo = 0, hi = U.nreg;
+    int *hint = &fa_hint[(a >> 16) & 63], i = *hint, nreg = U.nreg;
+    if (i <= nreg && (i == 0 || U.reg[i - 1].hi <= a) && (i == nreg || U.reg[i].hi > a)) return i;
+    int lo = 0, hi = nreg;
     while (lo < hi) {
         int m = (lo + hi) / 2;
         if (U.reg[m].hi <= a) lo = m + 1;
         else hi = m;
     }
-    return lo;
+    return *hint = lo;
 }
 
 static _Thread_local int find_quiet;

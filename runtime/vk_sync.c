@@ -520,7 +520,7 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     vkBeginCommandBuffer(cb, &bi);
     int pair = ts_open(cb);
-    vk_mem_mirror_prologue(cb);
+    vk_mem_mirror_prologue(cb, fence);
     ts_close(cb, pair, fence, NULL);
     vkEndCommandBuffer(cb);
     return cb;
@@ -683,6 +683,12 @@ uint64_t vk_sync_reserve(void) {
 
 static uint64_t submit_record(VkSyncRecordFn record, void *context, uint64_t submitted_ticks, int guest) {
     if (!record) rt_fatal("vk: submission without a recorder");
+    // The replay runs above the game's normal-priority threads. The game's loading threads fill every logical processor
+    // on a 6-thread CPU during a level transition, and the replaying thread (the game's render thread, or the async
+    // replay thread) then waited a quantum for each slice of CPU: replays of a few draws took 10 to 80 ms with under 1
+    // ms of CPU. The rest of the frame keeps the thread's own priority.
+    int prio = plat_thread_priority_get();
+    if (prio < PLAT_PRIO_ABOVE_NORMAL) plat_thread_priority(PLAT_PRIO_ABOVE_NORMAL);
     vk_sync_start();
     VkCtx *c = vk_ctx();
     plat_mutex_lock(&sub_lock);
@@ -737,6 +743,7 @@ static uint64_t submit_record(VkSyncRecordFn record, void *context, uint64_t sub
     static unsigned subs;
     if (++subs % 4096 == 0) rec_stats_log();
     plat_mutex_unlock(&sub_lock);
+    if (prio < PLAT_PRIO_ABOVE_NORMAL) plat_thread_priority(prio);
     return fence;
 }
 

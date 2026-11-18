@@ -103,7 +103,9 @@ int vk_spec_on(void) {
         const char *e = cfg_get("TOTK_REPLAY_PAR");
         checking = e && !strcmp(e, "check");
         if (mode) {
-            prio = plat_thread_priority_get();
+            // Normal, not the caller's: the first call comes from inside submit_record, which raises the render thread
+            // to above normal for the submission, and helpers that kept that would leave no core to normal threads.
+            prio = PLAT_PRIO_NORMAL;
             int want = helpers_wanted(), n = 0;
             for (; n < want; n++) {
                 Helper *h = &HS[n];

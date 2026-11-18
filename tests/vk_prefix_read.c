@@ -46,6 +46,8 @@ void rt_log(const char *fmt, ...) { (void)fmt; }
 void plat_mutex_lock(PlatMutex *m) { NEED(!m->p); m->p = (void *)1; }
 void plat_mutex_unlock(PlatMutex *m) { NEED(m->p); m->p = NULL; }
 void plat_cond_broadcast(PlatCond *c) { NEED(c == &cv_work); }
+void plat_thread_priority(int prio) { (void)prio; }   // submit_record raises the replay above normal
+int plat_thread_priority_get(void) { return 0; }
 VkCtx *vk_ctx(void) { return &context; }
 uint64_t perf_begin(void) { return 123; }
 void perf_end(int k, uint64_t t) { (void)k; (void)t; }

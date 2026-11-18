@@ -30,7 +30,6 @@ static VkCommandBuffer rec_cb;         // the part being recorded: stored by the
 static int rec_live;                   // producer: rec_begin started the recorder for rec_cb (stored atomically: OWNED
                                        // is also asked from the helper translators, vk_spec.h)
 static PlatThread *rec_thread;
-static int rec_prio;                   // the submitting thread's priority, which the recorder takes
 
 // Producer statistics, logged by rec_stats_log.
 static struct { uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on; } RS_;
@@ -68,7 +67,12 @@ static inline void publish_tail(uint64_t t) {
 
 static void rec_main(void *arg) {
     (void)arg;
-    plat_thread_priority(rec_prio);
+    // Above the replaying thread (vk_sync.c submit_record runs the replay at PLAT_PRIO_ABOVE_NORMAL), which spins in
+    // rec_drain until the recorder is through. During a level load the game keeps every logical processor busy with
+    // normal-priority threads: on 6 logical processors the recorder, at the submitter's normal priority, woke 5 to 30
+    // ms after its event was set (a quantum behind them), and the transition's replays took 14 ms a frame for 0.1 ms of
+    // recording. Its work is short bursts, so the higher priority costs the game's threads little.
+    plat_thread_priority(PLAT_PRIO_HIGHEST);
     uint64_t t = 0;
     for (;;) {
         uint64_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
@@ -259,7 +263,6 @@ void rec_begin(VkCommandBuffer cb) {
             if (rec_batch > 64) rec_batch = 64;
             if (rec_batch) rt_log("vk_rec: batched head publish every %d packets (TOTK_REC_BATCH=%d)", rec_batch, rec_batch);
             plat_event_init(&wake_ev, 0, 0);
-            rec_prio = plat_thread_priority_get();
             rec_thread = plat_thread_new(rec_main, NULL, "vk recorder");
             if (!rec_thread) {
                 rt_log("vk_rec: no recorder thread: the replay makes its Vulkan calls itself");
