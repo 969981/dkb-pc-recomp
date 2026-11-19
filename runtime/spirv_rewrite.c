@@ -406,7 +406,8 @@ int spirv_uses_subgroup_ops(const uint32_t *w, uint64_t words) {
     return 0;
 }
 
-// DKB_FMZ=vertex|all (debug workaround for #75, off by default): NVIDIA's fused-multiply-zero rule (the DX9 rule, 0 * x = 0
+// DKB_FMZ=0|vertex|all (workaround for #75, vertex by default; no game instruction carries .FMZ, see
+// docs/bananza-shaders.md, so this departs from the hardware): NVIDIA's fused-multiply-zero rule (the DX9 rule, 0 * x = 0
 // even for Inf and NaN) for 32-bit float scalar and vector OpFMul and GLSL.std.450 Fma. Each such instruction
 //   r = a * b       becomes   t = a * b;     r = (a == 0 || b == 0) ? 0 : t
 //   r = fma(a,b,c)  becomes   t = fma(a,b,c); r = (a == 0 || b == 0) ? c : t

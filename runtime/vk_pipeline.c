@@ -602,7 +602,12 @@ VkFormat vk_vertex_format(int nvn_format, int *type) {
     if (type) *type = GFX_TYPE_FLOAT;
     if (nvn_format <= 0 || nvn_format >= (int)(sizeof vtx_formats / sizeof *vtx_formats)) return VK_FORMAT_UNDEFINED;
     const VtxFmt *v = &vtx_formats[nvn_format];
-    if (v->vk == VK_FORMAT_UNDEFINED) return VK_FORMAT_UNDEFINED;
+    if (v->vk == VK_FORMAT_UNDEFINED) {
+        static volatile int32_t told[sizeof vtx_formats / sizeof *vtx_formats];
+        if (!plat_xchg32(&told[nvn_format], 1))
+            rt_log("vk_pipeline: NVN vertex format %#x has no Vulkan format; the attribute reads (0, 0, 0, 1)", nvn_format);
+        return VK_FORMAT_UNDEFINED;
+    }
     if (type) *type = v->type;
     if ((nvn_format >= 0x55 && nvn_format <= 0x68) && v->type != GFX_TYPE_FLOAT)
         LOG_ONCE("vk_pipeline: 32-bit *_UI2F/*_I2F vertex formats are read as integers (first: %#x)", nvn_format);

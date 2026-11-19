@@ -759,6 +759,7 @@ void vk_sync_split_finish(void (*tail)(VkCommandBuffer cb, void *arg), void *arg
 // stage named `stage` stores into [addr, addr+size) of guest memory, so a slow part can tell which shader of the part
 // wrote its largest indirect draw's arguments.
 int vk_sync_noting(void);
+void vk_sync_mark(VkCommandBuffer cb, uint64_t key);   // TOTK_PASS_GPU: a timestamp at a pass edge (vk_sync.c)
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work);
 void vk_sync_note_args(uint64_t addr);
 void vk_sync_note_write(uint64_t addr, uint64_t size, uint64_t stage);

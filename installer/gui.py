@@ -6,13 +6,22 @@ this file only draws. The window text is in installer/text/<en|ru>.json under "u
 
     --selftest [--shots DIR]   build every screen in both languages and close by itself (PNG per screen with --shots)
     --lang en|ru               window language (default: the Windows display language)
+
+Started by the launcher (installer/launcher/launcher.c: --base <DKB-Recomp> --launcher <exe>) the window also has a
+home screen: Play, the release check at start (off with the screen's tick box, --no-update-check or
+DKB_NO_UPDATE_CHECK=1), the new release's notes and a one-click Update (installer/update.py). The update downloads and
+checks the new tools, starts their window with --after-update and closes once it is up; that window rebuilds the
+recorded install folder (only the steps whose inputs changed) and shows Play again. --allow-downgrade also offers an
+older latest release.
 """
 import argparse
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
@@ -23,11 +32,14 @@ try:
 except ImportError:
     ImageGrab = None
 
+from . import fsr4
 from . import ini
 from . import layout as layouts
 from . import update
-from .guilogic import (DKB_STEP_ORDER, DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, Model, Process,
-                       amount, default_game_language, describe_event, parse_line, windows_ui_language)
+from .guilogic import (DKB_STEP_ORDER, DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, Launcher, Model,
+                       Process, Settings, amount, default_dest, default_game_language, describe_event, install_state,
+                       parse_line, play_command, previous_version, release_page, update_status,
+                       windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -79,6 +91,9 @@ def apply_theme(root, ui_font):
     style.configure('Horizontal.TProgressbar', background=BANANA, troughcolor=FIELD, bordercolor=BORDER,
                     lightcolor=BANANA, darkcolor=BANANA, thickness=14)
     style.configure('TScrollbar', background=FRAME, troughcolor=FIELD, arrowcolor=BANANA, bordercolor=BORDER)
+    style.configure('TCheckbutton', background=BARK, foreground=CREAM, indicatorbackground=FIELD,
+                    indicatorforeground=BANANA, indicatormargin=(0, 0, 8, 0), indicatorsize=14)
+    style.map('TCheckbutton', background=[('active', BARK)], indicatorbackground=[('selected', FIELD), ('active', HOVER)])
     style.configure('Header.TFrame', background=FRAME)
     style.configure('Brand.TLabel', background=FRAME, foreground=BANANA, font=(ui_font, 14, 'bold'))
     style.configure('Title.TLabel', foreground=BANANA, font=(ui_font, 15, 'bold'))
@@ -133,10 +148,24 @@ def fix_dpi_awareness():
         set_context(ctypes.c_void_p(-4))   # PER_MONITOR_AWARE_V2; an already configured process keeps its context
 
 
+def open_page(url):
+    """A release page in the browser. Only a https://github.com/ link (guilogic.release_page): the link comes from
+    GitHub's answer, and webbrowser hands anything else, a file path too, to the shell to open."""
+    page = release_page(url)
+    if page:
+        webbrowser.open(page)
+
+
 class App:
-    def __init__(self, root, ui_lang, layout, run_args=None, game='totk', check_updates=False):
+    def __init__(self, root, ui_lang, layout, run_args=None, game='totk', check_updates=False, launcher=None):
         self.root, self.layout = root, layout
         self.game = game
+        self.launcher = launcher         # a Launcher when launcher.c started the window, else None (the plain setup)
+        self.settings = Settings.load(launcher.base) if launcher else Settings()
+        self.offer = None                # the latest release (update.Offer) once the check answered
+        self.update_line = (('ui.update_checking' if check_updates else 'ui.update_off'), {})
+        self.update_offered = False
+        self.update_stop = threading.Event()
         self.cat = Catalog(ui_lang, game)
         self.model = Model(DKB_STEP_ORDER if game == 'bananza' else None)
         self.process = None
@@ -146,6 +175,8 @@ class App:
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
         self.vars = {n: tk.StringVar() for n in ('base', 'update', 'keys', 'nup', 'exefs', 'romfs', 'package', 'dest')}
         self.vars['lang'] = tk.StringVar()
+        self.fsr4_var = tk.BooleanVar(value=False)   # Bananza: AMD FSR 4 wanted
+        self.fsr4_accepted = False                   # the license of fsr4.TAG was accepted in this window
         self.lang_code = default_game_language(ui_lang)
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
@@ -186,25 +217,45 @@ class App:
         self.body = ttk.Frame(root, padding=PAD)
         self.body.pack(fill='both', expand=True)
         self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
+        if launcher:
+            self.run_args.setdefault('temp', launcher.temp)
+            self.frames.update(home=self.build_home(), update=self.build_update())
         self.vars['lang'].set(self.lang_label(self.lang_code))
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
-        self.show('form')
-        if check_updates:
-            self.update_label = ttk.Label(self.body, style='Warn.TLabel', cursor='hand2')
-            threading.Thread(target=self.check_update, daemon=True).start()
+        if launcher:
+            self.vars['dest'].set(self.settings.dest or default_dest(launcher.base))
+            state = install_state(self.settings.dest)
+            if launcher.after_update and state:   # the new version's first start: bring the folder up to date
+                self.root.after(300, self.start)
+                self.show('form')
+            else:
+                self.show_home() if state else self.show('form')
+            if check_updates:
+                self.check_now()
+        else:
+            self.show('form')
+            if check_updates:
+                self.update_label = ttk.Label(self.body, style='Warn.TLabel', cursor='hand2')
+                threading.Thread(target=self.check_update, daemon=True).start()
+
+    def later(self, fn, *args):
+        """fn(*args) on Tk's thread, from a worker thread; nothing once the window is gone."""
+        if self.closing:
+            return
+        try:
+            self.root.after(0, fn, *args)
+        except (RuntimeError, tk.TclError):   # Tk is already gone: destroyed, or its main loop has ended
+            pass
 
     def check_update(self):
         """Background lookup of a newer release; the label appears only when there is one (never blocks the window)."""
         found = update.newer_release(self.layout.release)
-        if found and not self.closing:
-            try:
-                self.root.after(0, self.show_update, *found)
-            except RuntimeError:   # Tk is already gone
-                pass
+        if found:
+            self.later(self.show_update, *found)
 
     def show_update(self, tag, url):
         self.bind_text(self.update_label, 'text', 'ui.update_available', tag=tag)
-        self.update_label.bind('<Button-1>', lambda _e: webbrowser.open(url))
+        self.update_label.bind('<Button-1>', lambda _e: open_page(url))
         self.update_label.pack(before=self.body.winfo_children()[0], anchor='w', pady=(0, 8))
         self.fit()
 
@@ -232,6 +283,9 @@ class App:
         self.refresh_form()
         self.refresh_run()
         self.refresh_finish()
+        if self.launcher:
+            self.refresh_home()
+            self.refresh_update()
         self.render_log()
 
     def switch_language(self):
@@ -323,6 +377,10 @@ class App:
         self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=4)
         ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 1, column=1, sticky='ew', pady=4)
         self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(8, 0))
+        if self.game == 'bananza' and os.name == 'nt':   # AMD's libraries are for Windows only
+            self.fsr4_box = ttk.Checkbutton(f, variable=self.fsr4_var, command=self.toggle_fsr4)
+            self.bind_text(self.fsr4_box, 'text', 'dkb.ui.fsr4')
+            self.fsr4_box.pack(anchor='w', pady=(8, 0))
         self.update_hint = ttk.Label(f, wraplength=620, justify='left')
         self.update_hint.pack(anchor='w', pady=(8, 0))
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=620, justify='left')
@@ -369,7 +427,7 @@ class App:
         self.button(bar, 'ui.close', self.on_close).pack(side='right')
         self.open_button = self.button(bar, 'ui.open_folder', self.open_folder)
         self.open_button.pack(side='right', padx=(0, 8))
-        self.back_button = self.button(bar, 'ui.back', lambda: self.show('form'))
+        self.back_button = self.button(bar, 'ui.back', self.back)
         self.back_button.pack(side='left')
         self.finish_title = ttk.Label(f, style='Title.TLabel', wraplength=620, justify='left')
         self.finish_title.pack(anchor='w')
@@ -379,7 +437,292 @@ class App:
         self.finish_steps.pack(fill='x', pady=(0, 8))
         self.finish_notice = self.notice(f)
         self.finish_notice.pack(fill='x', pady=(8, 0))
+        self.play_after = self.button(bar, 'ui.play', lambda: self.play(self.model.dest), style='Accent.TButton')
         return f
+
+    # ---- the launcher's home and update screens -----------------------------------------------------------------
+
+    def build_home(self):
+        f = ttk.Frame(self.body)
+        bar = ttk.Frame(f)
+        bar.pack(side='bottom', fill='x', pady=(12, 0))
+        self.play_button = self.button(bar, 'ui.play', lambda: self.play(self.settings.dest), style='Accent.TButton')
+        self.play_button.pack(side='right')
+        self.button(bar, 'ui.open_folder', lambda: self.open_path(self.settings.dest)).pack(side='right', padx=(0, 8))
+        self.button(bar, 'ui.setup_again', lambda: self.show('form')).pack(side='left')
+        self.home_title = ttk.Label(f, style='Title.TLabel', wraplength=620, justify='left')
+        self.home_title.pack(anchor='w')
+        self.home_text = ttk.Label(f, wraplength=620, justify='left')
+        self.home_text.pack(anchor='w', pady=(8, 0))
+        self.home_tools = ttk.Label(f, wraplength=620, justify='left', foreground=MUTED)
+        self.home_tools.pack(anchor='w', pady=(4, 0))
+        self.update_box = ttk.Frame(f)
+        self.update_box.pack(fill='both', expand=True, pady=(14, 0))
+        self.update_text = ttk.Label(self.update_box, wraplength=620, justify='left', style='Warn.TLabel')
+        self.update_text.pack(anchor='w')
+        self.notes = tk.Text(self.update_box, height=7, width=80, wrap='word', state='disabled', font=(self.ui_font, 9),
+                             bg=FIELD, fg=CREAM, relief='flat', highlightthickness=2, highlightbackground=BORDER,
+                             highlightcolor=BORDER)
+        self.check_var = tk.BooleanVar(value=self.settings.check_updates)
+        check = ttk.Checkbutton(self.update_box, variable=self.check_var, command=self.toggle_check)
+        self.bind_text(check, 'text', 'ui.check_updates')
+        check.pack(side='bottom', anchor='w', pady=(8, 0))
+        row = ttk.Frame(self.update_box)
+        row.pack(side='bottom', fill='x', pady=(8, 0))
+        self.check_button = self.button(row, 'ui.check_now', self.check_now)
+        self.check_button.pack(side='left')
+        self.page_button = self.button(row, 'ui.release_page', lambda: self.offer and open_page(self.offer.page))
+        self.update_button = ttk.Button(row, command=self.start_update, style='Accent.TButton')
+        self.go_back_button = ttk.Button(row, command=self.go_back)
+        return f
+
+    def build_update(self):
+        f = ttk.Frame(self.body)
+        bar = ttk.Frame(f)
+        bar.pack(side='bottom', fill='x', pady=(12, 0))
+        self.update_cancel = self.button(bar, 'ui.cancel', self.update_stop.set)
+        self.update_cancel.pack(side='right')
+        self.update_back = self.button(bar, 'ui.back', self.show_home)
+        self.update_title = ttk.Label(f, style='Title.TLabel', wraplength=620, justify='left')
+        self.update_title.pack(anchor='w')
+        self.update_phase = ttk.Label(f, wraplength=620, justify='left')
+        self.update_phase.pack(anchor='w', pady=(8, 4))
+        self.update_bar = ttk.Progressbar(f, mode='determinate', maximum=1000)
+        self.update_bar.pack(fill='x', pady=(4, 6))
+        self.update_error = ttk.Label(f, style='Err.TLabel', wraplength=620, justify='left')
+        self.update_error.pack(anchor='w', pady=(8, 0))
+        self.update_step = ('', {})
+        self.update_failure = None
+        self.update_target = ('ui.updating', '')   # the screen's title and the tag it switches to
+        self.update_running = False                # a worker thread downloads, unpacks or hands over
+        self.update_closing = False                # the window was closed during it: it closes when the worker ends
+        return f
+
+    def show_home(self):
+        self.refresh_home()
+        self.show('home')
+
+    def refresh_home(self):
+        if not self.launcher:
+            return
+        state = install_state(self.settings.dest)
+        self.home_title.configure(text=self.cat('ui.home_ready' if state == 'ready' else 'ui.home_unfinished'))
+        self.home_text.configure(text=self.cat('ui.home_text', dest=self.settings.dest))
+        self.home_tools.configure(text=self.cat('ui.home_tools', version=self.layout.release, base=self.launcher.base))
+        self.play_button.state(['!disabled' if state == 'ready' else 'disabled'])
+        id, params = self.update_line
+        self.update_text.configure(text=self.cat(id, **params))
+        notes = (self.offer.notes or '').strip() if self.offer and self.offer.direction > 0 else ''
+        self.notes.configure(state='normal')
+        self.notes.delete('1.0', 'end')
+        self.notes.insert('1.0', notes)   # the release's own text, shown as plain text
+        self.notes.configure(state='disabled')
+        if notes:
+            self.notes.pack(fill='x', pady=(6, 0), after=self.update_text)
+        else:
+            self.notes.pack_forget()
+        for button, show in ((self.update_button, self.update_offered), (self.page_button, bool(self.offer and self.offer.page and self.offer.direction > 0))):
+            if show:
+                button.pack(side='right', padx=(0, 8))
+            else:
+                button.pack_forget()
+        if self.offer:
+            self.update_button.configure(text=self.cat('ui.update_now', tag=self.offer.tag))
+        back = self.previous_tag()
+        if back:
+            self.go_back_button.configure(text=self.cat('ui.go_back', tag=back))
+            self.go_back_button.pack(side='right', padx=(0, 8))
+        else:
+            self.go_back_button.pack_forget()
+        self.fit()
+
+    def previous_tag(self):
+        """The version the home screen offers to go back to (guilogic.previous_version), or None."""
+        return previous_version(self.launcher.base, update.own_tag(self.launcher.base, self.layout.root))
+
+    def toggle_check(self):
+        self.settings.check_updates = bool(self.check_var.get())
+        self.settings.save(self.launcher.base)
+        self.launcher.note(f'check at start: {"on" if self.settings.check_updates else "off"}')
+
+    def check_now(self):
+        """The release check in the background: the home screen says what it found, and never waits for it."""
+        self.update_line, self.offer, self.update_offered = ('ui.update_checking', {}), None, False
+        self.check_button.state(['disabled'])
+        self.refresh_home()
+
+        def work():
+            offer = error = None
+            try:
+                offer = update.check(self.layout.release)
+                self.launcher.note(f'check: latest {offer.tag} ({offer.version}), this {self.layout.release}, '
+                                   f'direction {offer.direction}, manifest {"yes" if offer.manifest else "no"}')
+            except update.UpdateError as e:   # offline: the reason alone; a release that disagrees with itself: why
+                error = e.params.get('detail', '') if e.id == 'update.offline' else self.cat(e.id, **e.params)
+                self.launcher.note(f'check: {e.id} {e.params}')
+            self.later(self.show_offer, offer, error)
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_offer(self, offer, error):
+        self.offer = offer
+        self.update_line, self.update_offered = update_status(offer, error, self.launcher.allow_downgrade)
+        self.check_button.state(['!disabled'])
+        self.refresh_home()
+
+    def start_update(self):
+        """Download, check and unpack the offered release in the background, then hand over to its window."""
+        offer = self.offer
+        if not self.update_offered or offer is None or self.process or self.update_running:
+            return
+        self.begin_update('ui.updating', offer.tag,
+                          ('ui.update_downloading', {'done': 0, 'total': -(-offer.manifest.tools.size >> 20)}))
+        self.launcher.note(f'update to {offer.tag}: {offer.manifest.tools.name}, {offer.manifest.tools.size} bytes, '
+                           f'sha256 {offer.manifest.tools.sha256}')
+        threading.Thread(target=self.update_worker, args=(offer,), daemon=True).start()
+
+    def go_back(self):
+        """Start the previous version again in place of this one: its window confirms its start like an update's
+        (update.confirm_start makes it current.txt and this one previous.txt) and brings the game folder back to it.
+        Nothing is downloaded; this version stays, so the next check offers it again."""
+        tag = self.previous_tag()
+        if not tag or self.process or self.update_running:
+            return
+        if not messagebox.askyesno(self.cat('ui.title'), self.cat('ui.go_back_confirm', tag=tag, current=self.layout.release)):
+            return
+        self.begin_update('ui.going_back', tag, ('ui.update_starting', {'tag': tag}))
+        self.update_progress(self.update_step, None)
+        self.launcher.note(f'go back to {tag} from {self.layout.release}')
+        threading.Thread(target=self.update_worker_body, args=(f'go back to {tag}', lambda: self.hand_over(tag)),
+                         daemon=True).start()
+
+    def begin_update(self, title_id, tag, step):
+        self.update_stop.clear()
+        self.update_running, self.update_closing = True, False
+        self.update_target, self.update_step, self.update_failure = (title_id, tag), step, None
+        self.update_back.pack_forget()
+        self.update_cancel.pack(side='right')
+        self.update_cancel.state(['!disabled'])
+        self.update_bar.configure(mode='determinate', value=0)
+        self.refresh_update()
+        self.show('update')
+
+    def update_worker(self, offer):
+        base, tools = self.launcher.base, offer.manifest.tools
+        total = -(-tools.size >> 20)
+        shown = [0.0]
+
+        def progress(done, size):
+            now = time.monotonic()
+            if now - shown[0] > 0.2 or done == size:
+                shown[0] = now
+                self.later(self.update_progress, ('ui.update_downloading', {'done': done >> 20, 'total': total}), done / size)
+
+        def work():
+            zip_path = update.download(tools, offer.tag, base / 'downloads', progress=progress,
+                                       cancelled=self.update_stop.is_set)
+            self.launcher.note(f'update to {offer.tag}: downloaded and checked {zip_path.name}')
+            if self.update_stop.is_set():   # Cancel after the last block came in: the checked zip is not unpacked
+                zip_path.unlink(missing_ok=True)
+                raise update.UpdateError('update.cancelled')
+            self.later(self.update_progress, ('ui.update_unpacking', {}), None)
+            folder = update.stage(zip_path, base, offer.manifest)
+            zip_path.unlink(missing_ok=True)
+            self.launcher.note(f'update to {offer.tag}: unpacked into {folder}')
+            if self.update_closing:   # closed while it unpacked: the folder stays for the next try, nothing starts
+                return
+            if self.update_stop.is_set():   # Cancel before its button went grey: the folder stays, nothing starts
+                raise update.UpdateError('update.cancelled')
+            self.hand_over(offer.tag)
+        self.update_worker_body(f'update to {offer.tag}', work)
+
+    def hand_over(self, tag):
+        """tag's window started with --after-update; this window closes once it confirms, or says why it did not"""
+        base = self.launcher.base
+        self.later(self.update_progress, ('ui.update_starting', {'tag': tag}), None)
+        result = update.start_version(base, tag, self.launcher.exe, ('--lang', self.cat.lang))
+        self.launcher.note(f'{tag}: its window {result}')
+        if result == 'failed':
+            current = update.read_pointer(base, 'current') or self.layout.release
+            self.later(self.update_failed, ('ui.update_start_failed', {'tag': tag, 'current': current,
+                                                                       'log': str(self.launcher.log)}))
+        else:
+            self.update_closing = True
+
+    def update_worker_body(self, what, work):
+        """work() on the worker thread, its failure shown on the update screen; the window closes afterwards when it
+        was closed meanwhile or the new version's window took over"""
+        try:
+            work()
+        except update.UpdateError as e:
+            self.launcher.note(f'{what}: {e.id} {e.params}')
+            if e.id != 'update.cancelled' or not self.update_closing:
+                self.later(self.update_failed, (e.id, e.params))
+        except OSError as e:
+            self.launcher.note(f'{what}: {type(e).__name__} {e}')
+            self.later(self.update_failed, ('update.stage_failed', {'path': str(self.launcher.base), 'detail': str(e)}))
+        finally:
+            self.update_running = False
+            if self.update_closing:
+                self.later(self.close_after_update)
+
+    def close_after_update(self):
+        self.update_bar.stop()   # its animation would fire once more into a destroyed window
+        self.root.destroy()
+
+    def update_progress(self, step, fraction):
+        self.update_step = step
+        if fraction is None:
+            if str(self.update_bar.cget('mode')) != 'indeterminate':
+                self.update_bar.configure(mode='indeterminate')
+                self.update_bar.start(15)
+            self.update_cancel.state(['disabled'])   # unpacking and starting are not cut half way
+        else:
+            self.update_bar.configure(value=fraction * 1000)
+        self.refresh_update()
+
+    def update_failed(self, failure):
+        self.update_failure = failure
+        if str(self.update_bar.cget('mode')) == 'indeterminate':
+            self.update_bar.stop()
+        self.update_bar.configure(mode='determinate', value=0)
+        self.update_cancel.pack_forget()
+        self.update_back.pack(side='left')
+        self.refresh_update()
+
+    def refresh_update(self):
+        title_id, tag = self.update_target
+        if not self.launcher or not tag:
+            return
+        self.update_title.configure(text=self.cat(title_id, tag=tag))
+        id, params = self.update_step
+        self.update_phase.configure(text=self.cat(id, **params) if id else '')
+        if self.update_failure:
+            fid, fparams = self.update_failure
+            self.update_error.configure(text=self.cat(fid, **fparams) + '\n\n' + self.cat('ui.update_failed'))
+        else:
+            self.update_error.configure(text='')
+        self.fit()
+
+    def play(self, dest):
+        """The built game, started from its folder; the launcher closes (an update needs the game closed)."""
+        if not dest or install_state(dest) != 'ready':
+            return
+        kw = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
+        try:
+            subprocess.Popen(play_command(dest), cwd=dest, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, **kw)
+        except OSError as e:
+            messagebox.showerror(self.cat('ui.title'), f'{play_command(dest)[0]}: {e}')
+            return
+        self.root.destroy()
+
+    def open_path(self, dest):
+        if dest and Path(dest).is_dir():
+            if os.name == 'nt':
+                os.startfile(dest)
+            else:
+                subprocess.Popen(['xdg-open', dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
 
     # ---- form -----------------------------------------------------------------------------------------------------
 
@@ -387,11 +730,86 @@ class App:
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     lang=self.selected_lang(), dest=self.vars['dest'].get(), game=self.game,
                     exefs=self.vars['exefs'].get(), romfs=self.vars['romfs'].get(), package=self.vars['package'].get(),
-                    nup=self.vars['nup'].get())
+                    nup=self.vars['nup'].get(), fsr4=self.fsr4_choice())
+
+    # AMD FSR 4 (installer/fsr4.py). Ticking the box shows AMD's license of the pinned release, fetched from AMD's
+    # repository; only "I accept" leaves it ticked. A folder whose setup recorded that release starts ticked.
+    def fsr4_recorded(self):
+        state = Form(dest=self.vars['dest'].get(), game=self.game).installed_state()
+        return bool(state) and state.get('fsr4') == fsr4.TAG
+
+    def fsr4_choice(self):
+        if self.game != 'bananza' or os.name != 'nt':
+            return ''
+        if self.fsr4_var.get():
+            return 'accept' if self.fsr4_accepted else ''
+        return 'off' if self.fsr4_recorded() else ''
+
+    def toggle_fsr4(self):
+        if not self.fsr4_var.get() or self.fsr4_accepted or self.fsr4_recorded():
+            return
+        self.fsr4_var.set(False)   # ticked only by "I accept"
+        win = tk.Toplevel(self.root)
+        win.title(self.cat('dkb.ui.fsr4_title'))
+        win.configure(bg=BARK)
+        win.transient(self.root)
+        win.grab_set()
+        bar = ttk.Frame(win)
+        bar.pack(side='bottom', fill='x', padx=12, pady=12)
+        accept = ttk.Button(bar, text=self.cat('dkb.ui.fsr4_accept'), style='Accent.TButton', state='disabled')
+        accept.pack(side='right')
+        ttk.Button(bar, text=self.cat('dkb.ui.fsr4_decline'), command=win.destroy).pack(side='right', padx=(0, 8))
+        ttk.Label(win, text=self.cat('dkb.ui.fsr4_intro', release=fsr4.TAG), wraplength=640,
+                  justify='left').pack(anchor='w', padx=12, pady=(12, 8))
+        box = ttk.Frame(win)
+        box.pack(fill='both', expand=True, padx=12)
+        text = tk.Text(box, height=22, width=90, wrap='word', font=(self.mono_font, 9), bg=FIELD, fg=CREAM,
+                       relief='flat', highlightthickness=2, highlightbackground=BORDER, highlightcolor=BORDER)
+        scroll = ttk.Scrollbar(box, command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y')
+        text.pack(side='left', fill='both', expand=True)
+        text.insert('end', self.cat('dkb.ui.fsr4_loading'))
+        text.configure(state='disabled')
+        result = {}
+
+        def fetch():   # a worker thread: Tk is touched only from show(), which waits for result
+            try:
+                result['text'] = fsr4.license_text()
+            except fsr4.FetchError as error:
+                result['error'] = error.args[1]
+            except Exception as error:   # anything else must not leave the window loading with Accept disabled
+                result['error'] = f'{type(error).__name__}: {error}'
+
+        def show():
+            if not win.winfo_exists():
+                return
+            if not result:
+                win.after(100, show)
+                return
+            text.configure(state='normal')
+            text.delete('1.0', 'end')
+            if 'text' in result:
+                text.insert('end', result['text'])
+                accept.configure(state='normal')
+            else:
+                text.insert('end', self.cat('dkb.ui.fsr4_fetch_failed', detail=result['error'], url=fsr4.PAGE))
+            text.configure(state='disabled')
+
+        def accepted():
+            self.fsr4_accepted = True
+            self.fsr4_var.set(True)
+            win.destroy()
+
+        accept.configure(command=accepted)
+        threading.Thread(target=fetch, daemon=True).start()
+        win.after(100, show)
 
     def refresh_form(self):
         form = self.form()
         state = form.installed_state()
+        if self.game == 'bananza' and not self.fsr4_accepted:
+            self.fsr4_var.set(bool(state) and state.get('fsr4') == fsr4.TAG)
         if state is not None:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
             recorded = ini.canonical_language(state.get('lang'))
@@ -437,6 +855,9 @@ class App:
             self.fit()
             return
         self.form_error.configure(text='')
+        if self.launcher:   # the home screen and the next update use this folder
+            self.settings.dest = os.path.normpath(form.dest.strip())
+            self.settings.save(self.launcher.base)
         command = form.command(self.layout.python, root=self.layout.root if self.layout.dev else None,
                                temp=self.run_args.get('temp'), verify=self.run_args.get('verify', False),
                                tools=self.run_args.get('tools'))
@@ -580,6 +1001,13 @@ class App:
             self.process.cancel()
 
     def on_close(self):
+        if self.launcher and self.update_running:
+            # The download stops at its next block and its .part file is deleted (update.fetch_to); an unpack is not
+            # cut half way, and a finished one starts nothing. The window closes when the worker is done.
+            if not self.update_closing and messagebox.askyesno(self.cat('ui.title'), self.cat('ui.confirm_cancel_update')):
+                self.update_closing = True
+                self.update_stop.set()
+            return
         if self.process:
             if not messagebox.askyesno(self.cat('ui.title'), self.cat('ui.confirm_cancel')):
                 return
@@ -614,6 +1042,17 @@ class App:
             self.open_button.state(['!disabled'])
         else:
             self.open_button.state(['disabled' if not Path(m.dest or '.').is_dir() else '!disabled'])
+        if result == 'ok' and self.game == 'bananza' and install_state(m.dest or '') == 'ready':
+            self.play_after.pack(side='right', padx=(0, 8))
+        else:
+            self.play_after.pack_forget()
+
+    def back(self):
+        """From the finish screen: the launcher's home when the folder is built, else the form."""
+        if self.launcher and install_state(self.settings.dest):
+            self.show_home()
+        else:
+            self.show('form')
 
     def open_folder(self):
         dest = self.model.dest
@@ -672,9 +1111,43 @@ def selftest(layout, shots=None, game='totk'):
     fix_dpi_awareness()
     root = tk.Tk()
     root.geometry('+60+40')
-    app = App(root, 'en', layout, game=game)
+    work = tempfile.TemporaryDirectory()   # the launcher's base and a finished-looking install folder, no network
+    launcher = None
+    if game == 'bananza':
+        launcher = Launcher(base=Path(work.name) / 'DKB-Recomp')
+        built = Path(work.name) / 'DKB-Bananza'
+        built.mkdir()
+        (built / 'dkb-install.json').write_text(json.dumps({'format': 1, 'steps': {'dkb_verify': {}}}), encoding='utf-8')
+        (built / play_command(built)[0]).write_bytes(b'')
+        Settings(dest=str(built)).save(launcher.base)
+        before = update.version_python(launcher.base / 'versions' / 'v0.0.1')   # a previous version: Go back shows
+        before.parent.mkdir(parents=True)
+        before.write_bytes(b'')
+        update.write_pointer(launcher.base, 'previous', 'v0.0.1')
+    app = App(root, 'en', layout, game=game, launcher=launcher)
     steps, mixed = [], []
     destination = 'Z:/selftest/Bananza' if game == 'bananza' else 'Z:/selftest/TotK'
+    tools = update.Asset('0' * 64, 131 << 20, 'DKB-Setup-9.9.9+abc1234-windows.zip', 'DKB-Setup')
+    offer = update.Offer('v9.9.9', '9.9.9+abc1234', 1, '## What is new\n\n- Faster loading\n- A crash fixed (#1)',
+                         'https://example.invalid/v9.9.9',
+                         update.Manifest('9.9.9+abc1234', 'v9.9.9', tools, update.Asset('0' * 64, 1, 'DKB-Launcher.exe')))
+
+    def launcher_screens(tag):
+        app.show_offer(offer, None)
+        app.show_home()
+        shot(f'home-offer-{tag}')
+        app.update_step = ('ui.update_downloading', {'done': 40, 'total': 131})
+        app.update_target = ('ui.updating', offer.tag)
+        app.update_failure = None
+        app.update_progress(app.update_step, 0.3)
+        app.show('update')
+        shot(f'update-{tag}')
+        app.update_failed(('update.checksum', {'name': tools.name}))
+        shot(f'update-failed-{tag}')
+        app.show_offer(None, 'no answer')
+        app.show_home()
+        shot(f'home-offline-{tag}')
+        return all(app.cat(i) != i for i in ('ui.home_ready', 'ui.play', 'ui.check_updates', 'ui.updating'))
 
     def shot(name):
         root.update()
@@ -738,12 +1211,17 @@ def selftest(layout, shots=None, game='totk'):
             app.refresh_finish()
             shot(f'finish-cancelled-{tag}')
             app.toggle_log()
+            if launcher:
+                screens.append(launcher_screens(tag))
         root.destroy()
 
+    screens = []
     root.after(200, run_all)
     root.after(60000, root.destroy)   # never leaves a window open
     root.mainloop()
-    return 0 if len(steps) == len(UI_LANGUAGES) and all(steps) and mixed == [False] else 1
+    work.cleanup()
+    ok = len(steps) == len(UI_LANGUAGES) and all(steps) and mixed == [False]
+    return 0 if ok and all(screens) and (launcher is None or len(screens) == len(UI_LANGUAGES)) else 1
 
 
 def samples(events, game):
@@ -778,6 +1256,27 @@ def samples(events, game):
     return result
 
 
+def start_launcher(args, layout):
+    """What a window the launcher started does first. A window of one of the base folder's versions confirms its start
+    (installer/update.py confirm_start: it becomes current.txt; the old version stays as previous.txt) and puts its own
+    DKB-Setup.exe, checked with the zip it came in, in place of the launcher exe when they differ."""
+    launcher = Launcher(base=args.base.resolve(), exe=args.launcher, after_update=args.after_update,
+                        allow_downgrade=args.allow_downgrade)
+    tag = update.own_tag(launcher.base, layout.root)
+    if tag is None:
+        return launcher
+    if update.confirm_start(launcher.base, tag):
+        launcher.note(f'{tag} ({layout.release}) started and is now current')
+    if launcher.exe and os.name == 'nt':
+        update.clean_old_launcher(launcher.exe)
+        try:
+            if update.replace_launcher(launcher.exe, layout.root / update.LAUNCHER_EXE):
+                launcher.note(f'{launcher.exe} replaced by the launcher of {tag}')
+        except (OSError, update.UpdateError) as e:   # the old launcher keeps working: it starts current.txt's version
+            launcher.note(f'{launcher.exe} not replaced: {e}')
+    return launcher
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--selftest', action='store_true')
@@ -789,16 +1288,22 @@ def main(argv=None):
         ap.add_argument('--' + name, type=Path)
     ap.add_argument('--jobs', type=int, default=6)
     ap.add_argument('--no-update-check', action='store_true', help='do not look for a newer release (or DKB_NO_UPDATE_CHECK=1)')
+    ap.add_argument('--base', type=Path, help='the launcher folder (DKB-Recomp; launcher.c passes it)')
+    ap.add_argument('--launcher', type=Path, help='the launcher exe that started this window')
+    ap.add_argument('--after-update', action='store_true', help='started by the version before: rebuild the install folder')
+    ap.add_argument('--allow-downgrade', action='store_true', help='also offer a latest release older than this one')
     args = ap.parse_args(argv)
     layout = layouts.find(args.root)
     if args.selftest:
         return selftest(layout, args.shots, args.game)
     fix_tcl_paths()
     fix_dpi_awareness()
+    launcher = start_launcher(args, layout) if args.base else None
     root = tk.Tk()
     tools = {name: getattr(args, name) for name in ('toolchain', 'deps', 'ninja', 'dll_dir', 'translator', 'dotnet', 'jobs')}
+    check = not update.disabled(args.no_update_check) and (launcher is None or Settings.load(launcher.base).check_updates)
     app = App(root, args.lang or windows_ui_language(), layout, run_args={'tools': tools}, game=args.game,
-              check_updates=not update.disabled(args.no_update_check))
+              check_updates=check, launcher=launcher)
     if args.package:
         app.vars['package'].set(str(args.package))
     root.mainloop()

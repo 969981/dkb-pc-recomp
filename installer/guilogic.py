@@ -26,7 +26,8 @@ from .events import render
 TEXT = Path(__file__).resolve().parent / 'text'
 UI_LANGUAGES = ('en', 'ru')
 STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
-DKB_STEP_ORDER = ('check', 'dkb_data', 'dkb_translator', 'lift', 'compile', 'dkb_shaders', 'dkb_wide', 'dkb_prompts', 'dkb_verify', 'cleanup')
+DKB_STEP_ORDER = ('check', 'dkb_data', 'dkb_translator', 'lift', 'compile', 'dkb_shaders', 'dkb_wide', 'dkb_prompts',
+                  'dkb_fsr4', 'dkb_verify', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
@@ -125,6 +126,7 @@ class Form:
     romfs: str = ''
     package: str = ''
     nup: str = ''
+    fsr4: str = ''   # Bananza: 'accept' (the user accepted AMD's license in the window), 'off', or '' to keep the record
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -194,11 +196,144 @@ class Form:
             cmd += ['--temp', str(temp)]
         if verify:
             cmd.append('--verify')
+        if self.game == 'bananza' and self.fsr4:
+            cmd += ['--fsr4', self.fsr4]
         if self.game == 'bananza':
             for flag, value in (tools or {}).items():
                 if value is not None:
                     cmd += ['--' + flag.replace('_', '-'), str(value)]
         return cmd
+
+
+# ---- the launcher ------------------------------------------------------------------------------------------------
+
+SETTINGS = 'launcher.json'
+GAME_EXE = 'dkb.exe' if os.name == 'nt' else 'dkb'
+
+
+@dataclass
+class Launcher:
+    """How installer/launcher/launcher.c started the window: its base folder (DKB-Recomp), the launcher exe, and
+    whether an older version just handed over after an update (installer/update.py start_version)."""
+    base: Path
+    exe: Path | None = None
+    after_update: bool = False
+    allow_downgrade: bool = False
+
+    @property
+    def temp(self):
+        """The installer's work folder: one for every version, so an update reuses the generated code and objects."""
+        return self.base / 'temp'
+
+    @property
+    def log(self):
+        return self.base / 'logs' / 'launcher.log'
+
+    def note(self, text):
+        """One line of the update log (what was checked, downloaded, verified, started); never fails."""
+        try:
+            self.log.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.log, 'a', encoding='utf-8') as f:
+                f.write(time.strftime('%Y-%m-%d %H:%M:%S ') + text + '\n')
+        except OSError:
+            pass
+
+
+@dataclass
+class Settings:
+    """launcher.json in the base folder: the install folder and whether to look for a new release at start."""
+    dest: str = ''
+    check_updates: bool = True
+
+    @classmethod
+    def load(cls, base):
+        try:
+            data = json.loads((Path(base) / SETTINGS).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return cls()
+        if not isinstance(data, dict):
+            return cls()
+        return cls(dest=data['dest'] if isinstance(data.get('dest'), str) else '',
+                   check_updates=data.get('check_updates') is not False)
+
+    def save(self, base):
+        path = Path(base) / SETTINGS
+        tmp = path.with_name(SETTINGS + '.tmp')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps({'dest': self.dest, 'check_updates': self.check_updates}, indent=1,
+                                      ensure_ascii=False) + '\n', encoding='utf-8')
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+
+def default_dest(base):
+    """The install folder the form proposes on a first start: beside the launcher's folder, never inside it, so that
+    deleting the launcher's tools never deletes the saves."""
+    return str(Path(base).parent / 'DKB-Bananza')
+
+
+VERIFY_INPUTS = ('compile', 'dkb_translator')   # the steps whose keys make up dkb_verify's (installer/bananza.py Prepare.key)
+
+
+def install_state(dest):
+    """'ready' when dest holds a finished Bananza install, 'unfinished' when it holds a started one, None when it holds
+    none. Finished: the game exe is there and the check (dkb_verify, which runs the exe's self-test) is newer than the
+    steps it checks, VERIFY_INPUTS. A setup run that stopped after one of them reran (an update's compile that put a new
+    dkb.exe in place) leaves a record newer than the check, so Play waits for the setup to finish; one that stopped
+    earlier left the old game as it was (the runner records a step only once it is done). Other steps (the shaders, the
+    wide layouts, the prompts) do not count: the runner itself does not run the check again after them, so a record
+    of theirs newer than the check is a finished setup run, not a stopped one."""
+    if not dest or not dest.strip():
+        return None
+    try:
+        state = statefile.load(Path(dest.strip()), 'dkb-install.json')
+    except statefile.StateError:
+        return None
+    if state is None:
+        return None
+    steps = state.get('steps', {})
+    check = steps.get('dkb_verify')
+    if not isinstance(check, dict) or not (Path(dest.strip()) / GAME_EXE).is_file():
+        return 'unfinished'
+    newest = max((str(steps[s].get('finished', '')) for s in VERIFY_INPUTS if isinstance(steps.get(s), dict)), default='')
+    return 'ready' if str(check.get('finished', '')) >= newest else 'unfinished'
+
+
+def update_status(offer, error, allow_downgrade=False):
+    """The home screen's update line as (id, params), and whether its Update button shows."""
+    from . import update
+    if error is not None:
+        return ('ui.update_offline', {'detail': error}), False
+    if offer is None:
+        return ('ui.update_off', {}), False
+    if offer.direction > 0:
+        return (('ui.update_offer' if offer.manifest else 'ui.update_page_only'), {'tag': offer.tag}), \
+            update.may_install(offer, allow_downgrade)
+    if offer.direction < 0:
+        return ('ui.update_older', {'tag': offer.tag}), update.may_install(offer, allow_downgrade)
+    return ('ui.update_none', {}), False
+
+
+def release_page(url):
+    """url when it is a page on https://github.com/ (where every release page is), else None: the home screen opens
+    no other link it was handed"""
+    return url if isinstance(url, str) and url.startswith('https://github.com/') and '\\' not in url else None
+
+
+def previous_version(base, own):
+    """The tag the home screen can go back to: versions/previous.txt's, when it is not `own` (the running version) and
+    its folder still holds its Python; else None."""
+    from . import update
+    tag = update.read_pointer(base, 'previous')
+    if not tag or tag == own or not update.version_python(Path(base) / 'versions' / tag).is_file():
+        return None
+    return tag
+
+
+def play_command(dest):
+    return [str(Path(dest) / GAME_EXE)]
 
 
 # ---- events -> state ---------------------------------------------------------------------------------------------

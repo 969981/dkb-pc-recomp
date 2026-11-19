@@ -54,6 +54,8 @@ after a pad drops (#363), and fewer lock waits and scans in the replay (#354, #3
 on NVIDIA 50-series (#304) is avoided by skipping one vertex stage (45e1a6f48cb7872e), `console = 0` works with Windows
 Terminal (#238), and 23 more community pull requests landed (samplers, Linux memory and lazy write-back, GPU write bookkeeping, fewer VirtualQuery calls, HDR screenshots, DLSS warm-up). The smash blur ends above 60 fps on 1.0.0 too (#389, #390), and DLC from a container whose base package has title id 0 installs (#388). PCs with 4 to 7 logical processors now record big passes on 3 threads (frames over 50 ms in the heaviest scene tested fell about tenfold on 6), and a first run with an empty pipeline cache stalls far less: the longest wait for one pipeline fell from 2.4 s to 0.23 s and the first heavy frame from about 10 s to 3 s (#309). The layer -200 scene holds 60 fps on a Ryzen 7 5700X and RTX 5060 Ti with warm caches.
 
+On `bananza` since 0.4.2: the replay runs above the game's loading threads while it submits, so level transitions no longer stall on CPUs with few cores (6 logical processors: 11 ms to 0.25 ms a frame); recording a draw costs about 14% less (frames over 50 ms in the heaviest scene on 6 logical processors: about 22 to 15 a minute); a weak GPU was simulated by locking the clock at 900 MHz, and at 1080p the game still held 56 to 59 fps (docs/dkb-lowend.md, "Weak GPU"); `DKB-Launcher.exe` (#420) installs the build tools in one file. On AMD cards other than the RX 9070 series, `replay_threads` is still 0 by default: RDNA 3 players report large gains with 4 to 8 (#141, #418), and RDNA 2 is being tested.
+
 RecompLauncher on Linux and macOS: [docs/recomp-launcher.md](docs/recomp-launcher.md). Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 18 November 2026.
 
 | Phase | | State |
@@ -158,6 +160,15 @@ crash. Follow the
 **Is there a download?** Of the installer, on the [release page](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest).
 The executable is made from the game's own code, so it cannot be shared. Everyone builds it from their own dump; the
 installer does this for you ([docs/installer.md](docs/installer.md)).
+
+**How do I install and update on Windows?** From the first release that carries it, download `DKB-Launcher.exe` once,
+put it in a folder of its own and start it. It downloads the build tools (checked by SHA-256) into `DKB-Recomp` beside
+itself, asks for your dump and the install folder, and builds the game. After that it opens on Play, looks for a new
+release at each start, shows what is new and updates with one click: the new tools are downloaded and checked, the old
+version stays until the new one has started, and only the steps whose inputs changed run again; saves (`profile/`)
+and `dkb.ini` are kept. A tick box on that screen (or `DKB_NO_UPDATE_CHECK=1`) turns the check off; the only request
+is to GitHub's release API. The setup zip keeps working as before ([docs/installer.md](docs/installer.md), "Launcher
+and updates").
 
 **Which version of the game?** Base 1.0.0 and update 3.2.0 (title version 458752, the newest). The installer takes either a `.nup` file (the container Eglantine and Eden load; with the 3.2.0 update inside it builds 3.2.0) or ExeFS and RomFS folders. Other updates are refused by their hashes. The 3.2.0 build installs and boots, and holds 60 fps for 150 s at the start on an RTX 5060 Ti, but nobody has played it yet. Add-on content (DLC) has a reader (an `aoc-<n>` folder beside the executable, [docs/dkb-testing.md](docs/dkb-testing.md)) checked against synthetic packs and a real one, but it has not been tried in the game.
 

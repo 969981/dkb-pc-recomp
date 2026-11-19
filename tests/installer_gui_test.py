@@ -303,6 +303,104 @@ class CancelTest(unittest.TestCase):
             p.kill()
 
 
+class LauncherWindowTest(unittest.TestCase):
+    """The launcher's window (installer/gui.py App with a Launcher): closing it during an update, and its worker
+    reaching a window that is gone."""
+
+    def setUp(self):
+        try:
+            import tkinter as tk
+            self.root = tk.Tk()
+        except Exception as e:   # no tkinter, or no display
+            self.skipTest(f'no Tk: {e}')
+        self.root.withdraw()
+        from installer import gui
+        from installer.guilogic import Launcher
+        self.gui = gui
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.app = gui.App(self.root, 'en', layouts.find(None), game='bananza',
+                           launcher=Launcher(base=Path(self.work.name) / 'DKB-Recomp'))
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_close_during_an_update_asks_then_stops_it(self):
+        from unittest.mock import patch
+        from installer import update
+        app = self.app
+        app.begin_update('ui.updating', 'v9.9.9', ('ui.update_downloading', {'done': 0, 'total': 1}))
+        with patch.object(self.gui.messagebox, 'askyesno', return_value=False) as asked:
+            app.on_close()
+        asked.assert_called_once()
+        self.assertFalse(app.update_stop.is_set())   # "no": the update goes on, the window stays
+        self.assertTrue(self.root.winfo_exists())
+        with patch.object(self.gui.messagebox, 'askyesno', return_value=True):
+            app.on_close()
+        self.assertTrue(app.update_stop.is_set() and app.update_closing)
+        self.assertTrue(self.root.winfo_exists())    # it closes once the worker has stopped
+
+        def cancelled():   # what update.download raises once it sees update_stop (and deletes its .part file)
+            raise update.UpdateError('update.cancelled')
+        app.update_worker_body('update to v9.9.9', cancelled)
+        self.assertFalse(app.update_running)
+        self.root.update()
+        with self.assertRaises(Exception):
+            self.root.winfo_exists()   # destroyed
+        app.later(app.show_home)       # a worker's last message to a window that is gone is dropped, not raised
+
+    def test_cancel_after_the_last_block_unpacks_and_starts_nothing(self):
+        """Cancel pressed while the last block came in: update.download has nothing left to stop and returns the
+        checked zip, which is then deleted instead of unpacked; a Cancel that comes during the unpack (before the
+        button goes grey) keeps the unpacked folder but starts nothing."""
+        from unittest.mock import patch
+        from installer import update
+        app = self.app
+        tools = update.Asset('0' * 64, 1 << 20, 'DKB-Setup-9.9.9-windows.zip', 'DKB-Setup')
+        offer = update.Offer('v9.9.9', '9.9.9', 1, manifest=update.Manifest('9.9.9', 'v9.9.9', tools, tools))
+        zip_path = Path(self.work.name) / 'checked.zip'
+        for cancel_during in ('download', 'stage'):
+            zip_path.write_bytes(b'PK')
+            stage_calls = []
+
+            def download(*a, **kw):
+                if cancel_during == 'download':
+                    app.update_stop.set()
+                return zip_path
+
+            def stage(*a):
+                stage_calls.append(a)
+                if cancel_during == 'stage':
+                    app.update_stop.set()
+                return Path(self.work.name) / 'versions' / 'v9.9.9'
+            app.begin_update('ui.updating', 'v9.9.9', ('ui.update_downloading', {'done': 0, 'total': 1}))
+            with patch.object(update, 'download', side_effect=download), patch.object(update, 'stage', side_effect=stage), \
+                    patch.object(update, 'start_version') as started:
+                app.update_worker(offer)
+            self.root.update()
+            with self.subTest(cancel_during):
+                self.assertEqual(len(stage_calls), 0 if cancel_during == 'download' else 1)
+                started.assert_not_called()
+                self.assertFalse(zip_path.exists())
+                self.assertFalse(app.update_running)
+                self.assertEqual(app.update_failure[0], 'update.cancelled')
+                self.assertTrue(self.root.winfo_exists())   # the window stays: only Close closes it
+
+    def test_a_handed_over_update_closes_the_window(self):
+        from unittest.mock import patch
+        app = self.app
+        app.begin_update('ui.going_back', 'v0.0.1', ('ui.update_starting', {'tag': 'v0.0.1'}))
+        with patch.object(self.gui.update, 'start_version', return_value='started') as started:
+            app.update_worker_body('go back to v0.0.1', lambda: app.hand_over('v0.0.1'))
+        self.assertEqual(started.call_args[0][1], 'v0.0.1')
+        self.root.update()
+        with self.assertRaises(Exception):
+            self.root.winfo_exists()
+
+
 class SmokeTest(unittest.TestCase):
     def test_every_screen_in_both_languages(self):
         try:

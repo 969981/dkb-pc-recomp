@@ -166,6 +166,37 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
             b.Check().host(ctx)   # a warning must not raise
         return [json.loads(line)['id'] for line in out.getvalue().splitlines() if json.loads(line)['type'] == 'warning']
 
+    def check_space(self, dest_free, temp_free):
+        """Run the check step's space test with the install folder and the temporary folder on two disks."""
+        self.dest.mkdir()
+        self.temp.mkdir()
+        free = {self.dest: dest_free, self.temp: temp_free}
+        real_stat = Path.stat
+        def stat(path, **kw):
+            if path in free:   # one device per folder, so the two needs are checked separately
+                return SimpleNamespace(st_dev=1 if path == self.dest else 2, st_mode=real_stat(path, **kw).st_mode)
+            return real_stat(path, **kw)
+        ctx = SimpleNamespace(dest=self.dest, temp=self.temp, info={'romfs_size': 1 << 30},
+                              reporter=Reporter(out=io.StringIO()))
+        with patch.object(b.shutil, 'disk_usage', side_effect=lambda p: SimpleNamespace(free=free[Path(p)])), \
+                patch.object(Path, 'stat', autospec=True, side_effect=stat), \
+                self.assertRaises(b.InstallError) as error:
+            b.Check().run(ctx)
+        return error.exception
+
+    def test_space_error_names_the_short_temporary_disk(self):
+        # A player who moves only the install folder to a roomy disk must learn that the setup folder's disk is full.
+        error = self.check_space(dest_free=1 << 40, temp_free=1 << 30)
+        self.assertEqual(error.id, 'dkb.temp_disk_space')
+        self.assertEqual(error.params['path'], str(self.temp))
+        self.assertEqual((error.params['need'], error.params['free']), (11.0, 1.0))
+
+    def test_space_error_names_the_short_install_disk(self):
+        error = self.check_space(dest_free=1 << 30, temp_free=1 << 40)
+        self.assertEqual(error.id, 'dkb.space')
+        self.assertEqual(error.params['path'], str(self.dest))
+        self.assertEqual((error.params['need'], error.params['free']), (4.0, 1.0))
+
     def test_low_commit_limit_warns_and_continues(self):
         self.assertEqual(self.host_warnings(commit_limit_gib=17.9), ['warn.low_commit_limit'])
 
@@ -211,12 +242,52 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual((target / 'keep.txt').read_text(), 'untouched')
         self.assertFalse(self.dest.exists())
 
+    def test_fsr4_only_after_accept(self):
+        # Without --fsr4 nothing is fetched; accept fetches into the install folder and records the release, which a
+        # later setup keeps without asking again; a failed fetch warns and is tried again; off stops it.
+        fetched = []
+        def fetch(folder, progress=None, repo=None):
+            fetched.append(Path(folder))
+            for _, name, _, _ in (b.fsr4.LICENSE, *b.fsr4.FILES):
+                (Path(folder) / name).write_bytes(b'x')
+        sizes = [(path, name, 1, sha) for path, name, _, sha in (b.fsr4.LICENSE, *b.fsr4.FILES)]
+        platform = patch.object(b, 'fsr4_platform', return_value=True)   # the step acts on Windows only
+        platform.start()
+        self.addCleanup(platform.stop)
+        with patch.object(b.fsr4, 'fetch', side_effect=fetch), patch.object(b.fsr4, 'LICENSE', sizes[0]), \
+                patch.object(b.fsr4, 'FILES', tuple(sizes[1:])):
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(fetched, [])
+            self.assertNotIn('fsr4', b.statefile.load(self.dest, b.STATE))
+            self.options.fsr4 = 'accept'
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(fetched, [self.dest])
+            state = b.statefile.load(self.dest, b.STATE)
+            self.assertEqual(state['fsr4'], b.fsr4.TAG)
+            self.assertTrue(state['steps']['dkb_fsr4']['files'])
+            self.options.fsr4 = None   # recorded: kept, nothing fetched again
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(fetched, [self.dest])
+            (self.dest / b.fsr4.FILES[1][1]).unlink()   # a file gone: fetched again
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(len(fetched), 2)
+            self.options.fsr4 = 'off'
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertNotIn('fsr4', b.statefile.load(self.dest, b.STATE))
+            self.assertEqual(len(fetched), 2)
+        with patch.object(b.fsr4, 'fetch', side_effect=b.fsr4.FetchError('amd_fidelityfx_upscaler_vk.dll', 'offline')):
+            self.options.fsr4 = 'accept'
+            code, events = self.run_install()
+            self.assertEqual(code, 0, events)
+            self.assertIn('warn.dkb_fsr4_failed', [e.get('id') for e in events if e['type'] == 'warning'])
+            self.assertFalse(b.statefile.load(self.dest, b.STATE)['steps']['dkb_fsr4']['files'])
+
     def test_fresh_portable_install_and_resume(self):
         code, events = self.run_install()
         self.assertEqual(code, 0, events)
         state = b.statefile.load(self.dest, b.STATE)
         self.assertEqual(state['game'], 'dkb100')
-        self.assertEqual(set(state['steps']), {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_wide','dkb_prompts','dkb_verify'})
+        self.assertEqual(set(state['steps']), {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_wide','dkb_prompts','dkb_fsr4','dkb_verify'})
         self.assertEqual((self.dest/'exefs/main').read_bytes(), (self.exefs/'main').read_bytes())
         self.assertTrue((self.dest/('dkb'+b.EXE)).is_file())
         self.assertFalse((self.dest/'build.ninja').exists())
@@ -226,7 +297,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual(code, 0, events)
         self.assertEqual(self.calls, [])
         self.assertEqual({e['step'] for e in events if e['type']=='step' and e['state']=='skipped'},
-                         {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_wide','dkb_prompts','dkb_verify'})
+                         {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_wide','dkb_prompts','dkb_fsr4','dkb_verify'})
 
     def test_wide_presets_install_both_variants_and_repair_without_rebuild(self):
         self.assertEqual(self.run_install()[0], 0)

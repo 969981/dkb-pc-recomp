@@ -23,6 +23,7 @@ from pathlib import Path
 from . import layout as layouts
 from . import state as statefile
 from . import ini
+from . import fsr4
 from .events import LauncherReporter, Reporter
 from .runner import Context, InstallError, Step, run_steps
 
@@ -515,8 +516,13 @@ class Check(Step):
         need = ctx.info['romfs_size'] + (3 << 30) + (temp_need if same_disk else 0)
         ctx.reporter.emit('space', dest=str(ctx.dest), need=need, free=free, temp=str(ctx.temp),
                           temp_need=temp_need, temp_free=temp_free, same_disk=same_disk)
-        if free < need or temp_free < temp_need:
-            raise InstallError('dkb.space', need=round(need / (1 << 30), 1))
+        # Name the disk that is short: the temporary folder defaults to the setup folder (layout.temp), not the install
+        # folder, so a player who only moves the install folder to a roomier disk still fails on the setup's disk.
+        gib = lambda n: round(n / (1 << 30), 1)
+        if free < need:
+            raise InstallError('dkb.space', path=str(ctx.dest), need=gib(need), free=gib(free))
+        if temp_free < temp_need:
+            raise InstallError('dkb.temp_disk_space', path=str(ctx.temp), need=gib(temp_need), free=gib(temp_free))
         ctx.temp.mkdir(parents=True, exist_ok=True)
         self.host(ctx)
         ctx.verify_kept(self.id)
@@ -887,6 +893,52 @@ class PadPrompts(Step):
         return {'outputs': {name: tree_key(ctx.dest / name) for name in PS_FOLDERS}}
 
 
+def fsr4_platform():
+    """AMD publishes the FSR 4 libraries for Windows only (docs/dkb-dlss.md)."""
+    return os.name == 'nt'
+
+
+class Fsr4(Step):
+    """AMD FSR 4's Vulkan libraries next to dkb.exe (installer/fsr4.py), only when the user asked for them and accepted
+    AMD's license of the pinned release: --fsr4 accept (the window asks first), recorded as state['fsr4'] = that release
+    so a later setup keeps them. --fsr4 off stops fetching them; files already there stay, and upscaler = fsr4 is still
+    the user's choice either way. A failed download warns and setup goes on with FSR 3.1; the next setup tries again."""
+    id = 'dkb_fsr4'
+
+    def key(self, ctx):
+        return digest('fsr4', ctx.state.get('fsr4') or 'off')
+
+    def current(self, ctx, record):
+        if not ctx.state.get('fsr4') or not fsr4_platform():
+            return True
+        try:   # sizes only here; verify hashes them
+            return record.get('files') is True and all(
+                (ctx.dest / name).stat().st_size == size for _, name, size, _ in (fsr4.LICENSE, *fsr4.FILES))
+        except OSError:
+            return False
+
+    def verify(self, ctx, record):
+        return not ctx.state.get('fsr4') or not fsr4_platform() or fsr4.installed(ctx.dest)
+
+    def run(self, ctx):
+        if not ctx.state.get('fsr4'):
+            return {'files': False}
+        if not fsr4_platform():
+            ctx.reporter.log('fsr4: AMD publishes no library for this system; nothing fetched')
+            return {'files': False}
+        for _, name, _, _ in (fsr4.LICENSE, *fsr4.FILES):
+            ensure_plain(ctx.dest / name)
+            ensure_plain(ctx.dest / (name + '.part'))
+        total = fsr4.total_bytes()
+        ctx.reporter.progress(self.id, 'dkb_fetch', 0, total, 'bytes', force=True)
+        try:
+            fsr4.fetch(ctx.dest, lambda done: ctx.reporter.progress(self.id, 'dkb_fetch', done, total, 'bytes'))
+        except fsr4.FetchError as error:
+            ctx.reporter.warning('warn.dkb_fsr4_failed', file=error.args[0], detail=error.args[1])
+            return {'files': False}   # not current: the next setup tries again
+        return {'files': True, 'tag': fsr4.TAG}
+
+
 class Prepare(Step):
     id = 'dkb_verify'
 
@@ -918,7 +970,8 @@ class Cleanup(Step):
 
 
 def all_steps():
-    return [Check(), Data(), Translator(), Lift(), Compile(), Shaders(), WideLayouts(), PadPrompts(), Prepare(), Cleanup()]
+    return [Check(), Data(), Translator(), Lift(), Compile(), Shaders(), WideLayouts(), PadPrompts(), Fsr4(), Prepare(),
+            Cleanup()]
 
 
 def cancel(*_):
@@ -994,6 +1047,14 @@ def main(options):
                                     'dll_dir': str(layout.dlls[0].parent) if layout.dlls else None,
                                     'dotnet': str(info['dotnet'])}
         ctx.state['lang'] = ini.canonical_language(options.lang or ctx.state.get('lang') or 'en-US')
+        choice = getattr(options, 'fsr4', None)   # accept: the user accepted AMD's license of fsr4.TAG
+        if choice == 'accept':
+            ctx.state['fsr4'] = fsr4.TAG
+        elif choice == 'off':
+            ctx.state.pop('fsr4', None)
+        elif ctx.state.get('fsr4') not in (None, fsr4.TAG):
+            ctx.state.pop('fsr4', None)   # accepted for another release: its license is to be accepted again
+            rep.warning('warn.dkb_fsr4_new_release', release=fsr4.TAG)
         steps = all_steps()
         rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
                  game=info['game'], game_exe='dkb' + EXE, steps=[s.id for s in steps])

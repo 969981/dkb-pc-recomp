@@ -901,6 +901,16 @@ void vk_exec_pass_begin(VkExec *ex) {
                           .pDepthAttachment = ex->pass_depth ? &da : NULL,
                           .pStencilAttachment = ex->pass_stencil ? &sa : NULL,
                           .flags = pass_secondary ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT : 0};
+    if (ex == &X) {   // TOTK_PASS_GPU: the pass's size, attachments, formats and samples as its key
+        const VkExecTarget *c0 = &ex->color[0];
+        uint64_t cf = ex->pass_ncolor && c0->image ? (uint64_t)c0->format : 0;
+        uint64_t df = d->image && (ex->pass_depth || ex->pass_stencil) ? (uint64_t)d->format : 0;
+        if (cf > 1000) cf = 1000 + cf % 23;   // extension formats: a small distinct number
+        if (df > 1000) df = 1000 + df % 23;
+        vk_sync_mark(ex->cb, 1 | (uint64_t)(ex->pass_w & 0x3fff) << 1 | (uint64_t)(ex->pass_h & 0x3fff) << 15 |
+                                 (uint64_t)(ex->pass_ncolor & 15) << 29 | (cf & 0x3ff) << 33 | (df & 0x3ff) << 43 |
+                                 (uint64_t)(ex->pass_samples & 15) << 53);
+    }
     vkCmdBeginRendering(ex->cb, &ri);
     // The replay thread's pass bookkeeping (par_start, vk_exec_pass_end): a helper's part opens passes of its own.
     if (ex == &X) {
@@ -952,6 +962,7 @@ void vk_exec_pass_end(VkExec *ex) {
     }
     vk_exec_oq_pass_end(ex);
     vkCmdEndRendering(ex->cb);
+    if (ex == &X) vk_sync_mark(ex->cb, 0);
     ex->recorded++;
     ex->in_pass = 0;
     vk_exec_oq_pass_ended(ex);   // a sliced pass's query, begun before the pass
@@ -2881,6 +2892,13 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
                 continue;
             }
         }
+        if (ex == &X && !ex->in_pass)   // TOTK_PASS_GPU: the GPU work of ops outside passes, by op
+            switch (h->op) {
+            case OP_CLEAR_COLOR: case OP_CLEAR_DS: case OP_DISPATCH: case OP_DISPATCH_IND: case OP_COPY_B2B: case OP_COPY_B2T:
+            case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX: case OP_CLEAR_BUF:
+                vk_sync_mark(ex->cb, 2 | (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND ? 251 : (uint64_t)h->op) << 2);
+            default: break;
+            }
         switch (h->op) {
         case OP_END: return;
         case OP_BEGIN: break;

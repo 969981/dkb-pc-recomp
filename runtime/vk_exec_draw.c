@@ -2406,6 +2406,7 @@ static Twin *twin_find(const VkTexImage *img, VkFormat df, uint32_t layers) {
 static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
     VkFormat df = twin_format(img);
     if (!df) return NULL;
+    if (!IS_HELPER(DC_OF(ex))) vk_sync_mark(ex->cb, 2 | 254ull << 2);   // TOTK_PASS_GPU: the copy's GPU time
     VkCtx *c = vk_ctx();
     uint32_t bpp = df == VK_FORMAT_D32_SFLOAT ? 4 : 2, layers = img->layers ? img->layers : 1;
     VkDeviceSize bytes = (VkDeviceSize)img->width * img->height * layers * bpp;

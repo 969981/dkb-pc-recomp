@@ -100,6 +100,7 @@ static void ts_setup(VkCtx *c) {
 // size 0: an indirect draw's arguments at addr, drawn by stages a/b; else a storage write of [addr, addr+size) by
 // stage a, in recording order with the draws.
 typedef struct { uint64_t addr, a, b, size; } NoteArg;
+typedef struct PassMark { uint32_t q; uint64_t key; } PassMark;   // TOTK_PASS_GPU (vk_sync_mark)
 typedef struct VkSyncNote {
     uint32_t draws, draws_ind, dispatches, dispatches_ind, pairs;
     uint64_t max_work, max_a, max_b;               // the largest direct draw (vertices x instances) or dispatch (groups)
@@ -107,6 +108,8 @@ typedef struct VkSyncNote {
     uint64_t last_a, last_b;                       // the stages of the last noted draw or dispatch
     NoteArg *args;                                 // indirect draws whose arguments the host can read (malloc'd)
     uint32_t nargs, cap;
+    struct PassMark *marks;                        // TOTK_PASS_GPU: timestamps at the pass edges (malloc'd)
+    uint32_t nmarks, mcap;
 } PartNote;
 static PartNote note;   // the part being recorded (sub_lock, like ts_cur)
 
@@ -150,6 +153,10 @@ static void note_pair(PartNote *n, uint64_t a, uint64_t b) {
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work) {
     PartNote *n = note_cur();
     if (!n) return;
+    if (kind >= 2 && n == &note && n->nmarks) {   // TOTK_PASS_GPU: a dispatch's mark takes its compute stage's name
+        uint64_t *k = &n->marks[n->nmarks - 1].key;
+        if (*k == (2 | 251 << 2)) *k = a << 10 | 252 << 2 | 2;   // vk_exec.c walk marks a dispatch with 251
+    }
     n->last_a = a, n->last_b = b;
     if (kind == 0) n->draws++;
     else if (kind == 1) n->draws_ind++;
@@ -179,6 +186,120 @@ static void note_fold(PartNote *to, const PartNote *n) {
 }
 
 typedef struct { uint32_t pair, noted, prologue; uint64_t fence; PartNote note; } TsRead;
+
+// TOTK_PASS_GPU=1 with the perf trace: the replay thread writes a timestamp where each of its render passes begins
+// (after the barrier before it) and ends (vk_sync_mark), and the GPU time between two marks of a part goes to the key
+// of the first: the pass's targets (vk_exec.c vk_exec_pass_begin), or 0 for what runs outside passes (barriers,
+// dispatches, copies, clears). Every 600 frames the perf trace lists the costliest keys. Marks of a part that the
+// replay holds back (vk_sync_split_defer) may land in the next part's list; their time then goes to the wrong key.
+#define MK_Q 65536
+static VkQueryPool mk_pool;
+static uint32_t mk_next;
+static int mk_on = -1;
+#define MK_KEYS 4096
+static struct { uint64_t key, ns, n; } mk_sum[MK_KEYS];   // completion thread
+static uint64_t mk_frames;
+
+void vk_sync_mark(VkCommandBuffer cb, uint64_t key) {
+    if (note_in_slice || ts_cur < 0) return;
+    if (mk_on < 0) {
+        mk_on = rt_knob("PASS_GPU", "0");
+        VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                    .queryCount = MK_Q};
+        if (mk_on && vkCreateQueryPool(vk_ctx()->device, &qi, NULL, &mk_pool) != VK_SUCCESS) mk_on = 0;
+    }
+    if (!mk_on) return;
+    if (note.nmarks == note.mcap) {
+        uint32_t cap = note.mcap ? 2 * note.mcap : 64;
+        PassMark *p = realloc(note.marks, cap * sizeof *p);
+        if (!p) return;
+        note.marks = p, note.mcap = cap;
+    }
+    uint32_t q = mk_next++ % MK_Q;   // ponytail: a ring read within a few frames, no busy check
+    vkCmdResetQueryPool(cb, mk_pool, q, 1);
+    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mk_pool, q);
+    note.marks[note.nmarks++] = (PassMark){q, key};
+}
+
+static void mk_add(uint64_t key, uint64_t ns, int pass) {
+    uint32_t i = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 52) % MK_KEYS;
+    for (int k = 0; k < MK_KEYS; k++, i = (i + 1) % MK_KEYS)
+        if (mk_sum[i].key == key || (!mk_sum[i].ns && !mk_sum[i].n)) {
+            mk_sum[i].key = key, mk_sum[i].ns += ns, mk_sum[i].n += (uint64_t)pass;
+            return;
+        }
+}
+
+static int mk_cmp(const void *a, const void *b) {
+    uint64_t x = ((const uint64_t *)a)[1], y = ((const uint64_t *)b)[1];
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+// The part's marks with its own start and end, in timestamp order (completion thread).
+static void mk_read(const TsRead *t, uint64_t s, uint64_t e) {
+    const PartNote *n = &t->note;
+    uint64_t (*m)[2] = malloc((n->nmarks + 2) * sizeof *m);
+    if (!m) return;
+    uint32_t k = 0;
+    // From the part's start, or the end of the part before when they overlap (as in gpu avg), to its first mark.
+    m[k][0] = s > ts_last_end ? s : ts_last_end, m[k++][1] = 2 | 253 << 2;
+    for (uint32_t i = 0; i < n->nmarks; i++) {
+        uint64_t v;
+        if (vkGetQueryPoolResults(vk_ctx()->device, mk_pool, n->marks[i].q, 1, sizeof v, &v, sizeof v, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+            continue;
+        m[k][0] = v & ts_mask, m[k++][1] = n->marks[i].key;
+    }
+    for (uint32_t i = 1; i < k; i++)   // insertion sort by time: marks come nearly in order
+        for (uint32_t j = i; j > 0 && m[j - 1][0] > m[j][0]; j--) {
+            uint64_t a = m[j][0], b = m[j][1];
+            m[j][0] = m[j - 1][0], m[j][1] = m[j - 1][1], m[j - 1][0] = a, m[j - 1][1] = b;
+        }
+    m[k][0] = e > m[k - 1][0] ? e : m[k - 1][0], m[k][1] = 0;
+    for (uint32_t i = 0; i < k; i++)
+        mk_add(m[i][1], (uint64_t)((double)(m[i + 1][0] - m[i][0]) * ts_period), m[i][1] != 0);
+    free(m);
+}
+
+// Every 60-frame window (gpu_stats); the list every 10 windows.
+static void mk_report(void) {
+    if (mk_on != 1 || (mk_frames += 60) < 600) return;
+    static uint64_t list[MK_KEYS][2];
+    uint64_t total = 0;
+    int nl = 0;
+    for (int i = 0; i < MK_KEYS; i++)
+        if (mk_sum[i].ns) list[nl][0] = (uint64_t)i, list[nl++][1] = mk_sum[i].ns, total += mk_sum[i].ns;
+    qsort(list, (size_t)nl, sizeof list[0], mk_cmp);
+    double f = (double)mk_frames;
+    uint64_t cs = 0, ncs = 0;
+    for (int j = 0; j < nl; j++)
+        if ((mk_sum[list[j][0]].key & 0x3ff) == (252 << 2 | 2)) cs += list[j][1], ncs += mk_sum[list[j][0]].n;
+    rt_log("perf: pass gpu over %llu frames: %.2f ms a frame in %d keys; dispatches %.2f ms, %.1f a frame",
+           (unsigned long long)mk_frames, total / 1e6 / f, nl, cs / 1e6 / f, ncs / f);
+    for (int j = 0; j < nl && j < 40; j++) {
+        uint64_t key = mk_sum[list[j][0]].key;
+        if (!key) {
+            rt_log("perf:   outside passes, after a pass end %.2f ms", list[j][1] / 1e6 / f);
+            continue;
+        }
+        if (!(key & 1) && (key >> 2 & 255) == 252) {
+            rt_log("perf:   outside passes, dispatch of %016llx (top bits cut) %.2f ms, %.1f a frame",
+                   (unsigned long long)(key >> 10), list[j][1] / 1e6 / f, mk_sum[list[j][0]].n / f);
+            continue;
+        }
+        if (!(key & 1)) {
+            rt_log("perf:   outside passes, from op %s %.2f ms, %.1f a frame",
+                   key >> 2 == 255 ? "(mirror prologue)" : key >> 2 == 254 ? "(depth twin copy)" : key >> 2 == 253 ? "(start of a part)" : key >> 2 == 251 ? "(dispatch)" : nvn_op_name((int)(key >> 2)), list[j][1] / 1e6 / f, mk_sum[list[j][0]].n / f);
+            continue;
+        }
+        rt_log("perf:   %4llux%-4llu %llu colour fmt %llu depth fmt %llu samples %llu: %.2f ms, %.1f passes a frame",
+               (unsigned long long)(key >> 1 & 0x3fff), (unsigned long long)(key >> 15 & 0x3fff),
+               (unsigned long long)(key >> 29 & 15), (unsigned long long)(key >> 33 & 0x3ff),
+               (unsigned long long)(key >> 43 & 0x3ff), (unsigned long long)(key >> 53 & 15), list[j][1] / 1e6 / f,
+               mk_sum[list[j][0]].n / f);
+    }
+    memset(mk_sum, 0, sizeof mk_sum);
+    mk_frames = 0;
+}
 
 static void slow_part(const TsRead *t, double ms) {
     static double slow_ms = -1;
@@ -239,6 +360,10 @@ static void ts_read_cb(void *arg) {   // completion thread, in submission order
         if (e >= s) {
             double ms = (double)(e - s) * ts_period / 1e6;
             slow_part(t, ms);
+            if (mk_on == 1) {
+                if (t->prologue) mk_add(2 | 255 << 2, (uint64_t)((double)(e - s) * ts_period), 1);
+                else mk_read(t, s, e);
+            }
             // The mirror copies of a prologue: the first use of a large pool copies all of it (450 MiB for the terrain
             // arena of a layer, #397), and the part after it waits for the copy on the GPU.
             static int pro_lines;
@@ -258,6 +383,7 @@ static void ts_read_cb(void *arg) {   // completion thread, in submission order
     } else plat_inc64(&ts_missed);
     __atomic_store_n(&ts_busy[t->pair], 0, __ATOMIC_RELEASE);
     free(t->note.args);
+    free(t->note.marks);
     free(t);
 }
 
@@ -292,14 +418,14 @@ static int ts_open(VkCommandBuffer cb) {
 // to the reader.
 static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence, PartNote *n) {
     if (pair < 0) {
-        if (n) free(n->args), n->args = NULL;
+        if (n) free(n->args), n->args = NULL, free(n->marks), n->marks = NULL;
         return;
     }
     vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ts_pool, 2 * (uint32_t)pair + 1);
     TsRead *t = calloc(1, sizeof *t);
     if (!t) rt_fatal("vk: out of memory");
     t->pair = (uint32_t)pair, t->fence = fence;
-    if (n) t->note = *n, t->noted = 1, n->args = NULL;
+    if (n) t->note = *n, t->noted = 1, n->args = NULL, n->marks = NULL;
     else t->prologue = 1;   // prologue is the one caller without a note
     vk_completion_add(fence, ts_read_cb, t);
 }
@@ -325,7 +451,7 @@ static void ts_end(VkCommandBuffer cb, uint64_t fence) {
 
 // An empty submission records no command buffer: its pair is never written.
 static void ts_drop(void) {
-    free(note.args), note.args = NULL;
+    free(note.args), note.args = NULL, free(note.marks), note.marks = NULL;
     if (ts_cur < 0) return;
     __atomic_store_n(&ts_busy[ts_cur], 0, __ATOMIC_RELEASE);
     ts_cur = -1;
@@ -338,6 +464,7 @@ static void gpu_stats(PerfGpu *g) {
     g->gpu_missed = (uint64_t)plat_xchg64(&ts_missed, 0);
     g->have_vram = vk_mem_vram(&g->vram_used, &g->vram_budget, &g->vram_exact);
     vk_upload_perf(&g->up_gpu_ns, &g->up_timed, &g->up_batches, &g->up_wait_ns, &g->up_bytes);
+    mk_report();
 }
 
 // Weak stand-in for vk_exec.c's replay: only empty recordings ({OP_BEGIN, OP_END}) can be submitted.
@@ -600,7 +727,7 @@ VkCommandBuffer vk_sync_split_defer(void) {
     rec_end();   // the recorder has made every call queued for cb; cb stays open, and its slot claimed for cur_fence
     typeof(held[0]) *h = &held[(held_head + held_n++) % HELD_MAX];
     h->cb = cb, h->fence = cur_fence, h->ts = ts_cur, h->note = note;
-    ts_cur = -1, note.args = NULL;   // the note's argument list moved to the held part
+    ts_cur = -1, note.args = NULL, note.marks = NULL;   // the note's lists moved to the held part
     vk_upload_flush(0);   // the uploads the part asked for so far precede it in queue order
     CmdSlot *s = take_slot(vk_ctx(), cur_fence);
     part_begin(s->cb, cur_fence);
@@ -850,6 +977,8 @@ void vk_sync_shutdown(void) {
         perf_gpu_stats = NULL;
         if (c && ts_pool) vkDestroyQueryPool(c->device, ts_pool, NULL);
         ts_pool = VK_NULL_HANDLE;
+        if (c && mk_pool) vkDestroyQueryPool(c->device, mk_pool, NULL);   // TOTK_PASS_GPU marks
+        mk_pool = VK_NULL_HANDLE;
         ts_state = 0;
         ts_last_end = 0;
         memset((void *)ts_busy, 0, sizeof ts_busy);
