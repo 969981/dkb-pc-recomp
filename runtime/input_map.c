@@ -200,6 +200,15 @@ void input_map_face_spec_cfg(int layout, char out[5]) {
     input_map_face_spec(&m, layout, out);
 }
 
+void input_map_face_keys(const char spec[5], int nintendo_labels, char out[5]) {
+    const char *labels = nintendo_labels ? "BAYX" : "ABXY";   // printed at s, e, w, n
+    for (int i = 0; i < 4; i++) {
+        const char *at = spec[i] ? strchr("sewn", spec[i]) : NULL;
+        out[i] = at ? labels[at - "sewn"] : '?';
+    }
+    out[4] = 0;
+}
+
 int input_map_set_key(InputMap *m, int action, int slot, int key) {
     uint8_t list[INPUT_BINDING_MAX];
     int n = input_map_keys_of(m, action, list, INPUT_BINDING_MAX), lost = -1;

@@ -5,6 +5,8 @@
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
 //     --probe-kernel, --probe-ipc, --probe-ipc-lifetime, --probe-services, --probe-fs    host probes
 //     --probe-dpi       the process DPI awareness (per-monitor v2) and the primary monitor's size; no game files
+//     --probe-commit-later   memory.c's background commits of staged pools against a heap shrink (Windows, about
+//                       5 s); no game files
 //     --probe-gfx-abi   NVN object layouts against nvn.h's reserved sizes; needs no game files
 //     --probe-nvn, --probe-nvn-tex, --probe-window, --probe-shader, --probe-vkmem, --probe-vkexec    graphics probes
 //     --probe-astc      the compute ASTC decoder against astc_decode_ldr; needs no game files
@@ -443,6 +445,77 @@ static void check_memory(void) {
     printf("memory: heap, physical memory, stack move, QueryMemory, GetInfo: %s\n", failures > before ? "FAIL" : "ok");
 }
 
+#ifdef _WIN32
+// memory.c mem_commit_later against a heap shrink (TOTK_HEAP_LAZY, Windows only). The background thread commits a
+// staged pool's untouched pages about 2 s after the request, so the heap may shrink in between, or while it commits the
+// range slice by slice. Neither may leave a committed page beyond the new heap end, nor mark one in the commit map: a
+// later grow and mem_touch of the range must find every page reserved and commit it. Only plat_mem_state looks at the
+// pages: a read of a reserved heap page would commit it through the fault handler. About 5 s, so a probe of its own
+// (--probe-commit-later) rather than part of --selftest, which the setup runs at every install.
+static int cl_range_wait(uint64_t *got) {   // until the thread has taken one more range, at most 10 s
+    uint64_t s[4];
+    for (int i = 0; i < 200; i++) {
+        mem_commit_later_stats(s);
+        if (s[0]) { *got = s[1]; return 1; }
+        plat_sleep_ms(50);
+    }
+    return 0;
+}
+
+static int all_state(uint64_t a, uint64_t e, int committed) {   // every page of [a, e) committed, or every one reserved
+    for (uint64_t x = a, y; x < e; x = y) {
+        int st = plat_mem_state(x, e, &y);
+        if (committed ? st < 0 : st != PLAT_MEM_RESERVED) return 0;
+    }
+    return 1;
+}
+
+static int probe_commit_later(void) {
+    if (!cfg_bool("TOTK_HEAP_LAZY")) {
+        printf("commit-later: skipped (TOTK_HEAP_LAZY=0)\n");
+        return 0;
+    }
+    int before = failures;
+    uint64_t heap = 0, s[4], got = 0;
+    const uint64_t M = 1ull << 20;
+    mem_commit_later_stats(s);   // clears the counts of anything before
+    // The shrink comes before the range is due: the thread finds nothing of it left in the heap.
+    CHECK(mem_set_heap_size(8 * M, &heap) == 0 && all_state(heap + 4 * M, heap + 8 * M, 0), "SetHeapSize 8 MiB (lazy)");
+    mem_commit_later(heap + 4 * M, 4 * M);
+    CHECK(mem_set_heap_size(4 * M, &heap) == 0, "SetHeapSize 4 MiB under a queued background commit");
+    CHECK(cl_range_wait(&got), "the background commit thread took no range in 10 s");
+    CHECK(all_state(heap + 4 * M, heap + 8 * M, 0), "a background commit queued before a shrink committed pages beyond the heap");
+    CHECK(mem_set_heap_size(8 * M, &heap) == 0, "SetHeapSize 8 MiB again");
+    mem_touch(heap + 4 * M, 4 * M);
+    CHECK(all_state(heap + 4 * M, heap + 8 * M, 1), "mem_touch skipped pages after a shrink under a queued background commit");
+    // The shrink comes while the thread commits the range, 2 MiB at a time: the slices before it are decommitted by it,
+    // those after it stop at the new end.
+    CHECK(mem_set_heap_size(64 * M, &heap) == 0 && all_state(heap + 8 * M, heap + 64 * M, 0), "SetHeapSize 64 MiB (lazy)");
+    mem_commit_later(heap + 8 * M, 56 * M);
+    int seen = 0, mid = 0;
+    // Spins on the first slice's state (a VirtualQuery each) for at most 10 s: a sleep could outlast the whole range.
+    for (uint64_t t_end = plat_now_ms() + 10000; !seen && plat_now_ms() < t_end;) {
+        uint64_t y;
+        seen = plat_mem_state(heap + 8 * M, heap + 8 * M + 0x10000, &y) >= 0;   // the thread is inside the range
+    }
+    if (seen) {
+        uint64_t y;
+        mid = plat_mem_state(heap + 64 * M - 0x10000, heap + 64 * M, &y) == PLAT_MEM_RESERVED;   // last slice not yet
+    }
+    CHECK(seen && mem_set_heap_size(32 * M, &heap) == 0, "SetHeapSize 32 MiB while a background commit runs");
+    CHECK(cl_range_wait(&got), "the background commit thread did not finish its range in 10 s");
+    CHECK(all_state(heap + 32 * M, heap + 64 * M, 0), "a background commit cut by a shrink committed pages beyond the heap");
+    CHECK(mem_set_heap_size(64 * M, &heap) == 0, "SetHeapSize 64 MiB again");
+    mem_touch(heap + 8 * M, 56 * M);
+    CHECK(all_state(heap + 8 * M, heap + 64 * M, 1), "mem_touch skipped pages after a shrink inside a background commit");
+    CHECK(mem_set_heap_size(0, &heap) == 0, "SetHeapSize 0");
+    printf("commit-later: background commits against a heap shrink (queued, and %s): %s\n",
+           mid ? "inside the range" : "after the range: the thread was faster than the check, try again",
+           failures > before ? "FAIL" : "ok");
+    return failures > before;
+}
+#endif
+
 static int selftest(void) {
     static RtModule mods[MAX_MODULES];
     int n = rt_linked_modules(mods, MAX_MODULES);
@@ -488,8 +561,8 @@ static int selftest(void) {
 }
 
 static int usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
-                    "--probe-cfg | --probe-dpi | --probe-kernel | --probe-ipc | --probe-ipc-lifetime | --probe-services | --probe-fs | --probe-gfx-abi | "
+    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--set KEY=VALUE ...] [--version] [--help] [--selftest | --probe-loader | "
+                    "--probe-cfg | --probe-dpi | --probe-commit-later (Windows) | --probe-kernel | --probe-ipc | --probe-ipc-lifetime | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-shader-geometry | --probe-vkmem | "
                     "--probe-vkexec | --probe-vkgeometry | --probe-vkgeometry-passthrough | --probe-vkgeometry-passthrough-ordering | --probe-vkclear | --probe-vkcopy-astc | --probe-vkpool | --probe-vkreset | --probe-astc | --probe-movie | --probe-splash | --probe-aoc | --prepare-shaders | --translate-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
@@ -548,6 +621,12 @@ static void require_cpu(void) {
 
 int main(int argc, char **argv) {
     require_cpu();
+    // --set KEY=VALUE first: mem_init and the lines below already read settings.
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--set") && !cfg_set_arg(argv[++i])) {
+            fprintf(stderr, "--set %s: not KEY=VALUE with a known setting (dkb.ini.example lists them)\n", argv[i]);
+            return 2;
+        }
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
     // Right after the settings can be read and before anything loads or calls the Vulkan loader (SDL's video init,
     // vk_init): the loader reads VK_DRIVER_FILES when it first lists the drivers.
@@ -589,6 +668,17 @@ int main(int argc, char **argv) {
             printf("%s %s (%s %s)\n", rt_game_version ? "totk" : "dkb", rt_port_version,
                    rt_game_version ? "Tears of the Kingdom" : "Donkey Kong Bananza", rt_game_display);
             return 0;
+        } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+            printf("%s [--exefs DIR] [--romfs DIR] [--profile DIR] [--set KEY=VALUE ...] [--seconds S [--shot PNG]]\n"
+                   "  --set KEY=VALUE  a dkb.ini setting for this run only (dkb.ini.example lists the keys); the file "
+                   "is not changed\n"
+                   "  --version        the port version and the game it was built for\n"
+                   "  --seconds S      play for S seconds and exit; --shot PNG saves the last frame\n"
+                   "Settings: dkb.ini next to the exe, or the environment (TOTK_ or DKB_ and the key in capitals).\n",
+                   argv[0]);
+            return 0;
+        } else if (!strcmp(argv[i], "--set")) {
+            if (++i == argc) return usage(argv[0]);   // applied at the start of main
         } else if (!strcmp(argv[i], "--shot")) {
             if (++i == argc) return usage(argv[0]);
             cfg.shot = argv[i];
@@ -616,6 +706,9 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-cfg")) return probe_cfg();
 #ifdef _WIN32
     if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of totk.manifest
+#endif
+#ifdef _WIN32
+    if (!strcmp(mode, "--probe-commit-later")) return probe_commit_later();
 #endif
     if (!strcmp(mode, "--probe-kernel")) return probe_kernel();
     if (!strcmp(mode, "--probe-ipc")) return probe_ipc();

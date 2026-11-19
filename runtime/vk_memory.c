@@ -2432,12 +2432,24 @@ static void mirror_mode(int discrete, uint32_t vendor) {
 #endif
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (TOTK_SHADOW)" : "");
-    // TOTK_MIRROR_STAGED=<MiB>, <KiB>k or all ("staged mirror" below): off (0) by default. It needs the mirror, the
-    // deferred imports (a pool imported at nvnMemoryPoolInitialize has paid the import already) and no shadow storage.
-    // all stages every lazily imported pool (staged_min 1 byte), the small ones included.
+    // TOTK_MIRROR_STAGED=<MiB>, <KiB>k, all or auto ("staged mirror" below). It needs the mirror, the deferred imports
+    // (a pool imported at nvnMemoryPoolInitialize has paid the import already) and no shadow storage. all stages every
+    // lazily imported pool (staged_min 1 byte), the small ones included; 0 is off. auto (unset) is all on Windows with
+    // an NVIDIA GPU and the fault write-back, the only combination measured: elsewhere the GPU's bytes would go back
+    // at every fence (TOTK_STAGED_WB=fence, about half the frame rate on the Hilltop Layer of Surf Hills), and no
+    // AMD or Intel GPU has run it. auto stays quiet when the mirror is off (an integrated GPU, shadow storage).
     const char *ms = cfg_get("TOTK_MIRROR_STAGED");
+    int def = !ms || !*ms || !strcmp(ms, "auto");
+#ifdef _WIN32
+    const char *wbv = cfg_get("TOTK_STAGED_WB");
+    int def_on = vendor == 0x10de && !(wbv && !strcmp(wbv, "fence"));
+#else
+    int def_on = 0;
+#endif
+    if (def) ms = def_on ? "all" : "0";
     uint64_t want = 0;
-    if (ms && *ms) {
+    if (def && def_on && (!vk_mirror_on || shadow_on)) want = 0;   // auto: no line when the mirror is off
+    else if (ms && *ms) {
         char *end = NULL;
         uint64_t v = strtoull(ms, &end, 10);
         want = !strcmp(ms, "all") ? 1 : end && (*end == 'k' || *end == 'K') ? v << 10 : v << 20;
@@ -2446,7 +2458,7 @@ static void mirror_mode(int discrete, uint32_t vendor) {
         const char *lz = cfg_get("TOTK_POOL_LAZY");
         const char *off = !vk_mirror_on ? "the VRAM mirror is off" : shadow_on ? "shadow storage is on"
                         : lz && !strcmp(lz, "0") ? "TOTK_POOL_LAZY=0 imports every pool at once" : NULL;
-        if (off) rt_log("mem: TOTK_MIRROR_STAGED=%s ignored: %s", ms, off);
+        if (off) rt_log("mem: TOTK_MIRROR_STAGED=%s ignored: %s", def ? "auto" : ms, off);
         else {
             staged_min = want;
             const char *wb = cfg_get("TOTK_STAGED_WB");
@@ -2461,7 +2473,7 @@ static void mirror_mode(int discrete, uint32_t vendor) {
                    "to %llu MiB in the prologue of the part that first uses them), and the bytes the GPU writes %s "
                    "(TOTK_MIRROR_STAGED=%s, TOTK_STAGED_WB=%s)", which, (unsigned long long)(STG_SMALL >> 20),
                    staged_fault ? "stay in it until a CPU access fetches them" : "go back to guest memory at each fence",
-                   ms, staged_fault ? "fault" : "fence");
+                   def ? "auto: all on Windows with NVIDIA, 0 turns it off" : ms, staged_fault ? "fault" : "fence");
 #ifdef _WIN32
             if (staged_fault) mem_guard_hook(staged_fetch);
             else mem_probe_on();   // TOTK_STAGED_READ_PROBE: staged_wb_done protects the pages it wrote (memory.c read probe)
@@ -2860,7 +2872,7 @@ typedef struct {
 } BigMirror;
 static BigMirror big_mirror;
 
-// ---- staged mirror (TOTK_MIRROR_STAGED=<MiB>, <KiB>k or all; off by default)
+// ---- staged mirror (TOTK_MIRROR_STAGED=<MiB>, <KiB>k or all; auto by default: all on Windows with an NVIDIA GPU, see mirror_mode)
 // An imported pool of at least that size is never imported for the mirror's sake: the terrain arena of each layer of
 // Surf Hills is a 450 MiB CPU_CACHED pool, and its import at the first GPU use (65-85 ms in vkAllocateMemory on NVIDIA)
 // plus the full copy import -> mirror stalled one frame (#397). Importing it earlier only moved the cost: the driver
@@ -2921,16 +2933,20 @@ static BigMirror big_mirror;
 //   fails (staged_import): the uses of its spans must skip them, as those of a pool whose first-use import failed;
 // - fence: from the batch of the first piece of the first staged_fill that will reuse a staging buffer, every upload
 //   batch reads as on a lost device (batch_status, upload_wait_locked): the fill's wait for that buffer must end the
-//   process with the fault report instead of spinning.
-enum { INJECT_NONE, INJECT_IMPORT, INJECT_FENCE };
+//   process with the fault report instead of spinning;
+// - sort: the staged sort thread reads as one that could not be started (st_sort_queue), so the replay thread sorts
+//   every job's owned ranges itself, the fallback a healthy run never takes.
+enum { INJECT_NONE, INJECT_IMPORT, INJECT_FENCE, INJECT_SORT };
 static int staged_inject(void) {
     static int mode = -1;
     if (mode < 0) {
         const char *e = cfg_get("TOTK_STAGED_INJECT");
-        int m = !e || !*e ? INJECT_NONE : !strcmp(e, "import") ? INJECT_IMPORT : !strcmp(e, "fence") ? INJECT_FENCE : -1;
-        if (m < 0) rt_log("mem: TOTK_STAGED_INJECT=%s is not import or fence: ignored", e), m = INJECT_NONE;
+        int m = !e || !*e ? INJECT_NONE : !strcmp(e, "import") ? INJECT_IMPORT : !strcmp(e, "fence") ? INJECT_FENCE
+              : !strcmp(e, "sort") ? INJECT_SORT : -1;
+        if (m < 0) rt_log("mem: TOTK_STAGED_INJECT=%s is not import, fence or sort: ignored", e), m = INJECT_NONE;
         if (m) rt_log("mem: TOTK_STAGED_INJECT=%s: %s", e, m == INJECT_IMPORT ? "staged pools get neither a mirror nor an import"
-                      : "upload batches from a staged first fill's on read as on a lost device");
+                      : m == INJECT_FENCE ? "upload batches from a staged first fill's on read as on a lost device"
+                      : "the staged sort thread is not started, as if it could not be");
         mode = m;
     }
     return mode;
@@ -3270,7 +3286,9 @@ static void st_sorted_wait(const StJob *j, int who) {
 // staged_split_own, the job's list complete: the sort thread takes it (or this thread sorts it, see above).
 static void st_sort_queue(StJob *j) {
     plat_mutex_lock(&SS.lock);
-    if (!SS.t && !SS.failed && !(SS.t = plat_thread_new(st_sorter, NULL, "vk staged sort"))) {
+    // TOTK_STAGED_INJECT=sort: the thread is never asked for, as if plat_thread_new had failed.
+    if (!SS.t && !SS.failed &&
+        (staged_inject() == INJECT_SORT || !(SS.t = plat_thread_new(st_sorter, NULL, "vk staged sort")))) {
         SS.failed = 1;
         rt_log("mem: the staged sort thread could not be started; the replay thread sorts the owned ranges");
     }

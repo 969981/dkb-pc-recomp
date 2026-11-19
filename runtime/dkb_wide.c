@@ -11,6 +11,7 @@
 
 static unsigned wide_output[2] = {2880, 1620};
 static int wide_enabled;
+static int tall_ui;   // Vert+ is on: the UI keeps a centred 16:9 area and wants the taller overlay
 static int image_full;   // dkb_wide_scene switched render3d on: 3.2.0's 3D image is the display size
 
 // The game's render-target pool is a fixed 200 MiB sized for 2880x1620 (main+0x458adc in
@@ -36,6 +37,10 @@ int dkb_wide_output(unsigned out[2]) {
     if (out) memcpy(out, wide_output, sizeof wide_output);
     return wide_enabled;
 }
+
+// A romfs-patches-<w>x<h> overlay fits this display: wider than 16:9, or taller with Vert+ (its background panes
+// fill the bands above and below the 16:9 area).
+int dkb_ui_overlay(void) { return wide_enabled || tall_ui; }
 
 // TOTK_SCENE_RES: "auto" leaves the game's dynamic resolution alone. "full" (ratio 1.0) or a ratio from 1.0 to 3.0
 // draws the 3D scene at the virtual display divided by that ratio: the patched store in the controller at main
@@ -203,7 +208,7 @@ void dkb_native_aa_live(void) {
 }
 
 void dkb_wide_init(void) {
-    wide_enabled = 0;
+    wide_enabled = 0, tall_ui = 0;
     scene_ratio_now = 0, image_full = 0;
     native_set = -2, native_on = 0;   // the set is off at start (the generated default) and chosen below
     wide_output[0] = 2880;
@@ -252,6 +257,7 @@ void dkb_wide_init(void) {
     if (tall && tall_set >= 0) {
         rt_register_host((uint64_t)(uintptr_t)page + 0x270, vert_plus);
         rt_patch_switch(tall_set, 1);
+        tall_ui = 1;
     } else if (tall) {
         rt_log("Bananza resolution: this build has no Vert+ patch; a display taller than 16:9 keeps the vertical view "
                "and shows less at the sides");

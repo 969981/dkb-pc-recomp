@@ -75,6 +75,13 @@ int probe_cfg(void) {
     CHECK(EQ(cfg_get("TOTK_FPS60"), "1"), "DKB_ name wins over the TOTK_ one");
     plat_setenv("DKB_FPS60", NULL);
     plat_setenv("TOTK_FPS60", NULL);
+    // --set KEY=VALUE (main.c, cfg_set_arg): a known ini key wins over a DKB_ variable for the run; unknown keys fail.
+    plat_setenv("DKB_FPS60", "0");
+    CHECK(cfg_set_arg("fps60=1") && cfg_bool("TOTK_FPS60"), "--set fps60=1 overrides DKB_FPS60=0");
+    CHECK(cfg_set_arg("DKB_FIX_LIST_CAP=0") && !strcmp(getenv("DKB_FIX_LIST_CAP"), "0"), "--set with a full name");
+    CHECK(!cfg_set_arg("no_such_key=1") && !cfg_set_arg("fps60") && !cfg_set_arg("=1"), "--set rejects bad input");
+    plat_setenv("TOTK_FPS60", NULL);
+    plat_setenv("DKB_FIX_LIST_CAP", NULL);
     plat_file_delete(path);
     CHECK(cfg_load(path) == 0, "missing file is not an error");
     CHECK(cfg_get("TOTK_FPS60") == NULL, "missing file leaves no keys");
@@ -342,6 +349,24 @@ int probe_cfg(void) {
     CHECK(input_map_bind("B", "none"), "face spec: B unbound");
     input_map_face_spec(&input_map, PAD_LAYOUT_XBOX, face);
     CHECK(!strcmp(face, "s?nw"), "face spec: an unbound face button reads '?' (the layout's folder loads)");
+    input_map_reset();
+    // The Switch-letter overlay (romfs.c keys_prompts_init): the letter each glyph must show, from the labels printed
+    // on the pad (Xbox: s A, e B, w X, n Y; Nintendo: s B, e A, w Y, n X).
+    char keys[5];
+    input_map_face_keys("sewn", 0, keys);
+    CHECK(!strcmp(keys, "ABXY"), "face keys: the Xbox table on an Xbox-labelled pad is the game's own letters");
+    input_map_face_keys("esnw", 1, keys);
+    CHECK(!strcmp(keys, "ABXY"), "face keys: the Nintendo table on a Nintendo-labelled pad is the game's own letters");
+    input_map_face_keys("esnw", 0, keys);
+    CHECK(!strcmp(keys, "BAYX"), "face keys: xbox_prompts (Nintendo table, Xbox labels) swaps A with B and X with Y");
+    input_map_face_keys("senw", 0, keys);
+    CHECK(!strcmp(keys, "ABYX"), "face keys: X and Y swapped on an Xbox pad give ABYX (romfs-patches-keys-ABYX)");
+    CHECK(input_map_bind("X", "pad:west") && input_map_bind("Y", "pad:north"), "face keys: Nintendo X and Y swapped");
+    input_map_face_spec(&input_map, PAD_LAYOUT_NINTENDO, face);
+    input_map_face_keys(face, 1, keys);
+    CHECK(!strcmp(keys, "ABYX"), "face keys: bind lines read through the spec");
+    input_map_face_keys("s?nw", 0, keys);
+    CHECK(!strcmp(keys, "A?YX"), "face keys: an unbound button reads '?' (no folder covers it)");
     input_map_reset();
     CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_XBOX) == 0,
           "pad layout: a back paddle is unbound by default");

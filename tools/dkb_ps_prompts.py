@@ -18,6 +18,12 @@ circle, B the cross, X the triangle and Y the square, and the diamonds stay. Bin
 (bind_X = pad:north, bind_Y = pad:west) need the glyphs of their own positions: --layout also takes the positions of A,
 B, X and Y as four letters (senw: A south, B east, X north, Y west), and the setup makes senw and eswn too.
 
+--keys <ABXY permutation> makes the other kind of overlay, for the Switch letters instead of the PlayStation symbols
+(runtime/romfs.c keys_prompts_init, when PlayStation prompts are not on): the four letters say which of the game's own
+glyphs each Switch button's glyph shows, ABYX being A, B, then Y's glyph for X and X's glyph for Y. It only moves the
+game's own charstrings (the diamonds follow, as for --layout), so a player who swapped X and Y, or A and B, on a pad
+labelled with Switch letters (or an Xbox pad) sees the letter printed on the button that now does it.
+
 The symbols are original drawings, made here from straight strokes and arcs. Only the plates and the L and R letters
 come from the user's own font, at install time. Output: <out>/Font/Font*.Nin_Ounce_NVN2.bfarc.zs and
 <out>/manifest.tsv (path, size, SHA-256, original SHA-256), under build/ or an installer workspace. Runs under the
@@ -221,6 +227,14 @@ def diamond_sources(layout):
     if spec == LAYOUTS['xbox']:
         out[PAIR_DIAMONDS[0]], out[PAIR_DIAMONDS[1]] = PAIR_DIAMONDS[1], PAIR_DIAMONDS[0]
     return {a: b for a, b in out.items() if a != b}
+
+
+def keys_spec(keys):
+    """The face_spec whose diamonds go with --keys: the glyph of Switch button K shows letter keys[K], so its diamond
+    points where that letter sits on a Switch pad (the nintendo table)."""
+    if sorted(keys) != sorted('ABXY'):
+        raise ValueError(f'keys {keys!r}: expected a permutation of A, B, X, Y')
+    return ''.join(LAYOUTS['nintendo']['ABXY'.index(k)] for k in keys)
 
 
 LABELS = {0xE0E4: (0xE0E6, 1), 0xE0E5: (0xE0E7, 1), 0xE0E6: (0xE0E6, 2), 0xE0E7: (0xE0E7, 2)}   # glyph: (letter source, digit)
@@ -646,6 +660,20 @@ def ps_font(font, layout):
         cff.charstrings[gid[code]] = cs
     return sfnt_build(font, {**tables, b'CFF ': cff.build()})
 
+
+def keys_font(font, keys):
+    """The OpenType HardKey font with the A, B, X, Y glyphs (and the diamonds) of the keys permutation: only the game's
+    own charstrings move."""
+    tables = sfnt_tables(font)
+    cff = Cff(tables[b'CFF '])
+    moves = {**{code: FACE_CODES['ABXY'.index(k)] for code, k in zip(FACE_CODES, keys)}, **diamond_sources(keys_spec(keys))}
+    moves = {a: b for a, b in moves.items() if a != b}
+    gid = {code: cmap_lookup(tables[b'cmap'], code) for code in (*moves, *moves.values())}
+    new = {a: cff.charstrings[gid[b]] for a, b in moves.items()}
+    for code, cs in new.items():
+        cff.charstrings[gid[code]] = cs
+    return sfnt_build(font, {**tables, b'CFF ': cff.build()})
+
 # ---------------------------------------------------------------------------------------------------- the archives
 
 
@@ -692,12 +720,12 @@ def sarc_replace(data, new):
     return bytes(out)
 
 
-def generate(romfs, out, layout):
+def generate(romfs, out, layout, keys=None):
     index = json.loads((romfs / 'index.json').read_text(encoding='utf-8'))
     if index.get('status') != 'pass':
         raise ValueError('the RomFS index has not passed its extraction check')
     files = index['files']
-    lines = ['# path\tsize\tsha256\toriginal_sha256 (tools/dkb_ps_prompts.py --layout ' + layout + ')']
+    lines = ['# path\tsize\tsha256\toriginal_sha256 (tools/dkb_ps_prompts.py ' + (f'--keys {keys}' if keys else f'--layout {layout}') + ')']
     outputs, made = [], {}
     with romfs_index.open_image(romfs, index) as image:
         def read(row):
@@ -730,7 +758,7 @@ def generate(romfs, out, layout):
                 key, font = bfotf_unwrap(wrapped)
                 if font[:4] != b'OTTO':
                     raise ValueError(f'{row["path"]}:{FONT_MEMBER} is not a CFF OpenType font')
-                made[digest] = bfotf_wrap(wrapped[:4], key, ps_font(font, layout))
+                made[digest] = bfotf_wrap(wrapped[:4], key, keys_font(font, keys) if keys else ps_font(font, layout))
             patched = zstd_compress(sarc_replace(sarc, {FONT_MEMBER: made[digest]}))
             outputs.append((row['path'], raw, patched))
     for path, raw, patched in outputs:
@@ -742,7 +770,7 @@ def generate(romfs, out, layout):
     temporary = out / 'manifest.tsv.tmp'
     temporary.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     temporary.replace(out / 'manifest.tsv')   # the manifest last: an interrupted run leaves no valid overlay
-    print(f'PlayStation prompts ({layout} layout): {len(outputs)} font archives in {out}')
+    print(f'{"Switch letters" if keys else "PlayStation prompts"} ({keys or layout + " layout"}): {len(outputs)} font archives in {out}')
 
 
 def main():
@@ -752,6 +780,8 @@ def main():
     ap.add_argument('--layout', default='xbox',
                     help='xbox: Switch A on the bottom button (cross); nintendo: on the right one (circle); or the '
                          'positions of A, B, X, Y as four letters of s e w n (senw: A south, B east, X north, Y west)')
+    ap.add_argument('--keys', help='instead of PlayStation symbols, a permutation of ABXY: the letter each of the A, B, X, Y '
+                                   'glyphs shows (ABYX swaps X and Y)')
     ap.add_argument('--installer-workspace', type=Path, help='owned installer workspace containing build staging')
     args = ap.parse_args()
     build = (Path(__file__).resolve().parents[1] / 'build').resolve()
@@ -766,9 +796,11 @@ def main():
         ap.error('game-derived overlays must be in a dedicated directory under build/')
     try:
         face_spec(args.layout)
+        if args.keys:
+            keys_spec(args.keys)
     except ValueError as error:
         ap.error(str(error))
-    generate(args.romfs, out, args.layout)
+    generate(args.romfs, out, args.layout, args.keys)
 
 
 if __name__ == '__main__':

@@ -200,6 +200,11 @@ set recguard DKB_FIX_RECORD_GUARD 1
 guard recguard main a55a84 a58388 ptr x10 3dc00140
 guard recguard main a55a9c a58388 ptr x11 3dc00160
 
+# #428: the list walk of f_7000377064 (1.0.0 f_70003bf7d0, +0x4876c): stop at the list's 256 entries; see
+# patches-dkb100.txt. Opt-out: DKB_FIX_LIST_CAP=0.
+set listcap DKB_FIX_LIST_CAP 1
+site listcap main 37712c b9400a68 b9400a68 51040109 0a897d29 11040128
+
 # #214 fontk (1.0.0 sites in brackets): the text raster at 2x, as in patches-dkb100.txt, which explains the method.
 # Placed by hand: the cache class gained a second glyph engine at +0x1ed0 in 3.2.0, so the fill, the width query and
 # the cache init are restructured (register allocation, merged blocks) and only the kerning query and the descriptor

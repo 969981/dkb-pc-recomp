@@ -157,7 +157,7 @@ static const CfgMeta metas[] = {
     {"MENU_LANG", "", "en|ru", LIVE}, {"MENU_THEME", "dk", "dk|classic", LIVE},
     // Advanced: scheduling
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},
-    {"REPLAY_THREADS", "", "0..16", RESTART},     // sliced passes (vk_exec.c par_threads): 0 off, else the recording threads; unset: 6 from 12 logical processors, 4 from 8, 3 from 4, on AMD only the RX 9070 and 9070 XT on the proprietary driver (vk_caps.amd_slices), else 0
+    {"REPLAY_THREADS", "", "0..16", RESTART},     // sliced passes (vk_exec.c par_threads): 0 off, else the recording threads; unset: 6 from 12 logical processors, 4 from 8, 3 from 4, on AMD only discrete GPUs on the proprietary driver (vk_caps.amd_slices), else 0
     {"CALL_REF", "1", "0|1", RESTART},   // CallCommands of a recording without deferred records records an OP_CALL (nvn_api_cmd.c inline_recording)
     {"RESET_CPU_LIST", "1", "0|1|2", RESTART},   // indirect-reset pointer lists read from guest memory (vk_exec_draw.c vk_exec_reset_indirect)
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART}, {"REC_BATCH", "0", "0..64", RESTART},
@@ -369,6 +369,23 @@ int cfg_is_set(const char *name) { return raw_get(name) != NULL; }
 unsigned cfg_version(void) { return __atomic_load_n(&version, __ATOMIC_ACQUIRE); }
 
 int cfg_from_env(const char *name) { return env_of(name) != NULL; }
+
+int cfg_set_arg(const char *arg) {
+    const char *eq = strchr(arg, '=');
+    char buf[64], var[80];
+    if (!eq || eq == arg || (size_t)(eq - arg) >= sizeof buf) return 0;
+    memcpy(buf, arg, (size_t)(eq - arg));
+    buf[eq - arg] = 0;
+    const char *key = norm_key(buf);
+    if (!*key) return 0;
+    // A full variable name (DKB_FIX_LIST_CAP: the patch sets are read from their own variable) is set as given.
+    if (key != buf) return plat_setenv(buf, eq + 1);
+    if (!is_known(key)) return 0;
+    snprintf(var, sizeof var, "DKB_%s", key);
+    plat_setenv(var, NULL);   // a DKB_ variable would win over the TOTK_ one (dkb_alias)
+    snprintf(var, sizeof var, "%s%s", PREFIX, key);
+    return plat_setenv(var, eq + 1);
+}
 
 void cfg_set(const char *name, const char *value) {
     if (strncmp(name, PREFIX, PREFIX_LEN) || !value) return;

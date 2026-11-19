@@ -477,6 +477,26 @@ int romfs_xbox_prompts_active(void) { return xbox_prompts_active; }
 static int ps_prompts_active;
 int romfs_ps_prompts_active(void) { return ps_prompts_active; }
 
+// Loads a Font-archive overlay (the PlayStation or Switch-letter prompts) next to the other overlays: 1 loaded, 0 failed
+// its check, -1 a mod or patch already replaces one of its archives (logged; the mod wins and nothing of the overlay stays).
+static int font_overlay_load(const char *dir) {
+    size_t before = noverlay;
+    int active = overlay_load(dir, 1) && noverlay > before;
+    for (size_t k = before; active && k < noverlay; k++)
+        for (size_t j = 0; j < before; j++)
+            if (overlays[j].index == overlays[k].index && overlays[k].index != ADDED) {
+                rt_log("RomFS overlay: %s replaces %s, which a mod or patch already replaces; the mod wins and Switch prompts stay",
+                       dir, overlays[k].name);
+                for (size_t d = before; d < noverlay; d++) {
+                    free(overlays[d].path);
+                    free(overlays[d].name);
+                }
+                noverlay = before;
+                return -1;
+            }
+    return active;
+}
+
 static void ps_prompts_init(void) {
     const char *want = cfg_value("TOTK_PAD_PROMPTS");
     int always = !strcasecmp(want, "playstation");
@@ -508,25 +528,45 @@ static void ps_prompts_init(void) {
         rt_log("RomFS overlay: the bind_ lines put Switch A, B, X, Y on the %s face buttons (s/e/w/n), but "
                "there is no romfs-patches-ps%s (the setup makes senw and eswn: run it again if it is older); the prompts "
                "name the pad_layout's buttons", spec, want_dir);
-    size_t before = noverlay;
-    ps_prompts_active = overlay_load(dir, 1) && noverlay > before;
-    for (size_t k = before; ps_prompts_active && k < noverlay; k++)
-        for (size_t j = 0; j < before; j++)
-            if (overlays[j].index == overlays[k].index && overlays[k].index != ADDED) {
-                rt_log("RomFS overlay: %s replaces %s, which a mod or patch already replaces; the mod wins and Switch prompts stay",
-                       dir, overlays[k].name);
-                for (size_t d = before; d < noverlay; d++) {
-                    free(overlays[d].path);
-                    free(overlays[d].name);
-                }
-                noverlay = before;
-                ps_prompts_active = 0;
-                return;
-            }
+    int loaded = font_overlay_load(dir);
+    if (loaded < 0) return;
+    ps_prompts_active = loaded;
     rt_log("RomFS overlay: %s", ps_prompts_active ? "PlayStation button prompts" : "PlayStation prompts failed their check; Switch prompts stay");
     if (ps_prompts_active)
         rt_log("RomFS overlay: PlayStation prompts for pad_layout = %s: Switch A, B, X, Y on the %s buttons (%s)", layout,
                spec, dir + strlen(index_dir) + 1);
+}
+
+// Bananza's Switch letters on a pad whose face buttons do not sit where the game's letters say: an X/Y or A/B swap in the
+// bind_ lines, or pad_layout = xbox_prompts. Glyph A, B, X, Y of the button font must show the label printed on the
+// button that now does that Switch button, so tools/dkb_ps_prompts.py --keys made romfs-patches-keys-<letters> (ABYX,
+// BAXY, BAYX; the setup builds them). The labels are the Xbox ones for xbox, xbox_prompts and auto (a Nintendo pad
+// is only known once it connects, after the archives are read), the Nintendo ones for nintendo
+// (input_map_face_keys). Runs only when the PlayStation prompts did not load; ABXY loads nothing.
+static void keys_prompts_init(void) {
+    if (ps_prompts_active) return;
+    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
+    char spec[5], keys[5], dir[2100], manifest[2200];
+    input_map_face_spec_cfg(input_pad_layout_pick(layout, 0), spec);
+    input_map_face_keys(spec, !strcasecmp(layout, "nintendo"), keys);
+    if (!strcmp(keys, "ABXY")) return;
+    if (strcmp(keys, "ABYX") && strcmp(keys, "BAXY") && strcmp(keys, "BAYX")) {
+        rt_log("RomFS overlay: pad_layout = %s and the bind_ lines put the letters %s on the glyphs A, B, X, Y; no prompt "
+               "folder covers that, so the prompts name the Switch letters", layout, keys);
+        return;
+    }
+    if (snprintf(dir, sizeof dir, "%s/romfs-patches-keys-%s", index_dir, keys) >= (int)sizeof dir ||
+        snprintf(manifest, sizeof manifest, "%s/manifest.tsv", dir) >= (int)sizeof manifest)
+        return;
+    if (!plat_file_exists(manifest)) {
+        rt_log("RomFS overlay: the face buttons need the letters %s, but %s is missing (run the setup again); the prompts "
+               "name the Switch letters", keys, manifest);
+        return;
+    }
+    int loaded = font_overlay_load(dir);
+    if (loaded >= 0)
+        rt_log("RomFS overlay: %s", loaded ? "Switch letters follow the face buttons" : "Switch letters failed their check; the Switch letters stay");
+    if (loaded > 0) rt_log("RomFS overlay: glyphs A, B, X, Y show %s (%s)", keys, dir + strlen(index_dir) + 1);
 }
 
 static void overlay_init(void) {
@@ -545,7 +585,7 @@ static void overlay_init(void) {
     res_wanted(out);
     // Bananza's edge HUD is a complete overlay, selected at boot just like the
     // centered layout. Fall back to the centered overlay when it is not installed.
-    if (!patches && !rt_game_version && res_wants_wide_overlay(out) &&
+    if (!patches && !rt_game_version && dkb_wide_output(NULL) &&   // a taller display has no edge HUD
         !strcmp(cfg_value("TOTK_HUD_POSITION"), "edges")) {
         if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u-hud-edges/manifest.tsv", index_dir, out[0], out[1]) <
                 (int)sizeof def && plat_file_exists(def)) {
@@ -598,7 +638,10 @@ static void overlay_init(void) {
     const char *dirs[2] = {patches, mods};
     for (int i = 0; i < 2; i++)
         if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], 0);
-    if (!rt_game_version) ps_prompts_init();
+    if (!rt_game_version) {
+        ps_prompts_init();
+        keys_prompts_init();
+    }
     heapdef_overlay();
     added_init();
     if (noverlay) qsort(overlays, noverlay, sizeof *overlays, overlay_order);

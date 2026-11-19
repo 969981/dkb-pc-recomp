@@ -218,6 +218,14 @@ set recguard DKB_FIX_RECORD_GUARD 1
 guard recguard main a37a84 a3a388 ptr x10 3dc00140
 guard recguard main a37a9c a3a388 ptr x11 3dc00160
 
+# #428: once a frame f_70003bf7d0 (3.2.0 f_7000377064) walks a list of GPU buffers at [x0+0x10], [x0+8] entries
+# long, and calls each entry's virtual +0x20 to switch it to its next copy. The list holds 256 entries, but the
+# count can pass it in a busy frame: both crash reports had 263 counted, entries 0-255 good and entry 256 read from
+# past the list (a vtable of 1). The walk now stops at 256. w9 is free here (the loop writes it before reading it);
+# the clamp uses no flags (min as 256 + ((n - 256) & ((n - 256) >> 31))). Opt-out: DKB_FIX_LIST_CAP=0.
+set listcap DKB_FIX_LIST_CAP 1
+site listcap main 3bf898 b9400a68 b9400a68 51040109 0a897d29 11040128  # w8 = min(w8, 256) without flags
+
 # #214: text is soft above 1080p. nn::fontll rasterises each glyph at run time from the font's CFF outline, at the
 # layout size, so a larger output only magnifies it. Off by default; DKB_FONT_SCALE=1 turns it on: raster at k=2 and
 # keep the layout the same. The font cache (f_70049e1d0, filled by f_70006f84a0) holds, per font, a px-to-layout multiplier pair

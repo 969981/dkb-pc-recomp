@@ -16,6 +16,9 @@ int cfg_load(const char *path);
 // Live settings (the in-game menu). cfg_set stores value as the totk.ini value of name (TOTK_ prefixed), marks it for
 // cfg_save and bumps cfg_version. cfg_get returns it unless the environment sets name. Any thread.
 void cfg_set(const char *name, const char *value);
+// The command line's --set KEY=VALUE (#402): a known key as in totk.ini, or a full TOTK_/DKB_ variable name, takes
+// VALUE for this run only, as its environment variable would; the settings file is not written. 1 on success.
+int cfg_set_arg(const char *arg);
 // Bumped by every cfg_set. A consumer that keeps a parsed value compares this with the number it last saw (one atomic
 // load) and parses again when it changed.
 unsigned cfg_version(void);

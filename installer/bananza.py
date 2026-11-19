@@ -36,12 +36,21 @@ NUP_SELECT = ('latest', 'base')
 EXE = '.exe' if os.name == 'nt' else ''
 CHUNK = 8 << 20
 WIDE_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440')
+# 16:10 screens: the UI keeps a centred 16:9 area and the overlay fills the bands above and below it; no edge HUD.
+TALL_SIZES = ('1280x800', '1680x1050', '1920x1200', '2560x1600')
 # The PlayStation prompt overlays and the face buttons each is made for (runtime/romfs.c ps_prompts_init): the two pad
 # layouts, and each with A and B on the other layout's buttons (bind_ lines that swap X and Y over the Xbox table, or A
 # and B over the Nintendo one; positions of A, B, X, Y in tools/dkb_ps_prompts.py).
 PS_FOLDERS = {'romfs-patches-ps': 'xbox', 'romfs-patches-ps-nintendo': 'nintendo', 'romfs-patches-ps-senw': 'senw',
               'romfs-patches-ps-eswn': 'eswn'}
-WIDE_FOLDERS = tuple(f'romfs-patches-{size}{suffix}' for size in WIDE_SIZES for suffix in ('', '-hud-edges'))
+# The Switch-letter overlays for a pad whose face buttons are not where the game's letters say (runtime/romfs.c
+# keys_prompts_init): the A, B, X, Y glyphs with their letters permuted, each folder named by what it shows
+# (tools/dkb_ps_prompts.py --keys). ABYX swaps X and Y, BAXY A and B, BAYX both (pad_layout = xbox_prompts).
+KEY_FOLDERS = {'romfs-patches-keys-ABYX': 'ABYX', 'romfs-patches-keys-BAXY': 'BAXY', 'romfs-patches-keys-BAYX': 'BAYX'}
+PROMPT_ARGS = {**{name: ('--layout', layout) for name, layout in PS_FOLDERS.items()},
+               **{name: ('--keys', keys) for name, keys in KEY_FOLDERS.items()}}
+WIDE_FOLDERS = (tuple(f'romfs-patches-{size}{suffix}' for size in WIDE_SIZES for suffix in ('', '-hud-edges')) +
+                tuple(f'romfs-patches-{size}' for size in TALL_SIZES))
 COMMIT_WARN_GIB = 24   # the game commits about 14 GB; README asks for 16 GB of RAM plus a large page file
 
 
@@ -190,7 +199,10 @@ def tool_layout(layout, options):
         ninja = layout.ninja if layout.ninja.is_file() else Path(shutil.which('ninja') or ninja)
     dll_dir = options.dll_dir
     if dll_dir is None:
-        dll_dir = deps / 'bin' if deps and (deps / 'bin' / 'SDL3.dll').is_file() else package / 'bin'
+        # A tool package without the runtime DLLs (#433: a folder picked in the setup's tool package field) falls back
+        # to the setup's own bin, which every release carries.
+        tries = ([deps / 'bin'] if deps else []) + [package / 'bin', layout.root / 'bin']
+        dll_dir = next((d for d in tries if (d / 'SDL3.dll').is_file()), package / 'bin')
     dlls = tuple(sorted(dll_dir.glob('*.dll'))) if os.name == 'nt' else layout.dlls
     return replace(layout, llvm=llvm, deps=deps.resolve() if deps else None, ninja=ninja.resolve(), dlls=dlls)
 
@@ -298,6 +310,7 @@ def preflight(layout, options, dest, temp, rep):
     select = getattr(options, 'nup_package', None) or (recorded.get('nup_package') if nup_arg else None) or 'latest'
     if select not in NUP_SELECT:
         raise InstallError('dkb.nup_invalid', path=str(nup_arg), detail=f'unknown package choice {select}')
+    dest_source = False
     if nup_arg:
         for p in (nup_arg, dest, temp):
             ensure_plain(p.absolute())
@@ -310,6 +323,17 @@ def preflight(layout, options, dest, temp, rep):
     else:
         exefs_arg = options.exefs or (Path(recorded['exefs']) if recorded.get('exefs') else None)
         romfs_arg = options.romfs or (Path(recorded['romfs']) if recorded.get('romfs') else None)
+        # The recorded dump folders were moved or deleted: the verified copy in the install folder (ExeFS files and
+        # the packed RomFS) is the source, used where it is. Only when nothing was given on the command line, the
+        # last run packed the RomFS (not a loose in-place install) and its Data step left a record to verify against.
+        dest_source = bool(
+            old and not options.exefs and not options.romfs and not recorded.get('romfs_in_place') and
+            'sha256' in old.get('steps', {}).get('dkb_data', {}) and
+            not (exefs_arg and romfs_arg and exefs_arg.is_dir() and romfs_arg.is_dir()) and
+            (dest / 'exefs').is_dir() and (dest / 'romfs' / 'romfs.bin').is_file() and
+            (dest / 'romfs' / 'index.json').is_file())
+        if dest_source:
+            exefs_arg, romfs_arg = dest / 'exefs', dest / 'romfs'
         if not exefs_arg or not romfs_arg:
             raise InstallError('dkb.need_folders')
         for p in (exefs_arg, romfs_arg, dest, temp):
@@ -318,7 +342,9 @@ def preflight(layout, options, dest, temp, rep):
         if not exefs.is_dir() or not romfs.is_dir():
             raise InstallError('dkb.need_folders')
         game = select_target(layout, exefs)
-        inputs, sources = (exefs, romfs), {'exefs': str(exefs), 'romfs': str(romfs)}
+        # The recorded sources stay as they were, so the Data step's key and a later run still work.
+        inputs = () if dest_source else (exefs, romfs)   # the install folder is the source: no overlap to reject
+        sources = dict(recorded) if dest_source else {'exefs': str(exefs), 'romfs': str(romfs)}
         # In place: the game reads the RomFS folder itself (romfs_dir, runtime/romfs.c loose mode) and no 9 GB image is
         # packed into the install. A resume without folders keeps the choice the last run recorded.
         if getattr(options, 'romfs_in_place', False) or (not options.romfs and recorded.get('romfs_in_place')):
@@ -373,7 +399,7 @@ def preflight(layout, options, dest, temp, rep):
         manifest = pack_manifest(romfs)
         files = None
         romfs_id = digest(manifest)
-        romfs_size = manifest['romfs_size']
+        romfs_size = 0 if dest_source else manifest['romfs_size']   # verified where it is: nothing is copied
     else:
         files = files if nup_arg else inventory(romfs, rep)
         romfs_id = digest(files)
@@ -393,8 +419,13 @@ def preflight(layout, options, dest, temp, rep):
         missing += [p for p in (layout.deps / 'include', layout.deps / 'lib') if not p.is_dir()]
     if os.name == 'nt':
         names = {p.name for p in layout.dlls}
-        if not {'SDL3.dll', 'libopus-0.dll'} <= names:
-            raise InstallError('dkb.dlls_missing')
+        lacking = {'SDL3.dll', 'libopus-0.dll'} - names
+        if lacking:
+            # Name the folder and the files, so a report (#433) shows whether the package lost them or the wrong
+            # folder was searched.
+            folder = layout.dlls[0].parent if layout.dlls else (Path(options.dll_dir) if options.dll_dir else
+                                                                 layout.root / 'bin')
+            raise InstallError('dkb.dlls_missing', path=str(folder), files=', '.join(sorted(lacking)))
     if missing:
         raise InstallError('dkb.tools_missing', paths='; '.join(map(str, missing)))
     identity = translator_identity(layout)
@@ -416,7 +447,7 @@ def preflight(layout, options, dest, temp, rep):
             raise InstallError('dkb.dotnet_missing')
     return dict(old=old, game=game, sources=sources, hashes=hashes, files=files,
                 romfs_id=romfs_id, romfs_size=romfs_size, owner=owner, translator=translator, identity=identity,
-                dotnet=dotnet, packed=packed, in_place=in_place,
+                dotnet=dotnet, packed=packed, in_place=in_place, dest_source=dest_source,
                 pipeline=digest(*(sha256(Path(__file__).with_name(n)) for n in ('bananza.py', 'runner.py', 'state.py'))))
 
 
@@ -580,6 +611,10 @@ class Data(Step):
             parts += [sha256(ctx.layout.tools / 'extract_nup.py'), ctx.info['sources']['nup_package']]
             if ctx.info['sources']['nup'].lower().endswith('.nx'):
                 parts.append(sha256(ctx.layout.tools / 'extract_nx.py'))
+        if ctx.info['dest_source']:
+            # Sourced from the install folder itself: keep the key the copying run recorded, so the steps after this
+            # one are not rebuilt because the source moved.
+            return ctx.state['steps']['dkb_data']['key']
         return digest(*parts)
 
     def current(self, ctx, record):
@@ -603,6 +638,8 @@ class Data(Step):
             return False
 
     def run(self, ctx):
+        if ctx.info['dest_source']:
+            return self.verify_in_place(ctx)
         stage = ctx.temp / 'data'
         owned_dir(ctx, stage)
         sources = ctx.info['sources']
@@ -663,6 +700,18 @@ class Data(Step):
         return {'sha256': manifest['romfs_sha256'], 'size': image.stat().st_size, 'mtime_ns': image.stat().st_mtime_ns,
                 'index_sha256': sha256(ctx.dest / 'romfs' / 'index.json')}
 
+
+    def verify_in_place(self, ctx):
+        """The ExeFS files against the expected hashes and the packed RomFS against the digest the copying run
+        recorded; nothing is copied, onto itself least of all."""
+        expected_exefs(ctx.layout, ctx.dest / 'exefs', ctx.info['game'])
+        romfs = ctx.dest / 'romfs'
+        recorded = ctx.state['steps']['dkb_data']['sha256']
+        if pack_manifest(romfs)['romfs_sha256'] != recorded:
+            raise InstallError('dkb.input_changed', path=str(romfs))
+        image = romfs / 'romfs.bin'
+        return {'sha256': recorded, 'size': image.stat().st_size, 'mtime_ns': image.stat().st_mtime_ns,
+                'index_sha256': sha256(romfs / 'index.json')}
 
     def in_place(self, ctx, stage, romfs):
         """index.json of the folder as dkb_pack_romfs.py would pack it (the offsets only size the index), with each
@@ -860,7 +909,7 @@ class WideLayouts(Step):
     id = 'dkb_wide'
 
     def key(self, ctx):
-        return digest(ctx.keys['dkb_data'], ctx.info['game'], WIDE_SIZES,
+        return digest(ctx.keys['dkb_data'], ctx.info['game'], WIDE_SIZES, TALL_SIZES,
                       source_key(ctx.layout, 'tools/dkb_wide_layout.py', 'tools/ultrawide_layout.py'))
 
     def current(self, ctx, record):
@@ -882,7 +931,7 @@ class WideLayouts(Step):
             run_tool(ctx, self.id, [ctx.layout.python, ctx.layout.tools / 'dkb_wide_layout.py',
                                     '--version', ctx.info['game'],
                                     '--romfs', ctx.dest / 'romfs', '--out', staged,
-                                    '--installer-workspace', ctx.temp, '--presets', *WIDE_SIZES])
+                                    '--installer-workspace', ctx.temp, '--presets', *WIDE_SIZES, *TALL_SIZES])
         except InstallError as error:
             if error.id != 'dkb.tool_failed':   # path/ownership failures still stop setup
                 raise
@@ -904,17 +953,18 @@ class WideLayouts(Step):
 
 
 class PadPrompts(Step):
-    """The PlayStation button prompts (tools/dkb_ps_prompts.py): one overlay per face-button layout, from the user's font."""
+    """The PlayStation button prompts (tools/dkb_ps_prompts.py): one overlay per face-button layout, and the
+    Switch-letter overlays (--keys), from the user's font."""
     id = 'dkb_prompts'
 
     def key(self, ctx):
-        return digest(ctx.keys['dkb_data'], ctx.info['game'], PS_FOLDERS, source_key(ctx.layout, 'tools/dkb_ps_prompts.py'))
+        return digest(ctx.keys['dkb_data'], ctx.info['game'], PROMPT_ARGS, source_key(ctx.layout, 'tools/dkb_ps_prompts.py'))
 
     def current(self, ctx, record):
         try:
-            return (set(record.get('outputs', {})) == set(PS_FOLDERS) and
+            return (set(record.get('outputs', {})) == set(PROMPT_ARGS) and
                     all((ctx.dest / name / 'manifest.tsv').is_file() and
-                        tree_key(ctx.dest / name) == record['outputs'][name] for name in PS_FOLDERS))
+                        tree_key(ctx.dest / name) == record['outputs'][name] for name in PROMPT_ARGS))
         except OSError:
             return False
 
@@ -926,10 +976,10 @@ class PadPrompts(Step):
         staged = ctx.temp / 'build' / 'ps-prompts'
         owned_dir(ctx, staged)
         try:
-            for name, layout in PS_FOLDERS.items():
+            for name, (option, value) in PROMPT_ARGS.items():
                 run_tool(ctx, self.id, [ctx.layout.python, ctx.layout.tools / 'dkb_ps_prompts.py',
-                                        '--romfs', ctx.dest / 'romfs', '--out', staged / name, '--layout', layout,
-                                        '--installer-workspace', ctx.temp], name=f'{self.id}-{layout}')
+                                        '--romfs', ctx.dest / 'romfs', '--out', staged / name, option, value,
+                                        '--installer-workspace', ctx.temp], name=f'{self.id}-{value}')
         except InstallError as error:
             if error.id != 'dkb.tool_failed':   # path/ownership failures still stop setup
                 raise
@@ -938,13 +988,13 @@ class PadPrompts(Step):
             # Optional: the Switch prompts stay. Nothing is published and nothing recorded, so the next setup retries.
             return {'prepared': False}
         plain_outputs(ctx)
-        for name in PS_FOLDERS:   # each manifest last, as WideLayouts
+        for name in PROMPT_ARGS:   # each manifest last, as WideLayouts
             folder = staged / name
             for source in sorted(folder.rglob('*')):
                 if source.is_file() and source.name != 'manifest.tsv':
                     copy_file(source, ctx.dest / name / source.relative_to(folder))
             copy_file(folder / 'manifest.tsv', ctx.dest / name / 'manifest.tsv')
-        return {'outputs': {name: tree_key(ctx.dest / name) for name in PS_FOLDERS}}
+        return {'outputs': {name: tree_key(ctx.dest / name) for name in PROMPT_ARGS}}
 
 
 def fsr4_platform():

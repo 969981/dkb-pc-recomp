@@ -189,6 +189,24 @@ class PsPromptsTest(unittest.TestCase):
         for bad in ('sswn', 'abc', 'playstation'):
             self.assertRaises(ValueError, T.face_spec, bad)
 
+    def test_keys_permute_the_games_own_letters(self):   # --keys: Switch letters that follow the pad's labels
+        for keys, glyphs, diamonds in (
+                ('ABYX', {0xE0E2: 0xE0E3, 0xE0E3: 0xE0E2}, {0xE0AD: 0xE0AE, 0xE0AE: 0xE0AD}),   # X and Y trade; X points left
+                ('BAXY', {0xE0E0: 0xE0E1, 0xE0E1: 0xE0E0}, {0xE0AB: 0xE0AC, 0xE0AC: 0xE0AB}),
+                ('BAYX', {0xE0E0: 0xE0E1, 0xE0E1: 0xE0E0, 0xE0E2: 0xE0E3, 0xE0E3: 0xE0E2},
+                 {0xE0AB: 0xE0AC, 0xE0AC: 0xE0AB, 0xE0AD: 0xE0AE, 0xE0AE: 0xE0AD, 0xE0CB: 0xE0CE, 0xE0CE: 0xE0CB}),
+                ('ABXY', {}, {})):
+            out = T.keys_font(self.font, keys)
+            cff = T.Cff(T.sfnt_tables(out)[b'CFF '])
+            gid = {code: T.cmap_lookup(T.sfnt_tables(out)[b'cmap'], code) for code in CODES}
+            for code in CODES:
+                source = {**glyphs, **diamonds}.get(code, code)
+                self.assertEqual(cff.charstrings[gid[code]], self.cff.charstrings[self.gid[source]], (keys, hex(code)))
+            self.assertEqual(T.ps_font(self.font, 'xbox') == out, False)
+            self.assertEqual(T.keys_font(self.font, keys), out)
+        for bad in ('AABX', 'ABX', 'abxy'):
+            self.assertRaises(ValueError, T.keys_spec, bad)
+
     def test_generate_end_to_end(self):
         try:
             T.zstd_compress(b'probe')

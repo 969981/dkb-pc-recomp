@@ -86,6 +86,20 @@ class LayoutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing panes'):
             patch_archive(missing, 'DialogConfirm', 3440 / 2560, version='dkb458752')
 
+    def test_tall_extends_flat_panes_down_and_art_in_both_axes(self):
+        def bg(layout, name):
+            p = pane(name, 0)
+            struct.pack_into('<f', p, 48, 0)
+            struct.pack_into('<2f', p, 76, 1920, 1080)
+            return archive([(f'blyt/{layout}.bflyt', layout_header(b'FLYT', [p]))])
+        factor = (16 / 9) / (1920 / 1200)
+        for layout, name, size in (('Boot', 'P_Bs_00', (1920, 1080 * factor)),
+                                   ('TransitionMiss', 'P_Bg_00', (1920 * factor, 1080 * factor))):
+            out = unpack(patch_archive(bg(layout, name), layout, factor, tall=True))[f'blyt/{layout}.bflyt']
+            got = struct.unpack_from('<2f', out, 20 + 76)
+            self.assertAlmostEqual(got[0], size[0], places=2)
+            self.assertAlmostEqual(got[1], size[1], places=2)
+
     def test_edges_translate_without_scaling_or_changing_animation_tangents(self):
         original = unpack(fixture())
         moved = unpack(patch_archive(fixture(), 'HudStatus', 3440 / 1440 / (16 / 9), True))

@@ -87,6 +87,10 @@ void input_map_configure(void);
 void input_map_face_spec(const InputMap *m, int layout, char out[5]);
 // The same for the defaults with the TOTK_BIND_* lines applied, built on a copy (input_map is left alone).
 void input_map_face_spec_cfg(int layout, char out[5]);
+// The letter each Switch-letter glyph A, B, X, Y must show for a face spec (as above): the label printed at the
+// position of its button, from the Xbox labels (s A, e B, w X, n Y) or the Nintendo ones (s B, e A, w Y, n X); '?' for
+// an unbound button. "ABXY" is the game's own; "BAYX" is xbox_prompts (romfs.c keys_prompts_init). Pure.
+void input_map_face_keys(const char spec[5], int nintendo_labels, char out[5]);
 
 // The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts" is the Nintendo layout with
 // the A/B and X/Y prompts swapped (runtime/romfs.c overlay_init), so the buttons map as "nintendo". Anything else

@@ -260,7 +260,7 @@
  "dkb.input_changed": "The source changed while setup was reading it: {path}. Close programs modifying the dump and try again.",
  "dkb.pack_invalid": "The packed RomFS failed its integrity check in {path}: {detail}.",
  "dkb.tools_missing": "Required build tools or sources are missing: {paths}.",
- "dkb.dlls_missing": "The runtime DLL folder must contain SDL3.dll and libopus-0.dll. Choose the tool package or pass --dll-dir.",
+ "dkb.dlls_missing": "The runtime DLL folder {path} is missing {files}. Choose the tool package or pass --dll-dir.",
  "dkb.translator_mismatch": "The translator is missing its matching identity or was built from different sources. Build it from this checkout or let setup build it with .NET 10.",
  "dkb.dotnet_missing": "Building the translator needs the .NET 10 SDK. Pass --dotnet to a portable SDK, or --translator to a matching prebuilt translator.",
  "dkb.jobs": "The worker limit must be at least 1.",

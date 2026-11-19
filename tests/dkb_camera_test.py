@@ -59,6 +59,7 @@ int plat_file_exists(const char *p) {abort();}
 int64_t plat_file_size(const char *p) {abort();}
 int plat_file_write_atomic(const char *p,const void *d,size_t n) {abort();}
 int plat_exe_path(char *p,size_t n) {abort();}
+int plat_setenv(const char *n,const char *v) {abort();}
 '''+functions+r'''
 int main(void) {
     float d[2]; cfg_set("TOTK_DEVICE_PROFILE","desktop");cfg_set("TOTK_MOUSE_SENS","1");

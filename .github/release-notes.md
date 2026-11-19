@@ -4,7 +4,11 @@
 - Setup option "Use the RomFS where it is" (`--romfs-in-place`, #305): the game reads your extracted `romfs` folder through `romfs_dir` instead of a ~9 GB copy; same load times and fps as the packed image in our tests. Keep the folder where it is afterwards.
 - PlayStation button prompts follow your `bind_` lines, not only `pad_layout` (#416; re-run the setup to rebuild the prompts).
 - With `realtime = 1`, the frame rate is held to 120 fps at most (`realtime_max_fps`, 0 removes the ceiling), because steps shorter than 1/120 s crash the record merge job in the EmeraldRush challenge levels (#411, #421; thanks @NoireOvO for the runs that narrowed it down).
-- 16:10 screens (1280x800, 1920x1200, 2560x1600): the view grows taller and the HUD stays whole in a centred 16:9 area (#249). Tested on 3.2.0.
+- A crash on 1.0.0 when picking up some bananas in a busy area: the game's per-frame GPU buffer list walk now stops at the list's 256 entries (`DKB_FIX_LIST_CAP=0` turns it off; #428, thanks @prayudigames93-ctrl for the dumps and the save).
+- AMD: `replay_threads` is on by default on every discrete card on AMD's proprietary driver, not only the RX 9070 series. Integrated GPUs, AMDVLK and RADV keep it off, and RX 5000 is not measured yet (`replay_threads = 0` turns it off). Thanks @akmuzyka, @Ghos796 and @AcousticBlu3 for the RX 7900 XTX, RX 6650 XT and RX 7800 XT runs (#141, #418).
+- The setup no longer asks for the dump folders when they were moved after an install: it verifies the copy already in the install folder and uses it (#438, thanks @kline1110).
+- The game's Switch-letter prompts follow X/Y and A/B swaps in the bindings, and `pad_layout = xbox_prompts` now swaps them in Bananza too (run the setup again; #440, thanks @Nikoroq).
+- 16:10 screens (1280x800, 1920x1200, 2560x1600): the view grows taller and the HUD stays whole in a centred 16:9 area, and the title menu and loading tips fill the screen instead of leaving purple bands (the setup makes the menu overlay for 1280x800, 1680x1050, 1920x1200 and 2560x1600; #249). Tested on 3.2.0 and 1.0.0.
 - Local co-op: a second gamepad plays Pauline (Pause > Co-op mode > Share controllers, #240). `coop = 0` turns it off. Tested with a simulated second pad only; reports with two real pads are welcome.
 - Recording a draw costs about 14% less: unchanged index and vertex buffers and dynamic states are no longer bound again, and uniform buffers are found faster. On 6 logical processors frames over 50 ms in the heaviest scene tested fell from about 22 to 15 a minute (`TOTK_DYN_KEEP=0` brings back the old dynamic-state path).
 - The replay and its Vulkan recorder run above normal priority while a frame is submitted, so the game's loading threads no longer starve them on CPUs with few cores: on 6 logical processors a level transition's replay fell from about 11 ms a frame to 0.25 ms.
@@ -13,10 +17,12 @@
 - #422 Stamp release files with the commit time (@GlebShekovtsov)
 - #425 Name the disk that is short of space in the Bananza installer (@cybersecurityhandle)
 - The Bananza setup folds the shader cache (about 118,000 loose files on 3.2.0) into one `shader-cache.pack`, so deleting or copying an install no longer takes tens of minutes (#402)
+- `dkb.exe --set KEY=VALUE` sets a `dkb.ini` key for one run without changing the file, and `dkb.exe --help` lists the options, for frontends that start the game (#402).
 - #423 Let the Bananza setup fetch AMD FSR 4 from AMD's repository after you accept its license (off by default) (@GlebShekovtsov)
 - #424 Take the staged mirror's bookkeeping off the replay thread and commit guest memory ahead of use in the background (@wrothgaril)
 - #429 Yield after each background commit slice, so a guest thread waiting for the memory lock gets in (@wrothgaril)
 - #430 A start-up screen with real progress in the game window, from its opening to the game's first picture (`splash = 0` turns it off) (@wrothgaril)
+- #442 The staged mirror is on by default on Windows with an NVIDIA GPU: the frame that enters a level or layer about halves (worst frame 444 to 230 ms on an RTX 5060 Ti 8 GB); `mirror_staged = 0` turns it off (@wrothgaril)
 - Windows: `DKB-Launcher.exe`, a small launcher you download once. It installs the build tools from the latest release (size and SHA-256 checked), runs the setup on your dump, then shows Play, looks for a new release at each start (a tick box turns that off), shows its notes and updates in place with one click: it downloads only the new tools zip, keeps the old version until the new one has started, rebuilds only the steps whose inputs changed and keeps your saves (`profile/`) and `dkb.ini`. It replaces itself with the new release's launcher. The setup zip still works as before, and `DKB-Setup.exe` now passes its arguments on to the setup (#402, #140).
 
 New files in the package table of that release:

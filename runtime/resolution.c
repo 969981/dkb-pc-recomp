@@ -306,7 +306,7 @@ int res_is_16x9(unsigned w, unsigned h) {
 // The game resolution asks for a romfs-patches-<w>x<h> overlay: it is not 16:9 and the game version has the camera
 // aspect patch (set aspect); the UI layouts of another shape only fit a camera that follows the same shape.
 int res_wants_wide_overlay(const unsigned out[2]) {
-    if (!rt_game_version) return dkb_wide_output(NULL);
+    if (!rt_game_version) return dkb_ui_overlay();
     return !res_is_16x9(out[0], out[1]) && rt_patch_set("aspect") >= 0;
 }
 

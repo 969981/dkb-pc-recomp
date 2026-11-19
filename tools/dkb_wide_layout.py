@@ -157,7 +157,9 @@ def members(data):
         yield name, start + lo, start + hi
 
 
-def patch_archive(raw, layout, factor, hud_edges=False, version='dkb100'):
+def patch_archive(raw, layout, factor, hud_edges=False, version='dkb100', tall=False):
+    """Extend the background panes by factor: across on a wider display; down on a taller one (tall), where the UI
+    keeps a centred 16:9 area (Vert+) and the panes fill the bands above and below it."""
     data = bytearray(zstd.decompress(raw))
     entries = list(members(data))
     backgrounds = BACKGROUNDS.get(layout, {})
@@ -194,8 +196,9 @@ def patch_archive(raw, layout, factor, hud_edges=False, version='dkb100'):
                     if (x, y, w, h) != (0, 0, 1920, 1080) or pane in found:
                         raise ValueError(f'{layout}/{pane}: unexpected baseline geometry')
                     found.add(pane)
-                    struct.pack_into('<f', data, pos + 76, w * factor)
-                    if backgrounds[pane] == 'cover':
+                    if backgrounds[pane] == 'cover' or not tall:
+                        struct.pack_into('<f', data, pos + 76, w * factor)
+                    if backgrounds[pane] == 'cover' or tall:
                         struct.pack_into('<f', data, pos + 80, h * factor)
             pos += size
     expected = set(backgrounds) | set(anchors)
@@ -210,7 +213,7 @@ def patch_archive(raw, layout, factor, hud_edges=False, version='dkb100'):
                     value = struct.unpack_from('<f', data, key + 4)[0]
                     struct.pack_into('<f', data, key + 4, value + side * dx)
         for pane, mode in backgrounds.items():
-            for target in ((8, 9) if mode == 'cover' else (8,)):
+            for target in ((8, 9) if mode == 'cover' else (9,) if tall else (8,)):
                 for keys in anim_keys(data, lo, pane, b'FLPA', target):
                     for key in keys:
                         value, slope = struct.unpack_from('<2f', data, key + 4)
@@ -237,16 +240,18 @@ def generate(romfs, out, w, h, hud, version='dkb100'):
                 raise ValueError(f'{path}: packed resource checksum mismatch')
             return raw
 
+        tall = w * 9 < h * 16
+        factor = (16 / 9) / (w / h) if tall else (w / h) / (16 / 9)
         layouts = dict.fromkeys((*BACKGROUNDS, *(HUD_ANCHORS if hud == 'edges' else ())))
         for layout in layouts:
             path = f'Layout/{layout}.Nin_Ounce_NVN2.blarc.zs'
             raw = read(path)
-            patched = patch_archive(raw, layout, (w / h) / (16 / 9), hud == 'edges', version)
+            patched = patch_archive(raw, layout, factor, hud == 'edges', version, tall)
             outputs.append((path, raw, patched))
         # In 3.2.0 BootMenuEnv lives in the Product.200 effect archive, not the general static archive.
         title_path = TITLE_EFFECT_PATHS[version]
         raw = read(title_path)
-        outputs.append((title_path, raw, patch_title_effect(raw, (w / h) / (16 / 9))))
+        outputs.append((title_path, raw, patch_title_effect(raw, factor)))
     # Validate every requested pane before publishing any replacement files.
     lines = ['# path\tsize\tsha256\toriginal_sha256 (tools/dkb_wide_layout.py)']
     for path, raw, patched in outputs:
@@ -290,11 +295,17 @@ def main():
             w, h = map(int, size.split('x'))
         except ValueError:
             ap.error('aspect must be WxH')
-        if not (1280 <= w <= 7680 and 720 <= h <= 4320 and w % 2 == h % 2 == 0 and w * 9 > h * 16):
-            ap.error('aspect must be an even output resolution wider than 16:9')
+        # Wider than 16:9, or from 16:10 to 16:9 (the shapes runtime/dkb_wide.c accepts with Vert+).
+        if not (1280 <= w <= 7680 and 720 <= h <= 4320 and w % 2 == h % 2 == 0 and w * 9 != h * 16 and
+                w * 10 >= h * 16):
+            ap.error('aspect must be an even output resolution wider than 16:9 or from 16:10 to 16:9')
         parsed.append((w, h))
     for w, h in parsed:
-        for hud in ('centered', 'edges') if args.presets else (args.hud,):
+        # The edge HUD moves corner containers sideways: a taller display has no extra width for it.
+        tall = w * 9 < h * 16
+        if tall and args.hud == 'edges' and not args.presets:
+            ap.error('the edge HUD needs a display wider than 16:9')
+        for hud in (('centered',) if tall else ('centered', 'edges')) if args.presets else (args.hud,):
             folder = f'romfs-patches-{w}x{h}' + ('-hud-edges' if hud == 'edges' else '')
             generate(args.romfs, out / folder if args.presets else out, w, h, hud, args.version)
 

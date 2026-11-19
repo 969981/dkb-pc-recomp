@@ -2022,11 +2022,12 @@ static int par_nworkers;
 // 7 7700 (16) with an RX 9070 XT (Windows, driver 26.10 and 26.11) sliced passes ran over many sessions of free play
 // and the Hilltop hills with 5 to 8 threads, without device loss or glitch. In the hills (3.2.0, about 24,000 to 27,000
 // draws a frame), 5 threads replayed a frame about 2% slower than 6 to 8, which were even within the runs' spread, and
-// 6 had the deepest drops (worst 60-frame windows 42 to 46 fps against 50 to 54 with 7 or 8). That is one card, so only
-// its chip takes the default (vk_caps.amd_slices: Navi 48, device 0x7550, on AMD's proprietary driver). Every other AMD
-// GPU and driver stays at 0 until it is measured: RDNA 1 and 2 (a Radeon 610M lost the device, issue #84), RDNA 3 and
-// 3.5 (a ROG Xbox Ally X, a Radeon 890M on Adrenalin 26.10.1, lost it too, issue #155), other RDNA 4 chips, AMDVLK
-// and RADV.
+// 6 had the deepest drops (worst 60-frame windows 42 to 46 fps against 50 to 54 with 7 or 8). Players then ran other
+// discrete cards on the same driver without device loss: an RX 7900 XTX with 4 threads (41 to 54.5 fps at 4K, issue
+// #141), an RX 6650 XT with 4 (58.9 fps over 33 minutes, #141) and an RX 7800 XT with 8 (30 to 45 minutes, a steady 60
+// in Sublayer 200, #418). So every discrete AMD GPU on the proprietary driver takes the default (vk_caps.amd_slices).
+// Integrated AMD GPUs stay at 0: a Radeon 610M (issue #84) and a Radeon 890M in a ROG Xbox Ally X (Adrenalin 26.10.1,
+// issue #155) lost the device with them. AMDVLK and RADV stay at 0 until they are measured.
 static int par_threads(void) {
     if (par_mode < 0) {
         const char *e = cfg_get("TOTK_REPLAY_THREADS");

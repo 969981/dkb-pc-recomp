@@ -28,6 +28,7 @@ void rt_patch_switch(int set, int on) { (void)set; (void)on; }
 void *rt_patch_page(void) { return NULL; }
 void fs_init(void) {}
 int dkb_wide_output(unsigned out[2]) { (void)out; return 0; }
+int dkb_ui_overlay(void) { return 0; }
 void dkb_wide_init(void) {}
 GfxStats gfx_counters;
 

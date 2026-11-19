@@ -90,8 +90,9 @@ for size in a[a.index('--presets')+1:]:
 import hashlib, pathlib, sys
 a=sys.argv; out=pathlib.Path(a[a.index('--out')+1])
 assert out.is_relative_to(pathlib.Path(a[a.index('--installer-workspace')+1])/'build')
-assert a[a.index('--layout')+1] in ('xbox','nintendo','senw','eswn')
-out.mkdir(parents=True); raw=('synthetic '+a[a.index('--layout')+1]).encode(); (out/'resource.bin').write_bytes(raw)
+opt='--keys' if '--keys' in a else '--layout'
+assert a[a.index(opt)+1] in ('xbox','nintendo','senw','eswn','ABYX','BAXY','BAYX')
+out.mkdir(parents=True); raw=('synthetic '+a[a.index(opt)+1]).encode(); (out/'resource.bin').write_bytes(raw)
 (out/'manifest.tsv').write_text('resource.bin\\t%d\\t%s\\t%s\\n' % (len(raw), hashlib.sha256(raw).hexdigest(), '0'*64))
 ''')
         (self.root / 'tools/romfs_index.py').write_text('# synthetic fixture')
@@ -536,6 +537,29 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual(code, 0, events)
         self.assertEqual(self.calls, [])
 
+    def test_moved_source_folders_fall_back_to_the_install_folders_copy(self):
+        self.assertEqual(self.run_install()[0], 0)
+        shutil.move(self.romfs, self.root / 'moved romfs')
+        shutil.move(self.exefs, self.root / 'moved exefs')
+        # An explicit folder that is missing is still an error.
+        self.options.exefs, self.options.romfs = self.exefs, self.romfs
+        code, events = self.run_install()
+        self.assertEqual(code, 1)
+        self.assertIn('dkb.need_folders', [e.get('id') for e in events if e['type'] == 'error'])
+        # Nothing given and the recorded folders gone: the copy in the install folder is verified where it is.
+        self.options.exefs = self.options.romfs = None
+        self.calls.clear()
+        code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(b.statefile.load(self.dest, b.STATE)['sources']['romfs'], str(self.romfs.resolve()))
+        # A forced Data step checks the packed image and fails on a changed one.
+        with (self.dest / 'romfs' / 'romfs.bin').open('r+b') as image:
+            image.write(b'\xff')
+        self.options.verify = True
+        code, events = self.run_install()
+        self.assertEqual(code, 1)
+
     def test_concurrent_setup_lock_and_release(self):
         self.temp.mkdir()
         first = b.lock_temp(self.temp)
@@ -689,7 +713,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         (self.romfs/'other.bin').write_bytes(b'a changed source')
         self.calls.clear()
         self.assertEqual(self.run_install()[0], 0)
-        self.assertEqual([step for step, _ in self.calls], ['dkb_data','lift','compile','dkb_shaders','dkb_shaders','dkb_shaders','dkb_wide','dkb_prompts','dkb_prompts','dkb_prompts','dkb_prompts','dkb_verify','dkb_verify'])
+        self.assertEqual([step for step, _ in self.calls], ['dkb_data','lift','compile','dkb_shaders','dkb_shaders','dkb_shaders','dkb_wide']+['dkb_prompts']*7+['dkb_verify','dkb_verify'])
 
     def test_source_mutation_during_pack_is_not_installed(self):
         def mutate(ctx, step, command):
