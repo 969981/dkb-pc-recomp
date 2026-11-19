@@ -11,6 +11,10 @@ writes it, and <romfs>/romfs.bin, whose size must match. Output, both in the bui
                       the UTF-8 bytes of the path, which is the order strcmp sees
     romfs_config.h    ROMFS_IMAGE_SIZE, ROMFS_IMAGE_SHA256, ROMFS_INDEX_SHA256, ROMFS_FILE_COUNT
 
+A manifest with "loose" (the setup's "use the RomFS where it is", installer/bananza.py Data.in_place) has no romfs.bin:
+its offsets are where the files would sit in a packed image, and the runtime reads each file from that folder
+(romfs_dir, runtime/romfs.c). open_image gives the setup's RomFS tools one way to read either kind.
+
 Both are rewritten only when their bytes change, so Ninja does not rebuild romfs.c for nothing.
 
     .venv\\Scripts\\python tools\\romfs_index.py --romfs build\\extracted\\v121\\romfs --out build\\v121
@@ -54,6 +58,37 @@ def build_index(manifest):
     return HEADER.pack(MAGIC, len(files), HEADER.size + len(rows)) + bytes(rows) + bytes(strings)
 
 
+class LooseImage:
+    """The seek/read calls the RomFS tools make on romfs.bin, served from the loose folder: a seek to a file's offset
+    then a read of up to its size reads that file."""
+
+    def __init__(self, manifest):
+        self.root = Path(manifest['loose'])
+        self.at = {e['offset']: e for e in manifest['files'] if e['size']}
+        self.pos = 0
+
+    def seek(self, offset):
+        self.pos = offset
+
+    def read(self, n):
+        if not n:
+            return b''
+        e = self.at[self.pos]
+        with open(self.root / e['path'], 'rb') as f:
+            return f.read(min(n, e['size']))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def open_image(romfs, manifest):
+    """romfs.bin opened for reading, or for a loose manifest the same reads from its folder."""
+    return LooseImage(manifest) if manifest.get('loose') else (romfs / 'romfs.bin').open('rb')
+
+
 def write_if_changed(path, data):
     if path.exists() and path.read_bytes() == data:
         return
@@ -68,7 +103,10 @@ def write(romfs, out):
     if manifest.get('status') != 'pass':
         sys.exit(f'romfs_index: {romfs / "index.json"} does not record a verified extraction')
     image = romfs / 'romfs.bin'
-    if not image.is_file() or image.stat().st_size != manifest['romfs_size']:
+    if manifest.get('loose'):
+        if not Path(manifest['loose']).is_dir():
+            sys.exit(f'romfs_index: the RomFS folder {manifest["loose"]} that {romfs / "index.json"} reads is missing')
+    elif not image.is_file() or image.stat().st_size != manifest['romfs_size']:
         sys.exit(f'romfs_index: {image} is missing or its size differs from index.json')
     index = build_index(manifest)
     count = len(manifest['files'])

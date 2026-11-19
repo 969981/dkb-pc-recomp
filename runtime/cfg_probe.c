@@ -319,6 +319,30 @@ int probe_cfg(void) {
     CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_SOUTH] = 1}, PAD_LAYOUT_XBOX) == 0,
           "pad layout: a bind line replaces the layout's own button");
     input_map_reset();
+    // The face buttons as positions, which pick the PlayStation prompt overlay (romfs.c ps_prompts_init): each glyph
+    // names the button that does its Switch button (tools/dkb_ps_prompts.py: s cross, e circle, w square, n triangle).
+    char face[5];
+    input_map_face_spec(&input_map, input_pad_layout_pick("auto", 0), face);
+    CHECK(!strcmp(face, "sewn"), "face spec: auto with a Sony pad is A south, B east, X west, Y north (romfs-patches-ps)");
+    input_map_face_spec(&input_map, input_pad_layout_pick("xbox", 1), face);
+    CHECK(!strcmp(face, "sewn"), "face spec: xbox is the Xbox table");
+    input_map_face_spec(&input_map, input_pad_layout_pick("nintendo", 0), face);
+    CHECK(!strcmp(face, "esnw"), "face spec: nintendo is A east, B south, X north, Y west (romfs-patches-ps-nintendo)");
+    input_map_face_spec(&input_map, input_pad_layout_pick("xbox_prompts", 0), face);
+    CHECK(!strcmp(face, "esnw"), "face spec: xbox_prompts maps as nintendo");
+    CHECK(input_map_bind("X", "key:default, pad:north") && input_map_bind("Y", "key:default, pad:west"),
+          "face spec: bind_X = pad:north, bind_Y = pad:west (issue 416)");
+    input_map_face_spec(&input_map, PAD_LAYOUT_XBOX, face);
+    CHECK(!strcmp(face, "senw"), "face spec: X and Y bound over the Xbox table give senw (romfs-patches-ps-senw)");
+    input_map_face_spec(&input_map, PAD_LAYOUT_NINTENDO, face);
+    CHECK(!strcmp(face, "esnw"), "face spec: X north and Y west are the Nintendo table's own");
+    CHECK(input_map_bind("A", "pad:south") && input_map_bind("B", "pad:east"), "face spec: bind_A = south, bind_B = east");
+    input_map_face_spec(&input_map, PAD_LAYOUT_NINTENDO, face);
+    CHECK(!strcmp(face, "senw"), "face spec: all four bound give the same letters in every layout");
+    CHECK(input_map_bind("B", "none"), "face spec: B unbound");
+    input_map_face_spec(&input_map, PAD_LAYOUT_XBOX, face);
+    CHECK(!strcmp(face, "s?nw"), "face spec: an unbound face button reads '?' (the layout's folder loads)");
+    input_map_reset();
     CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_XBOX) == 0,
           "pad layout: a back paddle is unbound by default");
     CHECK(input_map_bind("ZL", "pad:default, pad:rpaddle1") &&

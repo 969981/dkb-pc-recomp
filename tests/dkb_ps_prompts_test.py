@@ -8,7 +8,7 @@ what the tool writes. The checks:
 - the face buttons keep their plate and get the symbol for the layout (contour counts: cross 1, circle, square and
   triangle 2), in the right winding (cut-outs clockwise);
 - L / R / ZL / ZR keep their plate and get the L or R of ZL / ZR (both of the R's contours) and a digit;
-- with --layout xbox the diamonds trade charstrings, with nintendo they stay; every other glyph is byte-identical;
+- with --layout xbox the diamonds trade charstrings, with nintendo they stay, with senw / eswn one pair trades; every other glyph is byte-identical;
 - the rebuilt font's table checksums and head.checkSumAdjustment are right, and a font run through twice reads the same;
 - end to end (with compression.zstd or zstandard): a RomFS with two Font archives, a SARC member beside the font that
   stays byte-identical, the XOR-wrapped BFOTF, and the manifest's hashes.
@@ -139,7 +139,7 @@ class PsPromptsTest(unittest.TestCase):
             if tag != b'head':
                 self.assertEqual(struct.unpack_from('>I', out, entry + 4)[0], T.checksum(data), tag)
         counts = {'cross': 1, 'circle': 2, 'square': 2, 'triangle': 2}
-        for code, sym in T.FACE[layout].items():
+        for code, sym in T.face(layout).items():
             width, cs = cff.glyph(gid[code])
             self.assertEqual(width, 2635 - 2740)
             self.assertEqual(len(cs), 1 + counts[sym], (layout, hex(code)))
@@ -154,8 +154,8 @@ class PsPromptsTest(unittest.TestCase):
         for code in (0xE0EF, 0xE0F0):
             _, cs = cff.glyph(gid[code])
             self.assertEqual(len(cs), 4)
-        swapped = {c: b for a, b in T.DIAMOND_SWAPS[layout] for c, b in ((a, b), (b, a))}
-        changed = set(T.FACE[layout]) | set(T.LABELS) | {0xE0EF, 0xE0F0}
+        swapped = T.diamond_sources(layout)
+        changed = set(T.FACE_CODES) | set(T.LABELS) | {0xE0EF, 0xE0F0}
         for code in CODES:
             if code in changed:
                 continue
@@ -170,6 +170,24 @@ class PsPromptsTest(unittest.TestCase):
 
     def test_nintendo_layout(self):
         self.check_layout('nintendo')
+
+    def test_rebound_layouts(self):   # bind_X / bind_Y swapped over either table (issue 416)
+        self.check_layout('senw')
+        self.check_layout('eswn')
+
+    def test_each_glyph_names_its_button(self):
+        # Switch A, B, X, Y -> the PlayStation symbol of the physical button runtime/input_map.c gives each:
+        # xbox south A east B west X north Y, nintendo east A south B north X west Y, and the two mixes.
+        want = {'xbox': ('cross', 'circle', 'square', 'triangle'), 'nintendo': ('circle', 'cross', 'triangle', 'square'),
+                'senw': ('cross', 'circle', 'triangle', 'square'), 'eswn': ('circle', 'cross', 'square', 'triangle')}
+        for layout, symbols in want.items():
+            self.assertEqual(T.face(layout), dict(zip(T.FACE_CODES, symbols)), layout)
+        self.assertEqual(T.diamond_sources('nintendo'), {})
+        self.assertEqual(T.diamond_sources('senw'), {0xE0AB: 0xE0AC, 0xE0AC: 0xE0AB})   # A points down, B right
+        self.assertEqual(T.diamond_sources('xbox'), {0xE0AB: 0xE0AC, 0xE0AC: 0xE0AB, 0xE0AD: 0xE0AE, 0xE0AE: 0xE0AD,
+                                                     0xE0CB: 0xE0CE, 0xE0CE: 0xE0CB})
+        for bad in ('sswn', 'abc', 'playstation'):
+            self.assertRaises(ValueError, T.face_spec, bad)
 
     def test_generate_end_to_end(self):
         try:

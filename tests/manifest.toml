@@ -28,6 +28,12 @@ cmd = ["{python}", "tests/worktree_test.py"]
 known_failure = "with git 2.52, a plain git worktree remove --force follows the build/ junction and deletes the main checkout's files (tools/worktree.py remove is safe)"
 
 [[test]]
+name = "import-stubs"
+tier = 0
+area = "cpu"
+cmd = ["{python}", "tests/import_stubs_test.py"]
+
+[[test]]
 name = "spin-waits"
 tier = 0
 area = "cpu"
@@ -231,6 +237,12 @@ name = "vk-memory-inspect"
 tier = 1
 area = "gfx"
 cmd = ["{python}", "tests/vk_memory_inspect_test.py", "--cc", "{cc}", "--deps", "{deps}"]
+
+[[test]]
+name = "staged-blocked"
+tier = 1
+area = "gfx"
+cmd = ["{python}", "tests/staged_blocked_test.py", "--cc", "{cc}", "--out", "{out}"]
 
 [[test]]
 name = "rec-capture-alone"

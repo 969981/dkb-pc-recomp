@@ -80,6 +80,14 @@ int input_map_bind(const char *button, const char *list);
 // Applies the TOTK_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
 void input_map_configure(void);
 
+// For Switch A, B, X and Y in that order, the face button of its first gamepad binding in layout: s(outh), e(ast),
+// w(est) or n(orth), '?' for none. "sewn" for the Xbox table, "esnw" for the Nintendo one; bind_ lines that move the face
+// buttons give the same letters in both. The PlayStation prompt overlay made for these letters names every face button
+// by the one that does it (runtime/romfs.c ps_prompts_init, tools/dkb_ps_prompts.py --layout). Pure.
+void input_map_face_spec(const InputMap *m, int layout, char out[5]);
+// The same for the defaults with the TOTK_BIND_* lines applied, built on a copy (input_map is left alone).
+void input_map_face_spec_cfg(int layout, char out[5]);
+
 // The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts" is the Nintendo layout with
 // the A/B and X/Y prompts swapped (runtime/romfs.c overlay_init), so the buttons map as "nintendo". Anything else
 // ("auto", NULL) picks Nintendo when the pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox

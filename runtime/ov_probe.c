@@ -251,17 +251,19 @@ static void probe_oe(void) {
         {NULL, "fr-CA", "fr-CA"}, {NULL, "es-MX", "es-419"}, {NULL, "es_ES", "es"},     {NULL, "zh-Hant-TW", "zh-Hant"},
         {NULL, "zh-CN", "zh-Hans"}, {NULL, "en-GB", "en-GB"}, {NULL, "ru", "ru"},       {"ja", "fr-FR", "ja"},
         {"en-US", NULL, "en-US"}, {"zh-CN", NULL, "zh-Hans"}, {"zh-TW", NULL, "zh-Hant"},
-        {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"}};
+        {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"}, {"xx-YY", "ja-JP", "ja"},
+        {NULL, "th-TH", "th"}, {"th", NULL, "th"}, {"THth", NULL, "th"}};
     int bad = 0;
     printf("oe: configured language (TOTK_LANG=%s) is %s\n", keep_lang ? keep_lang : "", lang());
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         set_env("TOTK_LANG", cases[i].lang);
         set_env("TOTK_LOCALE", cases[i].locale);
         const char *got = lang();
-        if (strcmp(got, cases[i].want)) {
+        const char *want = !strcmp(cases[i].want, "th") && strcmp(rt_game_target, "dkb458752") ? "en-US" : cases[i].want;
+        if (strcmp(got, want)) {
             bad++;
             printf("  FAIL: language for TOTK_LANG=%s TOTK_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
-                   cases[i].locale ? cases[i].locale : "", got, cases[i].want);
+                   cases[i].locale ? cases[i].locale : "", got, want);
         }
     }
     set_env("TOTK_LANG", NULL);

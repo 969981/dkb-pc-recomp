@@ -9,6 +9,7 @@
 static unsigned checks, failures, page_reads, fs_calls, fs_out[2], fs_scene_on;
 static int setting, set_index, scene_index, switched, scene_switched, heapdef_grown, fs_wide;
 static int native_index = -1, native_switched, native_switches;
+static int tall_index = -1, tall_switched, host_registered;
 static unsigned settings_version;
 static const char *resolution, *scene_res, *upscaler = "fsr";
 static uint8_t test_page[4096];
@@ -31,16 +32,22 @@ int rt_patch_set(const char *name) {
     if (!strcmp(name, "dkbscene")) return scene_index;
     if (!strcmp(name, "render3d")) return -1;
     if (!strcmp(name, "dkbnative")) return native_index;
+    if (!strcmp(name, "dkbtall")) return tall_index;
     CHECK(!strcmp(name, "dkbwide"));
     return set_index;
 }
 void rt_patch_switch(int set, int on) {
-    CHECK(set == 0 || set == scene_index || set == native_index);
+    CHECK(set == 0 || set == scene_index || set == native_index || set == tall_index);
     if (set == 0) switched = on;
+    else if (set == tall_index) tall_switched = on;
     else if (set == native_index) native_switched = on, native_switches++;
     else scene_switched = on;
 }
 void *rt_patch_page(void) { page_reads++; return test_page; }
+void rt_register_host(uint64_t addr, GuestFn fn) {
+    CHECK(addr == (uint64_t)(uintptr_t)test_page + 0x270 && fn == vert_plus);
+    host_registered++;
+}
 void rt_log(const char *fmt, ...) { (void)fmt; }
 int res_heapdef_grown(void) { return heapdef_grown; }
 // RomFS setup picks the UI overlay from the output at the time it runs (romfs.c overlay_init): record what it sees.
@@ -56,6 +63,9 @@ static void reset(const char *text) {
     upscaler = "fsr";
     native_index = -1;
     native_switched = native_switches = 0;
+    tall_index = 3;
+    tall_switched = 1;
+    host_registered = 0;
     scene_index = -1;
     heapdef_grown = 0;
     scene_switched = 0;
@@ -84,14 +94,36 @@ static void configured(const char *text, unsigned w, unsigned h, int enabled) {
     CHECK(dkb_wide_output(output) == (w * 9 > h * 16));
     CHECK(output[0] == w && output[1] == h);
     CHECK(fabs((double)aspect - (double)w / h) < 0.000002);
-    // A projected unit square must have equal pixel dimensions after the x
-    // correction: a 16:9 authored canvas followed by this wider output.
-    CHECK(fabs((double)w / (1280.0 * factor) - (double)h / 720.0) < 0.000002);
+    CHECK(fabs((double)factor - (double)w / h * 9 / 16) < 0.000002);
+    // A projected unit square must have equal pixel dimensions after the UI correction (x divided by +0x114, y by
+    // +0x11c), and the 16:9 canvas must fit: the wider side divided, the other left alone.
+    float hud_x, hud_y;
+    memcpy(&hud_x, test_page + 0x114, 4);
+    memcpy(&hud_y, test_page + 0x11c, 4);
+    CHECK(fabs((double)w / (1280.0 * hud_x) - (double)h / (720.0 * hud_y)) < 0.000002);
+    CHECK(hud_x >= 1.0f && hud_y >= 1.0f && (hud_x == 1.0f || hud_y == 1.0f));
+    if (w * 9 >= h * 16) CHECK(hud_y == 1.0f && hud_x == factor);   // 16:9 and wider: what the sites read before
+    // Vert+ only for a taller display: the set on and its host slot registered.
+    int tall = w * 9 < h * 16;
+    CHECK(tall_switched == tall && host_registered == tall);
+    if (tall) {
+        Cpu c = {0};
+        float fovy = 0.6f, got;
+        uint32_t bits;
+        memcpy(&bits, &fovy, 4);
+        c.v[10] = (__uint128_t)0xdead << 64 | bits;
+        vert_plus(&c);
+        bits = (uint32_t)c.v[10];
+        memcpy(&got, &bits, 4);
+        CHECK((c.v[10] >> 32) == 0);
+        // The horizontal view equals 16:9's: tan(h / 2) = tan(fovy / 2) x aspect.
+        CHECK(fabs(tan(0.5 * got) * w / h - tan(0.3) * 16 / 9) < 0.00001);
+    }
     uint32_t pool;
     memcpy(&pool, test_page + 0x110, 4);
     CHECK(pool == dkb_wide_pool_bytes(w, h) && pool >= 0xc800000);
     for (size_t i = 0; i < sizeof test_page; i++)
-        if (i < 0x100 || i >= 0x114) CHECK(test_page[i] == 0xa5);
+        if (i < 0x100 || (i >= 0x118 && i < 0x11c) || i >= 0x120) CHECK(test_page[i] == 0xa5);
 }
 
 static void valid(const char *text, unsigned w, unsigned h) { configured(text, w, h, 1); }
@@ -99,7 +131,7 @@ static void valid(const char *text, unsigned w, unsigned h) { configured(text, w
 static void rejected(const char *text) {
     reset(text);
     dkb_wide_init();
-    CHECK(switched == 0 && page_reads == 0);
+    CHECK(switched == 0 && page_reads == 0 && tall_switched == 0);
     unsigned output[2];
     CHECK(dkb_wide_output(output) == 0);
     CHECK(output[0] == 2880 && output[1] == 1620);
@@ -248,8 +280,12 @@ int main(void) {
     configured("1920x1080", 1920, 1080, 0);
     configured("2560x1440", 2560, 1440, 0);
     configured("3840x2160", 3840, 2160, 0);
+    configured("1920x1200", 1920, 1200, 0);
+    configured("2560x1600", 2560, 1600, 0);
+    configured("1280x800", 1280, 800, 1);
+    configured("1680x1050", 1680, 1050, 0);
     const char *bad[] = {"", "3440", "3440:1440", "3440x1440junk", "3440x1440\n",
-                         "0x0", "1280x800", "2560x0",
+                         "0x0", "1280x960", "1440x1080", "1278x800", "2560x0",
                          "3441x1440", "3440x1441", "1278x720", "7682x1440", "7680x4322",
                          "3440x718", "-3440x1440"};
     for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) rejected(bad[i]);

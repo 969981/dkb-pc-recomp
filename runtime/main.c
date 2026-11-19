@@ -9,6 +9,8 @@
 //     --probe-nvn, --probe-nvn-tex, --probe-window, --probe-shader, --probe-vkmem, --probe-vkexec    graphics probes
 //     --probe-astc      the compute ASTC decoder against astc_decode_ldr; needs no game files
 //     --probe-movie     host VP9 movie::Decoder on one RomFS movie; skips without game data
+//     --probe-splash    the start-up screen drawn in a set of states and window sizes into PNGs (DKB_SPLASH_SHOTS
+//                       names the folder, splash-probe by default); needs a Vulkan device, no game files
 //     --probe-aoc       mount the add-on content next to the exe and read it back; DKB_AOC_SOURCE=<romfs folder> also
 //                       compares the bytes with the folder the pack was made from
 //     --boot            run the game to the first NVN call
@@ -31,6 +33,7 @@
 #include "host.h"
 #include "platform/platform.h"
 #include "sha256.h"
+#include "splash.h"
 #include "vk_driver_env.h"
 
 #define MAX_MODULES 16
@@ -474,6 +477,7 @@ static int selftest(void) {
     CHECK(mem_kernel_alloc(0x200, 16) == k1, "a freed kernel-region block is not reused");
     check_memory();
     CHECK(!vk_backend_selftest(), "the replay write-back deduplication");
+    CHECK(!splash_selftest(), "the start-up screen's estimate, texts and test sequence");
 
     float used, total, proc;
     plat_mem_info(&used, &total, &proc);
@@ -487,7 +491,7 @@ static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-kernel | --probe-ipc | --probe-ipc-lifetime | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-shader-geometry | --probe-vkmem | "
-                    "--probe-vkexec | --probe-vkgeometry | --probe-vkgeometry-passthrough | --probe-vkgeometry-passthrough-ordering | --probe-vkclear | --probe-vkcopy-astc | --probe-vkpool | --probe-vkreset | --probe-astc | --probe-movie | --probe-aoc | --prepare-shaders | --translate-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
+                    "--probe-vkexec | --probe-vkgeometry | --probe-vkgeometry-passthrough | --probe-vkgeometry-passthrough-ordering | --probe-vkclear | --probe-vkcopy-astc | --probe-vkpool | --probe-vkreset | --probe-astc | --probe-movie | --probe-splash | --probe-aoc | --prepare-shaders | --translate-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
@@ -599,7 +603,10 @@ int main(int argc, char **argv) {
     log_open(!mode);
     if (!mode) {
         // console = 0: a frontend that starts the game gets no console window in front of the game's (#238).
-        if (!cfg_bool("TOTK_CONSOLE")) plat_console_hide();
+        if (!cfg_bool("TOTK_CONSOLE")) {
+            const char *why = plat_console_hide();
+            if (why) rt_log("console: left as is: %s", why);   // tells #364-style reports which case they hit
+        }
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         rt_boot();
         return 0;
@@ -633,6 +640,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-astc")) return probe_astc();
     if (!strcmp(mode, "--probe-vkdevice")) return probe_vkdevice();
     if (!strcmp(mode, "--probe-movie")) return probe_movie();
+    if (!strcmp(mode, "--probe-splash")) return probe_splash();
     if (!strcmp(mode, "--probe-aoc")) return probe_aoc();
     if (!strcmp(mode, "--prepare-shaders")) return gfx_shader_tool(GFX_TOOL_PREPARE_SHADERS);
     if (!strcmp(mode, "--translate-shaders")) return gfx_shader_tool(GFX_TOOL_TRANSLATE_SHADERS);

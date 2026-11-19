@@ -16,6 +16,7 @@ try:
     from compression import zstd
 except ImportError:  # Python 3.12/3.13 development environments.
     import zstandard as zstd
+import romfs_index
 from ultrawide_layout import anim_keys
 
 # Stretch captures of the already-wide framebuffer horizontally. Flat colour
@@ -223,7 +224,7 @@ def generate(romfs, out, w, h, hud, version='dkb100'):
         raise ValueError('RomFS index has not passed extraction verification')
     files = {e['path']: e for e in index['files']}
     outputs = []
-    with (romfs / 'romfs.bin').open('rb') as source:
+    with romfs_index.open_image(romfs, index) as source:
         def read(path):
             entry = files[path]
             if entry['offset'] < 0 or entry['size'] < 0 or entry['offset'] + entry['size'] > index['romfs_size']:

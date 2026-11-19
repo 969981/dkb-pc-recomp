@@ -11,7 +11,9 @@ After a call it reloads only X0-X18 and X30: AAPCS64 has the callee preserve X19
 hold what the Cpu holds. What would break that does not occur in TotK: main and subsdk0 import neither longjmp nor
 the C++ unwinder, sdk's longjmp, __cxa_throw and _Unwind_* have no direct callers, and the runtime writes no register
 above X3 of a running thread's Cpu except X30, which rt_call restores (runtime/hostfn.c). Guest fibers each run on a host fiber of their own with their own Cpu (runtime/kernel.c),
-and ExitThread leaves by longjmp without returning. gen.py --no-callee-saved-trust reloads those registers too.
+and ExitThread leaves by longjmp without returning. Bananza 3.2.0's main does import setjmp and longjmp: a guest
+longjmp lands in the host setjmp gen.py puts at the setjmp call (SETJMP), which reloads every register after it.
+gen.py --no-callee-saved-trust reloads those registers too.
 
 Only plain assignments write registers in the lifted C (`c->x[n] = ...`, `c->sp = ...`), and no code takes a
 register's address, so the rewrite is textual. A register counts as dirty from a write until the next spill on some

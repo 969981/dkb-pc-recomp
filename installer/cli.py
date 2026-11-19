@@ -86,6 +86,9 @@ def main(argv=None):
                          'or base (1.0.0 even when the container also holds an update)')
     ap.add_argument('--exefs', type=Path, help='Bananza 1.0.0 or 3.2.0 ExeFS folder')
     ap.add_argument('--romfs', type=Path, help='Bananza loose RomFS folder or packed romfs.bin/index.json folder')
+    ap.add_argument('--romfs-in-place', action='store_true',
+                    help='Bananza: the game reads the --romfs folder where it is instead of a 9 GB packed copy in the '
+                         'install; the folder must stay there (romfs_dir in dkb.ini)')
     ap.add_argument('--source', type=Path,
                     help='Bananza: your copy as one path, a .nup file or a folder with exefs/ and romfs/ in it (instead '
                          'of --nup, or --exefs and --romfs)')

@@ -6,6 +6,8 @@
 // which is the controller the game reads in that mode. Mouse and keyboard report no input. The controller has two
 // vibration devices (left, right) played on the gamepad's motors (TOTK_RUMBLE=0: none) and a six-axis sensor fed by
 // the gamepad's gyro and accelerometer (TOTK_MOTION=0, live: reads at rest). State layouts follow libnx HID.
+// Player 2 (coop = 1, the default): a second gamepad (input_poll2) is a full-key controller as No.2 (id 1), connected
+// while that pad is; it has no vibration or six-axis sensor of its own. Bananza's two-player mode puts Pauline on it.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -28,7 +30,7 @@ enum { STYLE_FULL_KEY = 1, STYLE_HANDHELD = 2, ATTR_CONNECTED = 1 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint32_t styles = STYLE_FULL_KEY;
-static int enabled, allowed = 1, mouse_ready, keyboard_ready;
+static int enabled, allowed = 1, allowed2 = 1, supported2 = 1, mouse_ready, keyboard_ready;
 static int64_t sample;
 
 static uint32_t pad_id(void) { return ov_handheld() ? 0x20u : 0u; }
@@ -55,10 +57,11 @@ static void ov_supported_ids(Cpu *c) {
     const uint32_t *ids = arg_p(c, 0);
     uint64_t n = arg_x(c, 1);
     if (n > 10 || (!ids && n)) rt_fatal("nn::hid::SetSupportedNpadIdType: invalid id list (%llu ids)", (unsigned long long)n);
-    int ok = 0;
-    for (uint64_t i = 0; i < n; i++) ok |= ids[i] == pad_id();
+    int ok = 0, ok2 = 0;
+    for (uint64_t i = 0; i < n; i++) ok |= ids[i] == pad_id(), ok2 |= ids[i] == 1;
     plat_mutex_lock(&lock);
     allowed = ok;
+    allowed2 = supported2 = ok2;
     plat_mutex_unlock(&lock);
 }
 
@@ -69,12 +72,24 @@ static void ov_supported_styles(Cpu *c) {
     plat_mutex_unlock(&lock);
 }
 
+// Player 2's state (input_poll2); 1 while connected, logged on each change. s may be NULL.
+static int player2(NpadState *s) {
+    NpadState t;
+    if (!s) s = &t;
+    int on = input_poll2(&s->buttons, &s->lx, &s->ly, &s->rx, &s->ry);
+    static volatile int32_t was;
+    if (plat_xchg32(&was, on) != on) rt_log("hid: player 2 (No.2, full-key) %s", on ? "connected" : "disconnected");
+    return on;
+}
+
 // NpadStyleSet GetNpadStyleSet(const NpadIdType &id)
 static void ov_style_set(Cpu *c) {
     uint32_t id = *need_id(c, 0, "GetNpadStyleSet");
     plat_mutex_lock_shared(&lock);
     uint32_t v = enabled && allowed && id == pad_id() ? styles & pad_style() : 0;
+    int p2 = enabled && allowed2 && id == 1 && (styles & STYLE_FULL_KEY);
     plat_mutex_unlock_shared(&lock);
+    if (p2) v = player2(NULL) ? STYLE_FULL_KEY : 0;
     ret_x(c, v);
 }
 
@@ -89,11 +104,13 @@ static void npad_states(Cpu *c, uint32_t want) {
     plat_mutex_lock(&lock);
     NpadState s = {.sampling = ++sample};
     int live = want && enabled && allowed && id == pad_id() && want == pad_style() && (styles & want);
+    int p2 = want == STYLE_FULL_KEY && enabled && allowed2 && id == 1 && (styles & want);
     plat_mutex_unlock(&lock);
     if (live) {
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
-    }
+    } else if (p2 && player2(&s))
+        s.attributes = ATTR_CONNECTED;
     *out = s;
     ret_x(c, 1);
 }
@@ -107,20 +124,38 @@ static void ov_hold_type(Cpu *c) {
     if (t < 0 || t > 1) rt_fatal("nn::hid::SetNpadJoyHoldType: invalid hold type %lld", (long long)t);
 }
 
-// void DisconnectNpad(const NpadIdType &id): only the controller in use (handheld mode disconnects player 1)
+// void DisconnectNpad(const NpadIdType &id): only the controllers in use (handheld mode disconnects player 1). Player
+// 2 comes back at the next ShowControllerSupport or SetSupportedNpadIdType.
 static void ov_disconnect(Cpu *c) {
     uint32_t id = *need_id(c, 0, "DisconnectNpad");
-    if (id != pad_id()) return;
+    if (id != pad_id() && id != 1) return;
     plat_mutex_lock(&lock);
-    allowed = 0;
+    if (id == 1) allowed2 = 0;
+    else allowed = 0;
     plat_mutex_unlock(&lock);
+    rt_log("hid: the game disconnected controller %#x", id);
 }
 
-// Result ShowControllerSupport(ControllerSupportResultInfo *out, const ControllerSupportArg &arg): the one controller
-// is already connected, so the applet returns at once with one player on it.
+// Result ShowControllerSupport(ControllerSupportResultInfo *out, const ControllerSupportArg &arg): the controllers are
+// already connected, so the applet returns at once with the players connected now. Eglantine's controller applet
+// without its UI caps and disconnects the controllers past max_players, 1 in single mode
+// (DefaultControllerApplet::ReconfigureControllers, core/frontend/applets/controller.cpp), and
+// Controller::ConfigurationComplete (applet_controller.cpp) only counts the connected players. Here: single mode gives
+// one player, else player 1 plus player 2 when its gamepad is there, capped at player_count_max. The argument starts with
+// ControllerSupportArgHeader {s8 player_count_min, player_count_max; bool take_over, left_justify, permit_joy_dual,
+// single_mode, identification_color}.
 static void ov_controller_support(Cpu *c) {
     ControllerSupportResult *out = arg_p(c, 0);
-    if (out) *out = (ControllerSupportResult){.players = 1, .selected = pad_id()};
+    const int8_t *arg = arg_p(c, 1);
+    int lo = arg ? arg[0] : 1, hi = arg ? arg[1] : 1, single = arg && arg[5];
+    plat_mutex_lock(&lock);
+    allowed2 = supported2 && !single && hi != 1;   // players past the maximum are disconnected
+    int p2 = allowed2;
+    plat_mutex_unlock(&lock);
+    int n = 1 + (p2 && player2(NULL));
+    rt_log("hid: controller support applet (players %d..%d%s): %d player%s", lo, hi, single ? ", single mode" : "", n,
+           n > 1 ? "s" : "");
+    if (out) *out = (ControllerSupportResult){.players = (int8_t)n, .selected = pad_id()};
     ret_x(c, 0);
 }
 

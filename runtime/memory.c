@@ -103,6 +103,11 @@ static uint32_t thaw_ms[RT_ADDRESS_LIMIT >> FRZ_SHIFT];   // frz_lock: GetTickCo
 static volatile int32_t nfrz;
 static PlatMutex frz_lock = PLAT_MUTEX_INIT;
 static volatile int64_t frz_count[4];   // freezes; thaws by a write fault, by mem_thaw, by a mapping change
+// mem_freeze's refusals by reason (host.h MEM_FRZ_NO_N): a guarded page in the region (GPU-owned or the read probe's),
+// a thaw less than FRZ_HOLD_MS ago, a region that never freezes (sealed pages), a page that is not committed read-write
+// or a lazy-heap hole (or more runs than freeze_locked keeps, or a failed protection change).
+enum { FRZ_NO_GUARD, FRZ_NO_HELD, FRZ_NO_NEVER, FRZ_NO_STATE };
+static volatile int64_t frz_refused[MEM_FRZ_NO_N];
 // TOTK_FRZ_WHOLE=0 (an A/B of the thaw, TOTK_TRACE=perf shows the difference): every region is thawed the way one with
 // holes is, a query per read-only run, from the bottom up. Read at the first freeze (frz_lock), before which nothing
 // is thawed.
@@ -241,24 +246,27 @@ static int prb_held(uint64_t a, uint64_t n);
 // guarded page (GPU-owned or the read probe's, below) is refused: such a page is PAGE_NOACCESS, which the query sees,
 // or claimed and read-write for a moment while a thread settles it, which prb_held sees. Guards change protections
 // under frz_lock only, so none lands between the query and the protection change here.
-static int freeze_locked(uint64_t r) {
+// *why (when 0 is returned): the FRZ_NO_ reason, for mem_freeze's counts.
+static int freeze_locked(uint64_t r, int *why) {
     uint64_t a = r << FRZ_SHIFT, end = a + FRZ_SIZE, run[16][2];
     int n = 0;
-    if (prb_held(a, FRZ_SIZE)) return 0;
+    if (prb_held(a, FRZ_SIZE)) return *why = FRZ_NO_GUARD, 0;
     for (uint64_t x = a, y; x < end; x = y) {
         int st = plat_mem_state(x, end, &y);
         if (st >= PLAT_PROT_NONE) {
-            if (st != PLAT_PROT_RW || n == 16) return 0;
+            if (st != PLAT_PROT_RW || n == 16) return *why = FRZ_NO_STATE, 0;
             run[n][0] = x, run[n][1] = y, n++;
-        } else if (st != PLAT_MEM_RESERVED || (heap_lazy() && x >= L.heap.base && x < L.heap.base + heap_size)) return 0;
+        } else if (st != PLAT_MEM_RESERVED || (heap_lazy() && x >= L.heap.base && x < L.heap.base + heap_size))
+            return *why = FRZ_NO_STATE, 0;
         // (a lazy-heap hole may be committed by fault_veh at any moment, so such a region is never frozen)
     }
     for (int i = 0; i < n; i++)
         if (!plat_mem_protect(run[i][0], run[i][1] - run[i][0], PLAT_PROT_READ)) {
             while (i--) plat_mem_protect(run[i][0], run[i][1] - run[i][0], PLAT_PROT_RW);
-            return 0;
+            return *why = FRZ_NO_STATE, 0;
         }
-    return !n ? 0 : n == 1 && run[0][0] == a && run[0][1] == end && frz_whole ? FRZ_WHOLE : FRZ_HOLES;
+    if (!n) return *why = FRZ_NO_STATE, 0;
+    return n == 1 && run[0][0] == a && run[0][1] == end && frz_whole ? FRZ_WHOLE : FRZ_HOLES;
 }
 
 int mem_freeze(uint64_t a) {
@@ -272,15 +280,17 @@ int mem_freeze(uint64_t a) {
         frz_whole = !(e && !strcmp(e, "0"));
         if (!frz_whole) rt_log("mem: frozen regions are thawed with a query per read-only run (TOTK_FRZ_WHOLE=0)");
     }
+    int why = -1;
     if (frz[r]) ok = 1;
-    else if (frz_never[r]) ok = 0;
-    else if (thaw_ms[r] && (int32_t)((uint32_t)plat_now_ms() - thaw_ms[r]) < (int32_t)FRZ_HOLD_MS) ok = 0;   // |1 may be ahead
-    else if ((how = freeze_locked(r))) {
+    else if (frz_never[r]) why = FRZ_NO_NEVER;
+    else if (thaw_ms[r] && (int32_t)((uint32_t)plat_now_ms() - thaw_ms[r]) < (int32_t)FRZ_HOLD_MS) why = FRZ_NO_HELD;   // |1 may be ahead
+    else if ((how = freeze_locked(r, &why))) {
         __atomic_store_n(&frz[r], (uint8_t)how, __ATOMIC_RELEASE);
         plat_inc32(&nfrz);
         plat_inc64(&frz_count[0]);
         ok = 1;
     }
+    if (!ok && why >= 0) plat_inc64(&frz_refused[why]);
     plat_mutex_unlock(&frz_lock);
     plat_op_end(op, 0);
     return ok;
@@ -706,6 +716,10 @@ void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws
     *other_thaws = (uint64_t)plat_xchg64(&frz_count[2], 0) + (uint64_t)plat_xchg64(&frz_count[3], 0);
 }
 
+void mem_freeze_refusals(uint64_t out[MEM_FRZ_NO_N]) {
+    for (int i = 0; i < MEM_FRZ_NO_N; i++) out[i] = (uint64_t)plat_xchg64(&frz_refused[i], 0);
+}
+
 // The first write into a frozen region thaws it and retries. A fault in a region another thread thawed meanwhile
 // retries too; any other fault goes on to the crash handler.
 // The platform's write-fault hook (plat_mem_fault_hook): 1 retries the write.
@@ -903,18 +917,25 @@ static int heap_lazy(void) {
 }
 
 // Commits the reserved pages of [s, e) (64 KiB aligned, inside the heap) after asking the system for their state.
-static void touch_query(uint64_t s, uint64_t e) {
+// A commit that fails stops the game when the caller needs the pages (must: a kernel or driver access follows), and
+// returns 0 with the rest of the range left as it was when it does not (the background commits of cl_thread, which
+// only save later write-watch queries: such a range stays reserved, and the caller must not mark it committed).
+static int touch_query(uint64_t s, uint64_t e, int must) {
     int op = plat_op_begin(PLAT_OP_TOUCH, s, e - s);
     frz_lock_take();   // freeze_locked refuses regions with holes, so a commit here never lands in a frozen one
     for (uint64_t x = s, y; x < e; x = y) {
         int st = plat_mem_state(x, e, &y);
         if (st == PLAT_MEM_RESERVED && !plat_mem_commit(x, y - x)) {
             plat_mutex_unlock(&frz_lock);
-            rt_fatal("memory: lazy heap commit %#llx+%#llx failed", (unsigned long long)x, (unsigned long long)(y - x));
+            if (must)
+                rt_fatal("memory: lazy heap commit %#llx+%#llx failed", (unsigned long long)x, (unsigned long long)(y - x));
+            plat_op_end(op, 0);
+            return 0;
         }
     }
     plat_mutex_unlock(&frz_lock);
     plat_op_end(op, 0);
+    return 1;
 }
 
 // TOTK_TOUCH_MAP: 1 (default) lets mem_touch skip the chunks the platform's commit map knows to be committed
@@ -957,13 +978,20 @@ void mem_touch(uint64_t a, uint64_t n) {
     mem_touch_keep(a, n);
 }
 
-void mem_touch_keep(uint64_t a, uint64_t n) {
-    if (!n || !heap_lazy()) return;
+static int touch_range(uint64_t a, uint64_t n, int must);
+
+void mem_touch_keep(uint64_t a, uint64_t n) { touch_range(a, n, 1); }
+
+// mem_touch_keep's work. must 0 is for cl_thread, which holds `lock` (so heap_size cannot change under it) and may
+// fail: it returns 0 at the first commit that fails, with that chunk and the ones after it neither committed nor
+// marked in the commit map.
+static int touch_range(uint64_t a, uint64_t n, int must) {
+    if (!n || !heap_lazy()) return 1;
     uint64_t lo = L.heap.base, hi = lo + __atomic_load_n(&heap_size, __ATOMIC_RELAXED);
     uint64_t s = a & ~0xffffull, e = (a + n + 0xffff) & ~0xffffull;
     if (s < lo) s = lo;
     if (e > hi) e = hi;
-    if (s >= e) return;
+    if (s >= e) return 1;
     plat_inc64(&touch_n[0]);
 #ifdef _WIN32
     int map = touch_map();
@@ -987,16 +1015,118 @@ void mem_touch_keep(uint64_t a, uint64_t n) {
                     if (plat_inc64(&touch_n[3]) <= 16)
                         rt_log("mem: mem_touch: the commit map holds %#llx+%#llx, which is reserved", (unsigned long long)u,
                                (unsigned long long)(v - u));
-                    touch_query(u, v);
+                    if (!touch_query(u, v, must)) return 0;
                 }
             continue;
         }
         plat_add64(&touch_n[2], chunks);
-        touch_query(x, y);
+        if (!touch_query(x, y, must)) return 0;
 #ifdef _WIN32
         if (map) plat_mem_lazy_mark(x, y);
 #endif
     }
+    return 1;
+}
+
+// ---- lazy-heap commits in the background (mem_commit_later)
+// A staged pool (vk_memory.c, TOTK_MIRROR_STAGED) is never imported, so the pages of it the CPU never touched stay
+// reserved, where an imported pool's import commits them all (mem_touch). freeze_locked never freezes a 2 MiB region
+// with a lazy-heap hole (fault_veh may commit it at any moment), so the regions over such a pool are write-watch queried
+// every frame: with TOTK_MIRROR_STAGED=all on the Hilltop Layer of Surf Hills (3.2.0) about 300 MiB were frozen instead
+// of about 730, and the queries covered 630 MiB a frame instead of 220. This thread commits those holes, as the import
+// would have, CL_DELAY_MS after the pool's first use and CL_SLICE bytes at a time, so the frame that first uses the
+// pools (the point of the staged mirror is that its first use costs no import) and the replay's queries meanwhile wait
+// at most for one slice's frz_lock (touch_query). A commit leaves the page's bytes zero, as the fault handler's would,
+// and is not a write for the write watch. The commit charge comes back to what the imports had; the pages stay out of
+// the working set until something touches them. The queue keeps the ranges in the order they came, so every due range
+// is at its head; one that finds the queue full is left for the fault handler, as without this.
+// The commit comes long after the request, so the heap may have shrunk in between (mem_set_heap_size decommits the
+// range it gives back and takes it out of the commit map). Each slice is therefore committed under `lock`, the lock
+// that SetHeapSize holds from its check to the new heap_size: touch_range clamps to the heap_size it reads under it, so
+// a slice either ends before the shrink (which then decommits it) or sees the smaller heap and commits nothing beyond
+// it. Without that, a commit could land in the range after the decommit and be marked in the commit map, and a later
+// mem_touch would skip pages the next shrink-and-grow left reserved. The order is `lock`, then frz_lock (touch_query),
+// as in mem_set_heap_size; CL.lock is never held with either. A commit that fails (the commit limit) ends the range:
+// nothing needs these pages committed, and the fault handler or a mem_touch commits them when something does.
+#define CL_DELAY_MS 2000u
+#define CL_SLICE (2ull << 20)
+#define CL_MAX 4096   // a layer's first frame makes a few hundred staged mirrors, a reload up to about 1,400
+static struct {
+    PlatMutex lock;
+    PlatCond cv;
+    PlatThread *t;
+    int failed;
+    struct { uint64_t a, n; uint64_t due; } q[CL_MAX];
+    int head, n;
+    uint64_t dropped;
+} CL = {.lock = PLAT_MUTEX_INIT, .cv = PLAT_COND_INIT};
+// Since the last mem_commit_later_stats: ranges taken, bytes looked at, time spent (ns); ranges dropped (queue full).
+static volatile int64_t cl_ranges, cl_bytes, cl_ns, cl_dropped;
+static volatile int64_t cl_failed;   // ranges ended early by a commit that failed, since the start
+
+static void cl_thread(void *arg) {
+    (void)arg;
+    plat_mutex_lock(&CL.lock);
+    for (;;) {
+        while (!CL.n) plat_cond_wait(&CL.cv, &CL.lock);
+        uint64_t now = plat_now_ms(), due = CL.q[CL.head].due;
+        if (now < due) {   // the head is the earliest: wait for it (or for nothing new: the queue only grows behind it)
+            plat_cond_wait_ms(&CL.cv, &CL.lock, (uint32_t)(due - now));
+            continue;
+        }
+        uint64_t a = CL.q[CL.head].a, n = CL.q[CL.head].n;
+        CL.head = (CL.head + 1) % CL_MAX, CL.n--;
+        plat_mutex_unlock(&CL.lock);
+        uint64_t t0 = plat_now_ns();
+        for (uint64_t x = a; x < a + n; x += CL_SLICE) {
+            plat_mutex_lock(&lock);
+            int ok = touch_range(x, a + n - x < CL_SLICE ? a + n - x : CL_SLICE, 0);
+            plat_mutex_unlock(&lock);
+            // `lock` is not fair, and this loop would take it again at once: a guest thread waiting for it in SetHeapSize,
+            // MapMemory or QueryMemory could be passed over for a whole range (about 225 slices for the terrain pool).
+            // Giving up the time slice lets a waiter in after one slice.
+            plat_yield();
+            if (!ok) {
+                if (plat_inc64(&cl_failed) <= 4)
+                    rt_log("mem: a background commit failed at %#llx: the rest of %#llx+%#llx stays reserved",
+                           (unsigned long long)x, (unsigned long long)a, (unsigned long long)n);
+                break;
+            }
+        }
+        plat_inc64(&cl_ranges);
+        plat_add64(&cl_bytes, (int64_t)n);
+        plat_add64(&cl_ns, (int64_t)(plat_now_ns() - t0));
+        plat_mutex_lock(&CL.lock);
+    }
+}
+
+void mem_commit_later(uint64_t a, uint64_t n) {
+    if (!n || !heap_lazy()) return;
+    plat_mutex_lock(&CL.lock);
+    if (!CL.t && !CL.failed && !(CL.t = plat_thread_new(cl_thread, NULL, "mem commit later"))) {
+        CL.failed = 1;
+        rt_log("mem: the background commit thread could not be started; staged pools' untouched pages stay reserved");
+    }
+    if (CL.failed || CL.n == CL_MAX) {
+        if (!CL.failed) plat_inc64(&cl_dropped);
+        plat_mutex_unlock(&CL.lock);
+        return;
+    }
+    __typeof__(CL.q[0]) *tail = CL.n ? &CL.q[(CL.head + CL.n - 1) % CL_MAX] : NULL;
+    if (tail && tail->a + tail->n == a) {   // pools made one after another often follow each other in the heap
+        tail->n += n;   // committed with the range before it, a little earlier than its own due time
+        plat_mutex_unlock(&CL.lock);
+        return;
+    }
+    CL.q[(CL.head + CL.n) % CL_MAX].a = a, CL.q[(CL.head + CL.n) % CL_MAX].n = n;
+    CL.q[(CL.head + CL.n) % CL_MAX].due = plat_now_ms() + CL_DELAY_MS;
+    if (!CL.n++) plat_cond_signal(&CL.cv);
+    plat_mutex_unlock(&CL.lock);
+}
+
+void mem_commit_later_stats(uint64_t out[4]) {
+    out[0] = (uint64_t)plat_xchg64(&cl_ranges, 0), out[1] = (uint64_t)plat_xchg64(&cl_bytes, 0);
+    out[2] = (uint64_t)plat_xchg64(&cl_ns, 0), out[3] = (uint64_t)plat_xchg64(&cl_dropped, 0);
 }
 
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {

@@ -10,7 +10,7 @@ from collections import OrderedDict
 import numpy as np
 
 from lifter import Insn, Lifter, Unsupported, hx
-from nso import Nso, R_AARCH64_RELATIVE
+from nso import Nso, R_AARCH64_RELATIVE, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT
 
 LIFT_CACHE = 1 << 16  # lifted instructions kept per module; analyses revisit nearby addresses only
 
@@ -110,3 +110,22 @@ class Module:
             if typ == R_AARCH64_RELATIVE:
                 starts.add(self.base + add)
         return sorted(a for a in starts if self.in_text(a))
+
+    def import_stubs(self, names):
+        """PLT stubs of the imports named in names (absolute addresses): `adrp x16, page; ldr x17, [x16, #off];
+        add x16, x16, #off; br x17`, whose GOT slot page + off holds a JUMP_SLOT or GLOB_DAT relocation of one of
+        those symbols."""
+        n = self.nso
+        slots = {self.base + off for off, typ, si, _ in n.relocs
+                 if typ in (R_AARCH64_JUMP_SLOT, R_AARCH64_GLOB_DAT) and si and n.syms[si][0] in names}
+        w = self.words
+        adrp = np.flatnonzero(((w[:-3] & 0x9F00001F) == 0x90000010) & ((w[1:-2] & 0xFFC003FF) == 0xF9400211)
+                              & (w[3:] == 0xD61F0220))
+        stubs = set()
+        for i in adrp.tolist():
+            a, v = self.lo + 4 * i, int(w[i])
+            imm = ((v >> 29) & 3) | (((v >> 5) & 0x7FFFF) << 2)
+            page = (a & ~0xFFF) + ((imm - (1 << 21) if imm & (1 << 20) else imm) << 12)
+            if page + ((int(w[i + 1]) >> 10) & 0xFFF) * 8 in slots:
+                stubs.add(a)
+        return stubs

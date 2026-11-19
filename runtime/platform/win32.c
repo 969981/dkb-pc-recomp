@@ -261,20 +261,22 @@ void plat_timer_1ms(void) { timeBeginPeriod(1); }
 // as the default terminal, GetConsoleWindow returns a stand-in that ShowWindow does not hide, while detaching closes
 // the terminal window (#238). The standard streams then go to NUL, so no write reaches a closed console handle whose
 // value a later file or pipe could take. Runs on the main thread before the boot starts other threads.
-void plat_console_hide(void) {
+const char *plat_console_hide(void) {
     HWND w = GetConsoleWindow();
     DWORD pids[2];
-    if (!w || GetConsoleProcessList(pids, 2) != 1) return;
+    if (!w) return "no console window";
+    if (GetConsoleProcessList(pids, 2) != 1) return "the console is shared with another process";
     fflush(stdout);
     fflush(stderr);
     if (!FreeConsole()) {
         ShowWindow(w, SW_HIDE);
-        return;
+        return "FreeConsole failed, window hidden";
     }
     // The UCRT's freopen on the standard streams also points the process's standard handles at the new file.
     freopen("NUL", "r", stdin);
     freopen("NUL", "w", stdout);
     freopen("NUL", "w", stderr);
+    return NULL;
 }
 
 static PlatScale qpc_ns;   // set before main, so no thread reads it half written

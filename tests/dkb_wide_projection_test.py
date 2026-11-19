@@ -1,7 +1,7 @@
 """Run the lifted UI correction on synthetic matrices, without game data or GPU.
 
-Check the complete register state, stack restoration, untouched matrix rows and
-surrounding memory, and pixel proportions at five output shapes. This exercises
+Check the complete register state, stack restoration, untouched matrix rows (2 and 3) and
+surrounding memory, and pixel proportions at nine output shapes (16:9, wider and 16:10). This exercises
 the actual replacement words from the patch table through the portable lifter.
 """
 import argparse
@@ -68,7 +68,7 @@ def main():
     source += r'''
 int main(void) {
     unsigned errors = 0;
-    const unsigned sizes[][2] = {{2880,1620},{3440,1440},{2560,1080},{3840,1600},{5120,1440},{7680,2160}};
+    const unsigned sizes[][2] = {{2880,1620},{3440,1440},{2560,1080},{3840,1600},{5120,1440},{7680,2160},{1920,1200},{2560,1600},{1680,1050}};
     // Full UI canvas, observed bubble/icon/text captures, and captures that
     // match just one full-canvas dimension or only its aspect ratio.
     const float canvases[][2] = {{1920,1080},{650,200},{578.4f,120},{100,100},
@@ -84,10 +84,15 @@ int main(void) {
         memory.matrix[0]=2.0f/canvases[canvas][0];
         memory.matrix[5]=2.0f/canvases[canvas][1];
         wanted=memory;
+        // runtime/dkb_wide.c dkb_wide_init: the camera factor at +0x10c (not read by these sites), the UI x divisor
+        // at +0x114 and the y divisor at +0x11c.
         float factor=((float)sizes[r][0]/sizes[r][1])/(16.0f/9.0f);
-        memcpy(page+0x10c,&factor,4);
+        float hud_x=factor>1?factor:1.0f, hud_y=factor<1?1.0f/factor:1.0f, poison=0.37f;
+        memcpy(page+0x10c,&poison,4);
+        memcpy(page+0x114,&hud_x,4);
+        memcpy(page+0x11c,&hud_y,4);
         if (p!=0 || canvas==0)
-            for (unsigned i=0;i<4;i++) wanted.matrix[i]/=factor;
+            for (unsigned i=0;i<4;i++) wanted.matrix[i]/=hud_x, wanted.matrix[4+i]/=hud_y;
         memset(stack,0xa5,sizeof stack);
         Cpu c={0};
         for (unsigned i=0;i<32;i++) {c.x[i]=0x123456789abcdef0ull+i;c.v[i]=(__uint128_t)c.x[i]<<64|~c.x[i];}
@@ -101,7 +106,7 @@ int main(void) {
         errors += c.sp!=saved.sp || c.nzcv!=saved.nzcv;
         errors += memcmp(&memory,&wanted,sizeof memory)!=0;
         for (unsigned i=0;i<sizeof stack-(p==0 ? 80 : 48);i++) errors += stack[i]!=0xa5;
-        errors += fabs((double)sizes[r][0]/(1280*factor)-(double)sizes[r][1]/720)>0.000002;
+        errors += fabs((double)sizes[r][0]/(1280*hud_x)-(double)sizes[r][1]/(720*hud_y))>0.000002;
         cases++;
     }
     printf("UI projection: %u matrix/register cases, %u failures\n",cases,errors);

@@ -5,7 +5,8 @@
 // host. Stub rule: queries and initialisation succeed with neutral values, data paths stop with a named fatal.
 //
 // Environment:
-//   TOTK_LANG=<Switch language code>   the game's language as given ("ja", "en-GB", "zh-Hant", ...)
+//   TOTK_LANG=<Switch language code>   the game's language as given ("ja", "en-GB", "zh-Hant", ...); an unknown code
+//                                      is logged and ignored
 //   TOTK_LOCALE=<BCP 47 tag>           else the language for this locale ("pt-BR"), else the Windows user locale;
 //                                      a language the game does not ship becomes en-US
 //   TOTK_OPERATION_MODE=docked|handheld   operation and performance mode reported to the game (default docked)
@@ -81,6 +82,7 @@ static const char *switch_language(const char *tag) {
         return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
              : !strcmp(lang, "nl") ? "nl" : !strcmp(lang, "ru") ? "ru" : !strcmp(lang, "ko") ? "ko" : "pt";
     if (!strcmp(lang, "pl")) return "pl";   // Eglantine: Set::LanguageCode::PL = "pl", ApplicationLanguage::Polish
+    if (!strcmp(lang, "th")) return "th";   // Eglantine: Set::LanguageCode::TH = "th", ApplicationLanguage::Thai
     if (!strcmp(lang, "fr")) return !strcmp(region, "CA") ? "fr-CA" : "fr";
     if (!strcmp(lang, "es")) return *region && strcmp(region, "ES") ? "es-419" : "es";
     if (!strcmp(lang, "zh"))
@@ -95,17 +97,19 @@ static const char *switch_language(const char *tag) {
 // The game's language as a Switch language code (TOTK_LANG, else TOTK_LOCALE, else the Windows user locale). TotK
 // accepts "zh-Hans" and "zh-Hant" for Chinese and falls back to Japanese for "zh-CN" and "zh-TW", so those two
 // spellings, which older totk.ini files and menus wrote, are mapped to them.
-const char *ov_language(void) {
+static const char *configured_language(void) {
     static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "ko", "nl", "pt", "ru",
-                                        "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR", "pl"};
+                                        "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR", "pl", "th"};
     const char *code = cfg_get("TOTK_LANG");   // no fixed default: TOTK_LOCALE or the Windows user locale decides when unset
     if (code && *code) {
         if (!strcmp(code, "zh-CN")) return "zh-Hans";
         if (!strcmp(code, "zh-TW")) return "zh-Hant";
-        if (!strcmp(code, "EUpl")) return "pl";   // the game's own name for Polish (Mals/EUpl)
+        if (!strcmp(code, "EUpl")) return "pl";   // the game's own names (Mals/EUpl, Mals/THth)
+        if (!strcmp(code, "THth")) return "th";
         for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
             if (!strcmp(code, codes[i])) return codes[i];
-        rt_fatal("TOTK_LANG '%s' is not a Switch language code", code);
+        static int told;
+        if (!told++) rt_log("oe: lang = '%s' is not a language the game knows; using the locale instead", code);
     }
     const char *tag = cfg_get("TOTK_LOCALE");
     char sys[85] = "en-US";
@@ -114,6 +118,18 @@ const char *ov_language(void) {
         tag = sys;
     }
     return switch_language(tag);
+}
+
+// Thai (Mals/THth, Font/Font_THth) came with Bananza update 3.2.0; the base game and TotK have neither, so they get
+// English.
+const char *ov_language(void) {
+    const char *code = configured_language();
+    if (!strcmp(code, "th") && strcmp(rt_game_target, "dkb458752")) {
+        static int told;
+        if (!told++) rt_log("oe: Thai needs Bananza update 3.2.0; %s runs in en-US", rt_game_target);
+        return "en-US";
+    }
+    return code;
 }
 
 // LanguageCode GetDesiredLanguage(): char[8] in x0

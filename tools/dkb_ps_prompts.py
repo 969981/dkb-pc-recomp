@@ -10,11 +10,13 @@ out of it. This keeps each plate as the game draws it and replaces only the cut-
   with a 1 or a 2;
 - + and - (U+E0EF, U+E0F0): the Options bars and the Create rays.
 
-With --layout xbox (pad_layout auto with a Sony pad, or xbox) the button that does Switch A is the bottom one, so A
-gets the cross, B the circle, X the square and Y the triangle, and the face-button diamonds that point at one button
-(U+E0AB to U+E0AE, U+E0CB and U+E0CE) trade places so they point at it. With --layout nintendo (pad_layout nintendo or
-xbox_prompts: Switch A on the right button) A gets the circle, B the cross, X the triangle and Y the square, and the
-diamonds stay.
+Each glyph names the physical button that does its Switch button. With --layout xbox (pad_layout auto with a Sony pad,
+or xbox) the button that does Switch A is the bottom one, so A gets the cross, B the circle, X the square and Y the
+triangle, and the face-button diamonds that point at one button (U+E0AB to U+E0AE, U+E0CB and U+E0CE) trade places so
+they point at it. With --layout nintendo (pad_layout nintendo or xbox_prompts: Switch A on the right button) A gets the
+circle, B the cross, X the triangle and Y the square, and the diamonds stay. Bind lines that move the face buttons
+(bind_X = pad:north, bind_Y = pad:west) need the glyphs of their own positions: --layout also takes the positions of A,
+B, X and Y as four letters (senw: A south, B east, X north, Y west), and the setup makes senw and eswn too.
 
 The symbols are original drawings, made here from straight strokes and arcs. Only the plates and the L and R letters
 come from the user's own font, at install time. Output: <out>/Font/Font*.Nin_Ounce_NVN2.bfarc.zs and
@@ -28,6 +30,8 @@ import math
 import re
 import struct
 from pathlib import Path
+
+import romfs_index
 
 try:
     from compression import zstd as _zstd
@@ -184,10 +188,41 @@ def create_rays(thick=190):
 
 
 SYMBOLS = {'cross': cross, 'circle': circle, 'square': square, 'triangle': triangle}
-FACE = {'xbox': {0xE0E0: 'cross', 0xE0E1: 'circle', 0xE0E2: 'square', 0xE0E3: 'triangle'},
-        'nintendo': {0xE0E0: 'circle', 0xE0E1: 'cross', 0xE0E2: 'triangle', 0xE0E3: 'square'}}
+# A layout names the physical face button of Switch A, B, X and Y in that order: s(outh), e(ast), w(est), n(orth). xbox
+# and nintendo are the two pad_layout tables (runtime/input_map.c DEFAULT_PADS); the others come from bind_ lines that
+# move the face buttons (runtime/romfs.c ps_prompts_init picks the folder made for the bindings in effect).
+LAYOUTS = {'xbox': 'sewn', 'nintendo': 'esnw'}
+FACE_CODES = (0xE0E0, 0xE0E1, 0xE0E2, 0xE0E3)   # A, B, X, Y
+POS_SYMBOL = {'s': 'cross', 'e': 'circle', 'w': 'square', 'n': 'triangle'}   # where each sits on a PlayStation pad
 # Diamonds that point at one face button: A (right), B (bottom), X (top), Y (left), and two that point at a pair.
-DIAMOND_SWAPS = {'xbox': ((0xE0AB, 0xE0AC), (0xE0AD, 0xE0AE), (0xE0CB, 0xE0CE)), 'nintendo': ()}
+DIAMOND_AT = {'e': 0xE0AB, 's': 0xE0AC, 'n': 0xE0AD, 'w': 0xE0AE}
+PAIR_DIAMONDS = (0xE0CB, 0xE0CE)
+
+
+def face_spec(layout):
+    """The four position letters for a layout name or a spec such as 'senw'."""
+    spec = LAYOUTS.get(layout, layout)
+    if sorted(spec) != sorted('sewn'):
+        raise ValueError(f'layout {layout!r}: expected xbox, nintendo or the positions of A, B, X, Y (a mix of s e w n)')
+    return spec
+
+
+def face(layout):
+    """{code point: symbol} of the A, B, X and Y glyphs: each names the button it is on."""
+    return {code: POS_SYMBOL[pos] for code, pos in zip(FACE_CODES, face_spec(layout))}
+
+
+def diamond_sources(layout):
+    """{code point: code point whose original charstring it takes}: each single diamond points at its button's
+    position. The pair diamonds trade places only when every button moves as on an Xbox pad (A and B swap, X and Y
+    swap); with one pair swapped the two buttons are no longer opposite, no pair glyph fits, and they stay."""
+    spec = face_spec(layout)
+    out = {DIAMOND_AT[home]: DIAMOND_AT[pos] for home, pos in zip(LAYOUTS['nintendo'], spec)}
+    if spec == LAYOUTS['xbox']:
+        out[PAIR_DIAMONDS[0]], out[PAIR_DIAMONDS[1]] = PAIR_DIAMONDS[1], PAIR_DIAMONDS[0]
+    return {a: b for a, b in out.items() if a != b}
+
+
 LABELS = {0xE0E4: (0xE0E6, 1), 0xE0E5: (0xE0E7, 1), 0xE0E6: (0xE0E6, 2), 0xE0E7: (0xE0E7, 2)}   # glyph: (letter source, digit)
 
 # ---------------------------------------------------------------------------------------------------- CFF reading
@@ -579,11 +614,11 @@ def ps_font(font, layout):
     """The plain OpenType HardKey font with the PlayStation glyphs."""
     tables = sfnt_tables(font)
     cff = Cff(tables[b'CFF '])
-    gid = {code: cmap_lookup(tables[b'cmap'], code) for code in (*FACE[layout], *LABELS, 0xE0EF, 0xE0F0,
-                                                                   *(c for pair in DIAMOND_SWAPS[layout] for c in pair))}
+    moves = diamond_sources(layout)
+    gid = {code: cmap_lookup(tables[b'cmap'], code) for code in (*FACE_CODES, *LABELS, 0xE0EF, 0xE0F0, *moves)}
     original = {code: cff.glyph(g) for code, g in gid.items()}
     new = {}
-    for code, sym in FACE[layout].items():
+    for code, sym in face(layout).items():
         width, cs = original[code]
         new[code] = encode_charstring(width, [plate_of(cs)] + SYMBOLS[sym]())
     for code, (source, which) in LABELS.items():
@@ -605,8 +640,8 @@ def ps_font(font, layout):
     for code, art in ((0xE0EF, options_bars), (0xE0F0, create_rays)):
         width, cs = original[code]
         new[code] = encode_charstring(width, [plate_of(cs)] + art())
-    for a, b in DIAMOND_SWAPS[layout]:
-        new[a], new[b] = cff.charstrings[gid[b]], cff.charstrings[gid[a]]
+    for a, b in moves.items():
+        new[a] = cff.charstrings[gid[b]]
     for code, cs in new.items():
         cff.charstrings[gid[code]] = cs
     return sfnt_build(font, {**tables, b'CFF ': cff.build()})
@@ -664,7 +699,7 @@ def generate(romfs, out, layout):
     files = index['files']
     lines = ['# path\tsize\tsha256\toriginal_sha256 (tools/dkb_ps_prompts.py --layout ' + layout + ')']
     outputs, made = [], {}
-    with (romfs / 'romfs.bin').open('rb') as image:
+    with romfs_index.open_image(romfs, index) as image:
         def read(row):
             image.seek(row['offset'])
             raw = image.read(row['size'])
@@ -714,8 +749,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--romfs', type=Path, required=True, help="the install's romfs folder (romfs.bin and index.json)")
     ap.add_argument('--out', type=Path, required=True, help='the overlay folder, under build/ or an installer workspace')
-    ap.add_argument('--layout', choices=('xbox', 'nintendo'), default='xbox',
-                    help='xbox: Switch A on the bottom button (cross); nintendo: on the right one (circle)')
+    ap.add_argument('--layout', default='xbox',
+                    help='xbox: Switch A on the bottom button (cross); nintendo: on the right one (circle); or the '
+                         'positions of A, B, X, Y as four letters of s e w n (senw: A south, B east, X north, Y west)')
     ap.add_argument('--installer-workspace', type=Path, help='owned installer workspace containing build staging')
     args = ap.parse_args()
     build = (Path(__file__).resolve().parents[1] / 'build').resolve()
@@ -728,6 +764,10 @@ def main():
     out = args.out.resolve()
     if not out.is_relative_to(build) or out == build:
         ap.error('game-derived overlays must be in a dedicated directory under build/')
+    try:
+        face_spec(args.layout)
+    except ValueError as error:
+        ap.error(str(error))
     generate(args.romfs, out, args.layout)
 
 

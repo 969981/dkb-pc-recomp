@@ -49,6 +49,7 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 int vk_antilag_available(void);   // vk_antilag.c: the device can run AMD Anti-Lag 2; its row is shown only then
+int vk_splash_up(void);           // vk_splash.c: the start-up screen is up
 void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]);
 int res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
@@ -73,6 +74,12 @@ static const unsigned char roboto_ttf[] = {
 };
 #pragma clang diagnostic pop
 
+// The start-up screen (splash_text.c) writes its text in the same font
+extern "C" const unsigned char *menu_font_ttf(size_t *size) {
+    *size = sizeof roboto_ttf;
+    return roboto_ttf;
+}
+
 // ---- open state, any thread
 static std::atomic<int> g_open;     // the menu is open
 static std::atomic<int> g_reset;    // opened or closed since the last laid-out frame: drop stale input
@@ -85,6 +92,7 @@ static PlatMutex open_lock = PLAT_MUTEX_INIT;
 static int change_open(int want) {
     plat_mutex_lock(&open_lock);
     int open = want < 0 ? !g_open.load() : want;
+    if (open && vk_splash_up()) open = g_open.load();   // the start-up screen has no menu over it (vk_splash.c)
     if (g_open.load() != open) {
         g_open.store(open);
         g_reset.store(1);
@@ -545,8 +553,10 @@ static void row_output_res(void) {
 }
 
 static const char *const *dkb_render_sizes(bool ultrawide, int &count) {
-    // The dkbwide patch grows the game's fixed render-target pool for larger sizes.
-    static const char *const standard[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "2880x1620", "3840x2160"};
+    // The dkbwide patch grows the game's fixed render-target pool for larger sizes. The 16:10 sizes need no ultrawide:
+    // dkb_wide.c gives them Vert+ and a centred 16:9 HUD.
+    static const char *const standard[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "2880x1620", "3840x2160",
+                                           "1280x800", "1920x1200", "2560x1600"};
     static const char *const wide[] = {"2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440"};
     count = ultrawide ? sizeof wide / sizeof *wide : sizeof standard / sizeof *standard;
     return ultrawide ? wide : standard;

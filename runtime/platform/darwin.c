@@ -429,7 +429,7 @@ uint64_t plat_counter_hz(void) { return 1000000000u; }
 
 // macOS's timers are accurate to well under a millisecond without asking.
 void plat_timer_1ms(void) {}
-void plat_console_hide(void) {}
+const char *plat_console_hide(void) { return NULL; }
 
 // nanosleep has no absolute form here; the last PLAT_SPIN_NS are spent yielding so the deadline is met closely.
 #define PLAT_SPIN_NS 100000u

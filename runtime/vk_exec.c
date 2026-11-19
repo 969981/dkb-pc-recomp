@@ -2999,7 +2999,12 @@ static int record_impl(VkCommandBuffer cb, const uint64_t *handles, int n, uint6
     vk_exec_pass_end(ex);
     x_here = 0;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
-    if (memory) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory
+    if (memory) {   // VRAM mirror bytes the GPU wrote go back to guest memory
+        uint64_t ph = perf_ph_begin_cpu();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+        ex->recorded += vk_mem_mirror_end(ex->cb, fence);
+        perf_ph_end(PERF_PH_MIRROR_END, ph);
+        vk_usnap_end(fence);
+    }
     views_to_fence(ex, fence);
     ex->cb = VK_NULL_HANDLE;
     if (memory) n_subs++;

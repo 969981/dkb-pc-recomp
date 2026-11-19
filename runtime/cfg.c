@@ -37,17 +37,17 @@ static const char *const known[] = {
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CRIT", "CRUMB_BIND", "CRIT_OUT", "CRT_FILTER", "CRT_LINES", "DESC_C0_SERIAL", "DESC_KEEP", "DESC_SAMP_GEN", "DESC_STAGE_ORIGIN", "DESC_TD_HASH", "DESC_TEMPLATE", "DEVICE_PROFILE", "DLSS_PRESET", "DLSS_WARM_FULL", "DRAW_MERGE", "DRAW_PROFILE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DYN_KEEP", "DYN_UBO",
     "EXEFS", "EXPERIMENTAL_GEOMETRY", "FEEDBACK", "FIXED_STEP", "FIX_C0", "FIX_INDIRECT_RESET", "FIX_LQ_FOLD", "FIX_SCREEN_UV", "FIX_VS_FAULT", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
-    "FLIGHT_THUMBS", "CONSOLE", "FMZ", "FMZ_SEL", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_GEN", "FRAME_GEN_BY", "FREEZE_IDLE", "FRZ_WHOLE", "FSR4_LDR", "FSR_DIR", "FREE_CORES", "FULLSCREEN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_CHECKPOINTS", "GPU_HANG_S",
+    "FLIGHT_THUMBS", "CONSOLE", "COOP", "FMZ", "FMZ_SEL", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_GEN", "FRAME_GEN_BY", "FREEZE_IDLE", "FRZ_WHOLE", "FSR4_LDR", "FSR_DIR", "FREE_CORES", "FULLSCREEN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_CHECKPOINTS", "GPU_HANG_S",
     "GPU_INDEX", "GPU_NAME", "GS_STORAGE_WRITEBACK", "HDR", "HDR_GAME_NITS", "HDR_NATIVE", "HDR_PEAK_NITS", "HDR_SHOULDER", "HDR_TRACE", "HDR_UI_NITS", "HEAP_LAZY", "HIGHFPS_FIX", "HOST_PROPS_CACHE", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LIST_RESTART", "LOCALE", "LOCK_HOLDS", "LOD_GUARD", "LOOKAHEAD", "MEMORY", "MEM_AVAIL_RESERVE_MB", "MEM_COMMIT_RESERVE_MB", "MEM_REPORT", "MEM_TRIM", "MENU_LANG", "MENU_THEME", "MENU_TEST",
     "MENU_TEST_DIR", "MENU_TEST_SET", "MERGE_STATS", "MINIMAL_LAYOUT", "MIRROR_GAP", "MIRROR_OWN", "MIRROR_PRESNAP", "MIRROR_STAGED", "MOTION", "MOUSE_CAMERA", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE", "MVK_UPSCALE_BLIT", "NAN_GUARD", "NATIVE_GS", "NX2_READ_NOWAIT",
     "NVN2_MODE_TRACE", "NVN2_MODE_TRACE_START_MS", "NVN2_MODE_TRACE_DURATION_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_DEVICE", "PAD_FULLSCREEN_HOLD", "PAD_LAYOUT", "PAD_PROMPTS", "PAR_DEFER", "PAR_DEFER_DEPTH", "PAR_INDIRECT", "PASS_GPU", "PATCH_OUTPUT", "PATCH_SCENE", "PCACHE_GATE", "PERF_OVERLAY", "PERF_SLOW_GPU_MS", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POOL_FINI_WAIT", "POOL_IMPORT_LOG", "POOL_LAZY",
     "PRESENT_HOLD", "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
-    "PROFILE_MAIN", "PROFILE_RENDER", "PROFILE_REPLAY", "PROFILE_SLOW", "PROFILE_VQ", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_BEGIN", "REC_END", "REC_SUBMIT", "REEXEC",
+    "PROFILE_MAIN", "PROFILE_RENDER", "PROFILE_REPLAY", "PROFILE_SLOW", "PROFILE_VQ", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REALTIME_MAX_FPS", "REC_BEGIN", "REC_END", "REC_SUBMIT", "REEXEC",
     "RENDER_SCALE", "SCENE_RES", "REPLAY_ASYNC", "REPLAY_HELPERS", "REPLAY_PAR", "REPLAY_THREADS", "CALL_REF", "RESET_BATCH", "RESET_CPU_LIST",
-    "REPLAY_CHECK", "RESOLVE_CHECK", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
+    "REPLAY_CHECK", "RESOLVE_CHECK", "ROMFS", "ROMFS_DIR", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_HD", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
-    "SHADER_MEMO", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SKIP_CS", "SKIP_FS", "SKIP_VS", "SMAA", "SPARSE_MIRROR_COPY", "SPEED_PROBE", "STALL_DUMP", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STAGED_FETCH_TEST", "STAGED_INJECT", "STAGED_READ_PROBE", "STAGED_WB", "STAMP_BATCH", "STICK_DEADZONE", "SVC_SLOW", "SWITCH2", "SWKBD_ANSWER",
+    "SHADER_MEMO", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SKIP_CS", "SKIP_FS", "SKIP_VS", "SMAA", "SPARSE_MIRROR_COPY", "SPEED_PROBE", "STALL_DUMP", "SPIN", "SPIN_HANDOFF_US", "SPLASH", "SPLASH_SHOTS", "SPLASH_TEST", "SPLASH_WATCH", "SPLIT_DRAWS", "SPLIT_US", "STAGED_BLK_CHECK", "STAGED_FETCH_TEST", "STAGED_INJECT", "STAGED_READ_PROBE", "STAGED_WB", "STAMP_BATCH", "STICK_DEADZONE", "SVC_SLOW", "SWITCH2", "SWKBD_ANSWER",
     "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_CHECK_SHARE", "TEX_HASH", "TEX_MEMO", "TEX_REPEAT", "CS_BARRIER", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TOUCH_MAP", "REC_BATCH", "TRACE", "UBO_SNAPSHOT", "UPSCALER", "USNAP_DROP_LOCAL", "USNAP_FAST", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VULKAN_DRIVER", "VRAM_HEADROOM", "VRAM_LIMIT", "VS_OUTS",
     "ULTRAWIDE", "HUD_POSITION", "WB_ASYNC", "WB_EARLY", "WB_EXACT", "WB_FENCE_LIMIT", "WB_LAZY", "WB_UNLOCKED", "WINDOW_FILTER", "WINDOW_MODE", "WINDOW_SIZE", "WW_SLOW_MS", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZSTD_CHECK", "ZSTD_NATIVE",
@@ -64,10 +64,10 @@ static const struct { const char *key, *section; } sections[] = {
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"}, {"HDR", "display"}, {"HDR_PEAK_NITS", "display"}, {"HDR_GAME_NITS", "display"},
     {"HDR_UI_NITS", "display"}, {"HDR_NATIVE", "display"},
-    {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
+    {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"}, {"SPLASH", "display"},
     {"MENU_THEME", "menu"}, {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"},
-    {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"}, {"RUMBLE_HD", "input"}, {"SWITCH2", "input"},
+    {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"}, {"RUMBLE_HD", "input"}, {"SWITCH2", "input"}, {"COOP", "input"},
     {"PAD_DEVICE", "input"}, {"PAD_FULLSCREEN_HOLD", "input"}, {"PAD_LAYOUT", "input"}, {"PAD_PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"MOUSE_CAMERA", "input"}, {"MOUSE_SENS", "input"}, {"INPUT_RECORD", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
@@ -107,6 +107,7 @@ static const CfgMeta metas[] = {
     // vk_driver_env.c sets VK_DRIVER_FILES from it before the loader runs.
     {"VULKAN_DRIVER", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full|breakdown|counter", LIVE},
+    {"SPLASH", "1", "0|1|2|3", RESTART},   // vk_splash.c: the start-up screen from the window's opening to the game's first picture; 1 the canyon at sunrise, 2 the cavern, 3 the dawn over the jungle
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|59|67|75|77|100|125|150|200", RESTART},
     {"SCENE_RES", "auto", "auto|full", RESTART},   // Bananza only (dkb_wide.c)
     // UPSCALER fsr and bilinear both mean the game's own upscaler (bilinear is the older spelling of the plain linear
@@ -141,7 +142,7 @@ static const CfgMeta metas[] = {
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"ANTILAG", "0", "0|1", LIVE},   // vk_antilag.c: AMD Anti-Lag 2, where the device has VK_AMD_anti_lag
     {"HIGHFPS_FIX", "1", "0|1", RESTART},
-    {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR|pl", RESTART},
+    {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR|pl|th", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     // Sound, Controls, Menu
@@ -150,6 +151,7 @@ static const CfgMeta metas[] = {
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"RUMBLE_HD", "off", "auto|off", LIVE},
     {"PAD_LAYOUT", "auto", "auto|nintendo|xbox|xbox_prompts", LIVE},
     {"SWITCH2", "0", "0|1|2", RESTART},   // switch2.c: Switch 2 controllers over Bluetooth LE; 2 also logs each advertising device
+    {"COOP", "1", "0|1", LIVE},   // ov_input.c: a second gamepad is player 2 (npad No.2, Pauline)
     {"PAD_DEVICE", "auto", NULL, LIVE}, {"PAD_FULLSCREEN_HOLD", "0", "0|1", LIVE}, {"PAD_PROMPTS", "auto", "auto|switch|playstation", RESTART},
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"MOUSE_CAMERA", "0", "0|1", LIVE}, {"MOUSE_SENS", "1", "0..10", LIVE},
     {"MENU_LANG", "", "en|ru", LIVE}, {"MENU_THEME", "dk", "dk|classic", LIVE},

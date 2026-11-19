@@ -20,6 +20,11 @@
 // the "mods" folder next to the executable.
 // An overlay file is opened when the game opens it; its identity (volume, file id, size, last write) is kept from the
 // start check, and an open that finds another file there stops the game.
+//
+// Loose mode (TOTK_ROMFS_DIR, ini key romfs_dir, which the setup's "use the RomFS where it is" option writes): no
+// romfs.bin; each index row is the file <romfs_dir>/<path>, opened when the game opens it. The index still decides
+// what exists, so no folder is listed at start. A missing file, or one whose size differs from the index, stops the
+// game with its path.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +33,7 @@
 #include "fs.h"
 #include "host.h"
 #include "input.h"
+#include "input_map.h"
 #include "mods_scan.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
@@ -51,6 +57,7 @@ static uint64_t file_count, strings_offset;
 static PlatFile *image;
 static const uint8_t *image_map;
 static char image_file[2048];
+static char loose_dir[2048];         // TOTK_ROMFS_DIR: the extracted RomFS folder read in place of romfs.bin; "" = image
 static char index_dir[2048];         // the directory of romfs-index.bin: the proof file's default place
 static char mount_name[32];
 static PlatMutex lock = PLAT_MUTEX_INIT;
@@ -89,6 +96,21 @@ static int64_t read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
 }
 
 static PlatFile *open_read(const char *path) { return plat_file_open(path); }
+
+// Loose mode: opens index row i from loose_dir and checks its size; a missing or changed file stops the game.
+static PlatFile *open_loose(uint64_t i) {
+    Entry e = entry(i);
+    char path[PLAT_PATH_MAX + 4200];
+    need(snprintf(path, sizeof path, "%s/%s", loose_dir, entry_name(e)) < (int)sizeof path, "loose file path");
+    PlatFile *f = open_read(path);
+    PlatFileId id;
+    if (!f) rt_fatal("RomFS file %s is missing: the game's RomFS folder (romfs_dir in dkb.ini) was moved or changed. "
+                     "Put it back or run the setup again", path);
+    if (!plat_file_id(f, &id) || id.size != e.size)
+        rt_fatal("RomFS file %s has %llu bytes, the index says %llu: the RomFS folder (romfs_dir in dkb.ini) changed. "
+                 "Run the setup again", path, (unsigned long long)id.size, (unsigned long long)e.size);
+    return f;
+}
 
 static Identity identity_of(PlatFile *f) {
     PlatFileId i;
@@ -299,7 +321,13 @@ static int overlay_load(const char *dir, int optional) {
         Entry e = {0};
         if (known) {
             e = entry(i);
-            sha_range(image, e.offset, e.size, hex, 0);
+            if (*loose_dir) {
+                PlatFile *of = open_loose(i);
+                sha_range(of, 0, e.size, hex, 0);
+                plat_file_close(of);
+            } else {
+                sha_range(image, e.offset, e.size, hex, 0);
+            }
             if (strcmp(hex, orig)) BAD("RomFS overlay: the original of %s has SHA-256 %s, %s/manifest.tsv says %s",
                                        name, hex, dir, orig);
         } else {
@@ -438,9 +466,12 @@ int romfs_xbox_prompts_active(void) { return xbox_prompts_active; }
 // Bananza's PlayStation button prompts (tools/dkb_ps_prompts.py): the button font of each Font archive with a cross,
 // circle, square and triangle, L1 to R2, Options and Create. pad_prompts = auto (default) takes them when a DualShock or
 // DualSense pad is connected at start, playstation always, switch never. The game reads its fonts once at boot, so a
-// pad connected later changes them at the next start. Which face button each symbol goes on follows pad_layout:
-// romfs-patches-ps for auto and xbox (Switch A on the bottom button, the cross), romfs-patches-ps-nintendo for
-// nintendo and xbox_prompts (Switch A on the right one, the circle). They replace only the Font archives, so they load
+// pad connected later changes them at the next start. Each face-button glyph must name the button that does it, which
+// pad_layout and the bind_ lines decide (input_map_face_spec_cfg gives A, B, X, Y as positions): romfs-patches-ps for
+// the Xbox table (auto and xbox: Switch A on the bottom button, the cross), romfs-patches-ps-nintendo for the Nintendo
+// one (nintendo and xbox_prompts: Switch A on the right one, the circle), romfs-patches-ps-<positions> for bind_ lines
+// that move the face buttons (the setup makes senw and eswn, either table with one pair swapped). Without that folder
+// the layout's own folder loads and the log says so. They replace only the Font archives, so they load
 // next to the other overlays (the wide layouts replace Layout archives); when a mod already replaces one of their
 // Font archives, the prompts are skipped and the mod's file stays (ps_prompts_init).
 static int ps_prompts_active;
@@ -451,9 +482,20 @@ static void ps_prompts_init(void) {
     int always = !strcasecmp(want, "playstation");
     if (!always && strcasecmp(want, "auto")) return;
     const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-    int nintendo = !strcasecmp(layout, "nintendo") || !strcasecmp(layout, "xbox_prompts");
-    char dir[2100], manifest[2200];
-    if (snprintf(dir, sizeof dir, "%s/romfs-patches-ps%s", index_dir, nintendo ? "-nintendo" : "") >= (int)sizeof dir) return;
+    int nintendo = input_pad_layout_pick(layout, 0) == PAD_LAYOUT_NINTENDO;   // auto: a Sony pad has no A on the right
+    char spec[5], dir[2100], manifest[2200];
+    input_map_face_spec_cfg(nintendo ? PAD_LAYOUT_NINTENDO : PAD_LAYOUT_XBOX, spec);
+    char want_dir[16];   // the folder suffix for these bindings; '?' (a face button on none) keeps the layout's
+    snprintf(want_dir, sizeof want_dir, "-%s", spec);
+    const char *home = nintendo ? "-nintendo" : "";
+    const char *suffix = !strcmp(spec, "sewn") ? "" : !strcmp(spec, "esnw") ? "-nintendo" : strchr(spec, '?') ? home : want_dir;
+    int missing = 0;   // the bindings' own folder is not there: the layout's loads instead
+    if (suffix == want_dir) {
+        if (snprintf(manifest, sizeof manifest, "%s/romfs-patches-ps%s/manifest.tsv", index_dir, suffix) >= (int)sizeof manifest)
+            return;
+        if ((missing = !plat_file_exists(manifest))) suffix = home;
+    }
+    if (snprintf(dir, sizeof dir, "%s/romfs-patches-ps%s", index_dir, suffix) >= (int)sizeof dir) return;
     snprintf(manifest, sizeof manifest, "%s/manifest.tsv", dir);
     if (!plat_file_exists(manifest)) {
         if (!always) return;   // auto: nothing to apply, so skip the pad probe's wait
@@ -462,6 +504,10 @@ static void ps_prompts_init(void) {
         return;
     }
     if (!always && !input_sony_pad_present()) return;
+    if (missing)
+        rt_log("RomFS overlay: the bind_ lines put Switch A, B, X, Y on the %s face buttons (s/e/w/n), but "
+               "there is no romfs-patches-ps%s (the setup makes senw and eswn: run it again if it is older); the prompts "
+               "name the pad_layout's buttons", spec, want_dir);
     size_t before = noverlay;
     ps_prompts_active = overlay_load(dir, 1) && noverlay > before;
     for (size_t k = before; ps_prompts_active && k < noverlay; k++)
@@ -479,8 +525,8 @@ static void ps_prompts_init(void) {
             }
     rt_log("RomFS overlay: %s", ps_prompts_active ? "PlayStation button prompts" : "PlayStation prompts failed their check; Switch prompts stay");
     if (ps_prompts_active)
-        rt_log("RomFS overlay: PlayStation prompts for pad_layout = %s: Switch A is the %s", layout,
-               nintendo ? "circle (right button)" : "cross (bottom button)");
+        rt_log("RomFS overlay: PlayStation prompts for pad_layout = %s: Switch A, B, X, Y on the %s buttons (%s)", layout,
+               spec, dir + strlen(index_dir) + 1);
 }
 
 static void overlay_init(void) {
@@ -633,6 +679,20 @@ static void init_once(void *param) {
 #else
     double t0 = now_s();
     load_index();
+    const char *ld = cfg_get("TOTK_ROMFS_DIR");
+    if (ld && *ld) {
+        need(snprintf(loose_dir, sizeof loose_dir, "%s", ld) < (int)sizeof loose_dir, "romfs_dir path");
+        snprintf(image_file, sizeof image_file, "%s", loose_dir);
+        if (plat_fs_kind(loose_dir) != PLAT_FS_DIR)
+            rt_fatal("RomFS folder %s (romfs_dir in dkb.ini) is missing: the game files were moved or deleted. Put "
+                     "them back, or run the setup again", loose_dir);
+        plat_file_close(open_loose(0));   // a wrong folder fails here rather than at the game's first open
+        rt_log("RomFS: reading the files in place from %s", loose_dir);
+        overlay_init();
+        rt_log("RomFS ready: %llu files, %zu overlays, %zu added, %.2f s", (unsigned long long)file_count, noverlay,
+               nadded, now_s() - t0);
+        return;
+    }
     const char *dir = rt_config()->romfs;
     need(snprintf(image_file, sizeof image_file, "%s/romfs.bin", dir) < (int)sizeof image_file, "image path");
     image = open_read(image_file);
@@ -736,6 +796,8 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
         if (f) id = identity_of(f);
         if (!f || memcmp(&id, &o->id, sizeof id))
             rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", o->path);
+    } else if (*loose_dir && i < file_count) {
+        f = open_loose(i);
     }
     plat_mutex_lock(&lock);
     for (unsigned j = 1; j < NH; j++)
@@ -768,8 +830,8 @@ static int handle_source(uint64_t h, PlatFile **f, uint64_t *base, uint64_t *siz
         *size = overlays[ov - 1].size;
     } else {
         Entry e = entry(i - 1);
-        *f = image;
-        *base = e.offset;
+        *f = *loose_dir ? of : image;
+        *base = *loose_dir ? 0 : e.offset;
         *size = e.size;
     }
     return 1;
@@ -834,7 +896,7 @@ void romfs_close(uint64_t h) {
         rt_fatal("RomFS: close of invalid file handle %#llx", (unsigned long long)h);
     uint64_t j = h - ROMFS_HANDLE_BASE;
     plat_mutex_lock(&lock);
-    PlatFile *of = handle_ovl[j] ? handle_file[j] : NULL;
+    PlatFile *of = handle_file[j];   // an overlay's file, or the loose file
     handles[j] = 0;
     handle_ovl[j] = 0;
     handle_file[j] = NULL;

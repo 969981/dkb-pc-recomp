@@ -126,6 +126,7 @@ class Form:
     romfs: str = ''
     package: str = ''
     nup: str = ''
+    romfs_in_place: bool = False   # Bananza: --romfs-in-place, the game reads the RomFS folder where it is
     fsr4: str = ''   # Bananza: 'accept' (the user accepted AMD's license in the window), 'off', or '' to keep the record
 
     def installed_state(self):
@@ -196,6 +197,8 @@ class Form:
             cmd += ['--temp', str(temp)]
         if verify:
             cmd.append('--verify')
+        if self.game == 'bananza' and self.romfs_in_place and self.romfs.strip():
+            cmd.append('--romfs-in-place')
         if self.game == 'bananza' and self.fsr4:
             cmd += ['--fsr4', self.fsr4]
         if self.game == 'bananza':

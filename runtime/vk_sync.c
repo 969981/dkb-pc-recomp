@@ -637,7 +637,17 @@ VkResult vk_sync_queue_submit(const VkSubmitInfo2 *si, VkFence fence, uint64_t v
 // cmd_pool is externally synchronised and the recorder thread may be using it: with TOTK_REC_BEGIN=1, part_begin queues
 // the next part's vkBeginCommandBuffer into the ring, and vk_sync_split_insert comes after that. The ring is drained
 // before the pool is touched here (a no-op after rec_end_cb, which drains it already).
+// TOTK_TRACE=perf: a part of the replay (perf.c ph_frame) when the recording calls it (a split part's); the
+// submission's last prologue comes after the recording and is counted only in the mirror line's prologue time.
+static VkCommandBuffer prologue_impl(VkCtx *c, uint64_t fence);
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
+    uint64_t ph = perf_ph_begin_cpu();
+    VkCommandBuffer cb = prologue_impl(c, fence);
+    perf_ph_end(PERF_PH_PROLOGUE, ph);
+    return cb;
+}
+
+static VkCommandBuffer prologue_impl(VkCtx *c, uint64_t fence) {
     vk_mem_shadow_sync();   // shadow storage: the CPU's writes go in before the part is submitted
     if (!vk_mem_mirror_pending()) return VK_NULL_HANDLE;
     rec_drain();

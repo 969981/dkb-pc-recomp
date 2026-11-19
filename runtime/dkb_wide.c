@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "dispatch.h"
 #include "host.h"
 
 static unsigned wide_output[2] = {2880, 1620};
@@ -71,13 +72,30 @@ static uint32_t dkb_scene_pool(uint32_t pool, float ratio) {
     return (uint32_t)(bytes < 0x80000000u ? bytes : 0x80000000u);   // 2 GiB at most (7680x4320 at ratio 1.0 would ask 3.1)
 }
 
-// TOTK_OUTPUT_RES as dkb_wide_init accepts it; 0 for any other value (dkb_wide_init says why).
+// TOTK_OUTPUT_RES as dkb_wide_init accepts it; 0 for any other value (dkb_wide_init says why). Shapes from 16:10 to
+// 16:9 need no setting (Vert+, vert_plus); wider than 16:9 needs ultrawide = 1.
 static int dkb_output_size(unsigned *width, unsigned *height) {
     int allow_wide = cfg_bool("TOTK_ULTRAWIDE");
     char tail;
     return sscanf(cfg_value("TOTK_OUTPUT_RES"), "%ux%u%c", width, height, &tail) == 2 && *width >= 1280 &&
            *width <= 7680 && *height >= 720 && *height <= 4320 && !(*width % 2) && !(*height % 2) &&
-           *width * 9 >= *height * 16 && (allow_wide || *width * 9 == *height * 16);
+           *width * 10 >= *height * 16 && (allow_wide || *width * 9 <= *height * 16);
+}
+
+// Vert+ for a display taller than 16:9 (recomp/patches-dkb*.txt, set dkbtall: a BL to patch page +0x270 after the fmul
+// that turns the camera's vertical field of view into radians, s10, in its projection update and reset). The dkbwide
+// setter gives the camera aspect x (aspect / 16:9) (page +0x10c, under 1 here), which alone would keep the vertical view
+// and narrow the horizontal one. Dividing tan(fovy / 2) by the same factor keeps the horizontal view of 16:9 and shows
+// more above and below. Everything the projection derives (sine, cosine, tangent, frustum) is computed from s10 after
+// the call.
+static void vert_plus(Cpu *c) {
+    float fovy, factor;
+    uint32_t bits = (uint32_t)c->v[10];
+    memcpy(&fovy, &bits, 4);
+    memcpy(&factor, (uint8_t *)rt_patch_page() + 0x10c, 4);
+    if (factor > 0 && factor < 1 && fovy > 0 && fovy < 3.1f) fovy = 2.0f * atanf(tanf(0.5f * fovy) / factor);
+    memcpy(&bits, &fovy, 4);
+    c->v[10] = bits;   // a scalar write clears the rest of the vector register, as the fmul does
 }
 
 // What the render-target pool adds to the stock 200 MiB at the configured output and scene_res, in KiB: GSys grows by
@@ -190,7 +208,8 @@ void dkb_wide_init(void) {
     native_set = -2, native_on = 0;   // the set is off at start (the generated default) and chosen below
     wide_output[0] = 2880;
     wide_output[1] = 1620;
-    int scene_set = rt_patch_set("dkbscene"), scale_set = rt_patch_set("render3d");
+    int scene_set = rt_patch_set("dkbscene"), scale_set = rt_patch_set("render3d"), tall_set = rt_patch_set("dkbtall");
+    if (tall_set >= 0) rt_patch_switch(tall_set, 0);     // on only for a display taller than 16:9, below
     if (scene_set >= 0) rt_patch_switch(scene_set, 0);   // on only once dkb_wide_scene has written the ratio
     if (scale_set >= 0) rt_patch_switch(scale_set, 0);   // and the 3.2.0 image scale
     int set = rt_patch_set("dkbwide");
@@ -208,10 +227,10 @@ void dkb_wide_init(void) {
     unsigned width = 0, height = 0;
     if (!dkb_output_size(&width, &height)) {
         rt_patch_switch(set, 0);
-        // Sizes narrower than 16:9 (1360x768, 16:10) never pass, ultrawide or not: say so instead of hinting at 16:9 (#403).
-        rt_log("Bananza resolution: output_res %s is not supported: use even sizes from 1280x720 to 7680x4320, exactly 16:9, "
-               "or wider than 16:9 with ultrawide = 1 (narrower than 16:9 is not supported; aspect = fit letterboxes a "
-               "16:9 picture); using stock 2880x1620", cfg_value("TOTK_OUTPUT_RES"));
+        // Sizes narrower than 16:10 (4:3, 5:4) never pass, ultrawide or not: say so instead of hinting at 16:9 (#403).
+        rt_log("Bananza resolution: output_res %s is not supported: use even sizes from 1280x720 to 7680x4320, from 16:10 "
+               "to 16:9, or wider than 16:9 with ultrawide = 1 (narrower than 16:10 is not supported; aspect = fit "
+               "letterboxes the picture); using stock 2880x1620", cfg_value("TOTK_OUTPUT_RES"));
         if (scene) rt_log("Bananza resolution: scene_res needs a valid output resolution and is not applied");
         return;
     }
@@ -224,12 +243,25 @@ void dkb_wide_init(void) {
     memcpy(page + 0x10c, &factor, 4);
     uint32_t pool = dkb_wide_pool_bytes(width, height);
     memcpy(page + 0x110, &pool, 4);
+    // The UI projection divisors (the dkbwide UI sites): x by the factor on a wider display, y by its inverse on a
+    // taller one, so the 1920x1080 canvas keeps square pixels and stays whole in a centred 16:9 area.
+    float hud_x = factor > 1 ? factor : 1.0f, hud_y = factor < 1 ? 1.0f / factor : 1.0f;
+    memcpy(page + 0x114, &hud_x, 4);
+    memcpy(page + 0x11c, &hud_y, 4);
+    int tall = factor < 1;
+    if (tall && tall_set >= 0) {
+        rt_register_host((uint64_t)(uintptr_t)page + 0x270, vert_plus);
+        rt_patch_switch(tall_set, 1);
+    } else if (tall) {
+        rt_log("Bananza resolution: this build has no Vert+ patch; a display taller than 16:9 keeps the vertical view "
+               "and shows less at the sides");
+    }
     wide_output[0] = width;
     wide_output[1] = height;
     wide_enabled = width * 9 > height * 16;
     rt_patch_switch(set, 1);
-    rt_log("Bananza resolution: virtual display %ux%u, camera aspect %.6f, ultrawide %s",
-           width, height, aspect, wide_enabled ? "on" : "off");
+    rt_log("Bananza resolution: virtual display %ux%u, camera aspect %.6f, ultrawide %s%s",
+           width, height, aspect, wide_enabled ? "on" : "off", tall && tall_set >= 0 ? ", Vert+ (HUD in a centred 16:9 area)" : "");
     // RomFS setup runs once and picks the UI overlay from the output set above, so it follows that and precedes the scene:
     // romfs.c serves the grown HeapDef from here on (res_heapdef_served), which dkb_wide_scene asks about.
     if (dkb_wide_heap_extra_kib()) fs_init();

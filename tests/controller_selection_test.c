@@ -59,6 +59,18 @@ int main(void) {
     assert(input_pad_choose(&s, d, 3, "auto", 8) == 6 && s.automatic);
     assert(input_pad_choose(&s, d, 3, "auto", 6) == 6);
     free(s.ids);
-    puts("controller selection: startup, arrivals, fallback, explicit choices, pending opens and topology stability passed");
+
+    // Co-op keeps player 1: an arrival joins as player 2 while the current pad stays, and a disconnect still falls back.
+    s = (InputPadSelection){.keep = 1};
+    assert(input_pad_choose(&s, d, 1, "auto", 0) == 6);
+    assert(input_pad_choose(&s, d, 2, "auto", 6) == 6 && !s.pending);
+    assert(input_pad_choose(&s, &d[1], 1, "auto", 0) == 7);
+    free(s.ids);
+    // A configured pad that connects after a fallback pad still becomes player 1 in co-op.
+    s = (InputPadSelection){.keep = 1};
+    assert(input_pad_choose(&s, d, 1, "xbox", 0) == 6);
+    assert(input_pad_choose(&s, d, 3, "xbox", 6) == 8);
+    free(s.ids);
+    puts("controller selection: startup, arrivals, fallback, explicit choices, pending opens, topology stability and co-op passed");
     return 0;
 }

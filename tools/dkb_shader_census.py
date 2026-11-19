@@ -28,6 +28,8 @@ import sys
 import time
 from pathlib import Path
 
+import romfs_index
+
 try:
     import compression.zstd as _zstd
 
@@ -233,7 +235,7 @@ def main():
     if index.get('status') != 'pass':
         sys.exit('RomFS has not passed integrity verification')
     found, errors, t0 = {}, collections.Counter(), time.time()
-    with (romfs / 'romfs.bin').open('rb') as stream:
+    with romfs_index.open_image(romfs, index) as stream:
         for row in index['files']:
             if row['size'] > MAX_FILE or not (args.all or row['path'].startswith(SHADER_DIRS)):
                 continue

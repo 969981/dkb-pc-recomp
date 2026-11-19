@@ -119,7 +119,10 @@ static void pads_put(InputMap *m, int layout, int action, const uint8_t *list, i
         t[m->npads[layout]++] = (PadBinding){list[i], (uint8_t)action};
 }
 
-int input_map_bind(const char *button, const char *list) {
+static int bind_into(InputMap *m, const char *button, const char *list);
+int input_map_bind(const char *button, const char *list) { return bind_into(&input_map, button, list); }
+
+static int bind_into(InputMap *m, const char *button, const char *list) {
     int action = -1;
     for (int a = 0; a < ACTION_COUNT; a++)
         if (!strcasecmp(action_names[a], button)) action = a;
@@ -156,24 +159,45 @@ int input_map_bind(const char *button, const char *list) {
     uint8_t list_k[INPUT_BINDING_MAX];
     int n = key_def ? input_map_keys_of(&defaults, action, list_k, INPUT_BINDING_MAX) : 0;
     for (int i = 0; i < nk && n < INPUT_BINDING_MAX; i++) list_k[n++] = keys[i];
-    keys_put(&input_map, action, list_k, n);
+    keys_put(m, action, list_k, n);
     for (int l = 0; l < PAD_LAYOUT_COUNT; l++) {   // a bind line names physical buttons: the same in every layout
         uint8_t list_p[INPUT_PAD_BINDING_MAX];
         int c = pad_def ? input_map_pads_of(&defaults, action, l, list_p, INPUT_PAD_BINDING_MAX) : 0;
         for (int i = 0; i < np && c < INPUT_PAD_BINDING_MAX; i++) list_p[c++] = pads[i];
-        pads_put(&input_map, l, action, list_p, c);
+        pads_put(m, l, action, list_p, c);
     }
     return 1;
 }
 
-void input_map_configure(void) {
-    input_map_reset();
+static void build_from_cfg(InputMap *m, int log) {
+    *m = defaults;
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
         snprintf(var, sizeof var, "TOTK_BIND_%s", action_names[a]);
         const char *v = cfg_get(var);
-        if (v && *v && input_map_bind(action_names[a], v)) rt_log("input: %s = %s", var + 5, v);
+        if (v && *v && bind_into(m, action_names[a], v) && log) rt_log("input: %s = %s", var + 5, v);
     }
+}
+
+void input_map_configure(void) { build_from_cfg(&input_map, 1); }
+
+void input_map_face_spec(const InputMap *m, int layout, char out[5]) {
+    static const char letter[PAD_COUNT] = {[PAD_SOUTH] = 's', [PAD_EAST] = 'e', [PAD_WEST] = 'w', [PAD_NORTH] = 'n'};
+    static const int face[4] = {B_A, B_B, B_X, B_Y};
+    for (int i = 0; i < 4; i++) {
+        uint8_t p[INPUT_PAD_BINDING_MAX];
+        int n = input_map_pads_of(m, face[i], layout, p, INPUT_PAD_BINDING_MAX);
+        out[i] = '?';
+        for (int k = n - 1; k >= 0; k--)   // the first face button in the list
+            if (letter[p[k]]) out[i] = letter[p[k]];
+    }
+    out[4] = 0;
+}
+
+void input_map_face_spec_cfg(int layout, char out[5]) {
+    InputMap m;   // a copy: the input thread may be reading input_map
+    build_from_cfg(&m, 0);
+    input_map_face_spec(&m, layout, out);
 }
 
 int input_map_set_key(InputMap *m, int action, int slot, int key) {
@@ -375,7 +399,7 @@ uint32_t input_pad_choose(InputPadSelection *s, const InputPadDevice *devices, i
         for (int i = 0; i < count; i++) {
             int known = 0;
             for (int j = 0; j < s->count; j++) if (devices[i].id == s->ids[j]) known = 1;
-            if (!known) {
+            if (!known && (!(s->keep && pad_list_has(devices, count, current)) || !strcmp(devices[i].key, preferred))) {
                 // If several devices arrive in one poll, the last enumerated arrival wins.
                 s->pending = devices[i].id;
                 s->automatic = 1;

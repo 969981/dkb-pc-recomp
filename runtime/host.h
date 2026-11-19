@@ -42,7 +42,8 @@ void perf_replay(uint64_t t0);                  // replay (NVN -> Vulkan recordi
 // time, for the parts where waiting and working are to be told apart.
 enum { PERF_PH_IMPORT = PERF_N, PERF_PH_MIRROR, PERF_PH_MIRROR_BEGIN, PERF_PH_MSYNC, PERF_PH_WW, PERF_PH_SHADER,
        PERF_PH_IMAGE, PERF_PH_DLSS_CREATE, PERF_PH_DLSS_EVAL, PERF_PH_TEMPORAL, PERF_PH_SPIRV_HASH, PERF_PH_SLICE_START,
-       PERF_PH_SLICE_WAIT, PERF_PH_SUBMIT, PERF_PH_USNAP, PERF_PH_BUDGET, PERF_PH_N };
+       PERF_PH_SLICE_WAIT, PERF_PH_SUBMIT, PERF_PH_USNAP, PERF_PH_BUDGET, PERF_PH_PROLOGUE, PERF_PH_MIRROR_END,
+       PERF_PH_WB_LISTS, PERF_PH_ST_SPLIT, PERF_PH_WB_HELD, PERF_PH_N };
 int perf_ph_replay_begin(void);                 // returns what perf_ph_replay_end takes
 void perf_ph_replay_end(int prev);
 int perf_ph_worker_begin(void);                 // a slice worker records a slice: its parts go to a bank of their own
@@ -234,9 +235,16 @@ int mem_guard_state(uint64_t a);
 int mem_guard_drop(uint64_t a, uint64_t n, int *claimed);
 void mem_thaw_keep(uint64_t a, uint64_t n);
 void mem_touch_keep(uint64_t a, uint64_t n);               // mem_touch without settling guarded pages
+void mem_commit_later(uint64_t a, uint64_t n);             // mem_touch_keep over [a, a+n) on a thread of its own, about
+                                                           // 2 s later (a staged pool, never imported); no-op without
+                                                           // TOTK_HEAP_LAZY
+void mem_commit_later_stats(uint64_t out[4]);              // since the last call: ranges, bytes, ns, ranges dropped
 void mem_commit_report(const char *when);                  // logs where the process's commit goes (TOTK_MEM_REPORT)
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws);
                                                            // regions frozen now; freezes and thaws since the last call
+#define MEM_FRZ_NO_N 4
+void mem_freeze_refusals(uint64_t out[MEM_FRZ_NO_N]);     // mem_freeze's refusals since the last call: a guarded page,
+                                                           // held after a thaw, never frozen, page states (memory.c)
 void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse after thread exit
 
 // ---- modules (loader.c)
@@ -424,6 +432,7 @@ int probe_vkpool(void);                                   // vk_pool_probe.c: or
 int probe_vkreset(void);                                  // vk_reset_probe.c: original indirect reset ordering
 int probe_vkclear(void);                                                  // vk_clear_probe.c
 int probe_movie(void);                                     // movie_probe.c: host VP9 movie::Decoder on one RomFS movie
+int probe_splash(void);                                    // vk_splash.c: the start-up screen drawn in states and sizes
 int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)
 int vk_pipeline_translate_shaders(void);                  // vk_pipeline.c: --translate-shaders (installer/bananza.py)
 int vk_pipeline_warm_shaders(void);                       // vk_pipeline.c: --warm-shaders (tools/build_game.py)

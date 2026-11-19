@@ -90,7 +90,7 @@ for size in a[a.index('--presets')+1:]:
 import hashlib, pathlib, sys
 a=sys.argv; out=pathlib.Path(a[a.index('--out')+1])
 assert out.is_relative_to(pathlib.Path(a[a.index('--installer-workspace')+1])/'build')
-assert a[a.index('--layout')+1] in ('xbox','nintendo')
+assert a[a.index('--layout')+1] in ('xbox','nintendo','senw','eswn')
 out.mkdir(parents=True); raw=('synthetic '+a[a.index('--layout')+1]).encode(); (out/'resource.bin').write_bytes(raw)
 (out/'manifest.tsv').write_text('resource.bin\\t%d\\t%s\\t%s\\n' % (len(raw), hashlib.sha256(raw).hexdigest(), '0'*64))
 ''')
@@ -431,7 +431,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
             from dkb_wide_layout_test import resource_files, unpack
         except ImportError as error:
             self.skipTest(str(error))
-        for name in ('dkb_wide_layout.py', 'ultrawide_layout.py'):
+        for name in ('dkb_wide_layout.py', 'ultrawide_layout.py', 'romfs_index.py', 'check_content.py'):
             shutil.copyfile(ROOT / 'tools' / name, self.root / 'tools' / name)
         for name, raw in resource_files(version).items():
             path = self.romfs / name
@@ -486,6 +486,19 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.calls.clear()
         self.assertEqual(self.run_install()[0], 0)
         self.assertEqual(self.calls, [], 'a retry must not run the crashing library build again')
+
+    def test_shader_cache_is_packed(self):
+        code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        self.assertTrue(any(str(c[-2]).endswith('pack_shader_cache.py') for _, c in self.calls), self.calls)
+
+    def test_a_pack_failure_only_warns(self):
+        def crash(ctx, step, command):
+            if str(command[-2]).endswith('pack_shader_cache.py'):
+                raise b.InstallError('dkb.tool_failed', step=step, code=1, log='pack.log')
+        code, events = self.run_install(crash)
+        self.assertEqual(code, 0, events)
+        self.assertIn('warn.dkb_pack_failed', [e.get('id') for e in events if e['type'] == 'warning'])
 
     def test_library_warm_path_rejection_fails_the_step(self):
         def reject(ctx, step, command):
@@ -676,7 +689,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         (self.romfs/'other.bin').write_bytes(b'a changed source')
         self.calls.clear()
         self.assertEqual(self.run_install()[0], 0)
-        self.assertEqual([step for step, _ in self.calls], ['dkb_data','lift','compile','dkb_shaders','dkb_shaders','dkb_shaders','dkb_wide','dkb_prompts','dkb_prompts','dkb_verify'])
+        self.assertEqual([step for step, _ in self.calls], ['dkb_data','lift','compile','dkb_shaders','dkb_shaders','dkb_shaders','dkb_wide','dkb_prompts','dkb_prompts','dkb_prompts','dkb_prompts','dkb_verify','dkb_verify'])
 
     def test_source_mutation_during_pack_is_not_installed(self):
         def mutate(ctx, step, command):
@@ -731,7 +744,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         code, events = self.run_install()
         self.assertEqual(code, 0, events)
         self.assertEqual([step for step, _ in self.calls],
-                         ['compile', 'dkb_shaders', 'dkb_shaders', 'dkb_shaders', 'dkb_verify'])
+                         ['compile', 'dkb_shaders', 'dkb_shaders', 'dkb_shaders', 'dkb_verify', 'dkb_verify'])
         self.assertEqual(generated.stat().st_mtime_ns, timestamp)
 
     def update_fixture(self):
@@ -792,7 +805,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.calls.clear()
         self.assertEqual(self.run_install()[0], 0)
         self.assertEqual([step for step, _ in self.calls],
-                         ['lift', 'compile', 'dkb_shaders', 'dkb_shaders', 'dkb_shaders', 'dkb_verify'])
+                         ['lift', 'compile', 'dkb_shaders', 'dkb_shaders', 'dkb_shaders', 'dkb_verify', 'dkb_verify'])
 
     def test_corrupt_generated_output_is_regenerated_when_rebuilding(self):
         self.update_fixture()   # only the update keeps generated code and objects
@@ -803,7 +816,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.calls.clear()
         self.assertEqual(self.run_install()[0], 0)
         self.assertEqual([step for step, _ in self.calls],
-                         ['lift', 'compile', 'dkb_shaders', 'dkb_shaders', 'dkb_shaders', 'dkb_verify'])
+                         ['lift', 'compile', 'dkb_shaders', 'dkb_shaders', 'dkb_shaders', 'dkb_verify', 'dkb_verify'])
 
     def test_already_packed_input_is_verified_and_copied(self):
         packed = self.root / 'packed input'
@@ -813,6 +826,45 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual(self.run_install()[0], 0)
         self.assertEqual(b.sha256(packed/'romfs.bin'), b.sha256(self.dest/'romfs/romfs.bin'))
         self.assertNotIn('dkb_data', [step for step, _ in self.calls])
+
+    def test_romfs_in_place_packs_nothing_and_switches_back(self):
+        self.options.romfs_in_place = True
+        self.assertEqual(self.run_install()[0], 0)
+        self.assertFalse((self.dest/'romfs/romfs.bin').exists())
+        self.assertNotIn('dkb_data', [step for step, _ in self.calls])
+        index = json.loads((self.dest/'romfs/index.json').read_text(encoding='utf-8'))
+        self.assertEqual(index['loose'], str(self.romfs.resolve()))
+        self.assertEqual([e['path'] for e in index['files']], ['folder/café.bin', 'other.bin'])
+        self.assertIn(f'romfs_dir = {self.romfs.resolve()}', (self.dest/'dkb.ini').read_text(encoding='utf-8'))
+        # The setup's RomFS tools read the loose folder through the same index (tools/romfs_index.py open_image).
+        sys.path.insert(0, str(ROOT/'tools'))
+        try:
+            import romfs_index
+        finally:
+            sys.path.pop(0)
+        with romfs_index.open_image(self.dest/'romfs', index) as image:
+            for e in index['files']:
+                image.seek(e['offset'])
+                self.assertEqual(image.read(e['size']), (self.romfs/e['path']).read_bytes())
+        # A resume without folders keeps reading in place; giving the folder again without the option packs it.
+        self.calls.clear()
+        self.options.romfs_in_place, self.options.romfs, self.options.exefs = False, None, None
+        self.assertEqual(self.run_install()[0], 0)
+        self.assertEqual(self.calls, [])
+        self.options.romfs, self.options.exefs = self.romfs, self.exefs
+        self.assertEqual(self.run_install()[0], 0)
+        self.assertTrue((self.dest/'romfs/romfs.bin').is_file())
+        self.assertNotIn('romfs_dir =', (self.dest/'dkb.ini').read_text(encoding='utf-8'))
+
+    def test_romfs_in_place_refuses_a_packed_folder(self):
+        packed = self.root / 'packed input'
+        subprocess.run([sys.executable, str(ROOT/'tools/dkb_pack_romfs.py'), '--dir', str(self.romfs),
+                        '--out', str(packed)], check=True, capture_output=True)
+        self.options.romfs, self.options.romfs_in_place = packed, True
+        code, events = self.run_install()
+        self.assertEqual(code, 1)
+        self.assertIn('dkb.in_place_folder', [e.get('id') for e in events if e['type'] == 'error'])
+        self.assertFalse(self.dest.exists() and any(self.dest.iterdir()))
 
     def test_packed_input_corruption_and_traversal_are_rejected(self):
         packed = self.root / 'packed input'

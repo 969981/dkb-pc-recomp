@@ -419,18 +419,65 @@ static void lock_waits_log(uint64_t frame) {
 // own thread beside the render thread, so the two need not add up to the interval. A second line gives the slice
 // workers' slices the same way, summed over the workers (they run side by side, so it can exceed the frame). Every
 // present clears the sums, so the lines hold what was recorded since the previous one.
+static const char *const ph_name[PERF_PH_N] = {
+    [PERF_FENCE] = "fence waits", [PERF_DRAIN] = "recorder drains", [PERF_PIPE] = "pipeline waits",
+    [PERF_XLATE] = "shader translation", [PERF_TEX] = "texture uploads", [PERF_ASTC] = "ASTC decode",
+    [PERF_PH_IMPORT] = "pool imports on first use", [PERF_PH_MIRROR] = "mirrors made on first use",
+    [PERF_PH_MIRROR_BEGIN] = "mirror pre-snapshot", [PERF_PH_MSYNC] = "mirror syncs",
+    [PERF_PH_WW] = "write-watch queries", [PERF_PH_SHADER] = "shader lookups (new program stages)",
+    [PERF_PH_IMAGE] = "texture images made", [PERF_PH_DLSS_CREATE] = "DLSS feature creation",
+    [PERF_PH_DLSS_EVAL] = "DLSS evaluation", [PERF_PH_TEMPORAL] = "temporal inputs (motion pass)",
+    [PERF_PH_SPIRV_HASH] = "SPIR-V hashes (upscaler match)", [PERF_PH_SLICE_START] = "slice worker start",
+    [PERF_PH_SLICE_WAIT] = "waits for slices", [PERF_PH_SUBMIT] = "part submits",
+    [PERF_PH_USNAP] = "uniform snapshot", [PERF_PH_BUDGET] = "VRAM budget queries",
+    [PERF_PH_PROLOGUE] = "mirror prologues", [PERF_PH_MIRROR_END] = "mirror end (write-back recording)",
+    [PERF_PH_WB_LISTS] = "write-back lists taken", [PERF_PH_ST_SPLIT] = "staged write-backs split and recorded",
+    [PERF_PH_WB_HELD] = "held parts' write-back checks"};
+
+// TOTK_PERF_PARTS=1 (with TOTK_TRACE=perf; off by default): the same parts summed over the 60 frames of each perf line
+// and printed per frame (perf: frame N: replay by part per frame), for the steady state, where no frame is slow enough
+// for the line above. The steady-state cost of TOTK_MIRROR_STAGED=all on the Hilltop Layer of Surf Hills (replay 9.09
+// against 8.53 ms a frame with the pools imported, five runs each) had no part to land in otherwise.
+static struct {
+    int64_t ns[2][PERF_PH_N], cnt[2][PERF_PH_N], cpu[2][PERF_PH_N], all[2], allc[2], rep, frames;
+} ph_win;
+
+static void ph_window_log(uint64_t frame) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("PERF_PARTS", "0") != 0;
+    if (!on || !ph_win.frames) {
+        memset(&ph_win, 0, sizeof ph_win);
+        return;
+    }
+    const double f = (double)ph_win.frames;
+    for (int b = 0; b < 2; b++) {
+        if (b && !ph_win.all[1]) break;
+        char line[3000];
+        size_t o = 0;
+        int64_t parts = 0;
+        line[0] = 0;
+        for (int i = 0; i < PERF_PH_N && o < sizeof line - 160; i++) {
+            parts += ph_win.ns[b][i];
+            if (!ph_name[i] || !ph_win.cnt[b][i]) continue;
+            o += (size_t)snprintf(line + o, sizeof line - o, "; %s %.3f (%.1f", ph_name[i], ph_win.ns[b][i] / 1e6 / f,
+                                  ph_win.cnt[b][i] / f);
+            if (ph_win.cpu[b][i]) o += (size_t)snprintf(line + o, sizeof line - o, ", cpu %.3f", ph_win.cpu[b][i] / 1e6 / f);
+            o += (size_t)snprintf(line + o, sizeof line - o, ")");
+        }
+        if (!b)
+            rt_log("perf: frame %llu: replay by part per frame: %.3f ms on the recording thread (cpu %.3f, %.3f ms inside "
+                   "the brackets)%s; rest of the walk %.3f", (unsigned long long)frame, ph_win.rep / 1e6 / f,
+                   ph_win.allc[0] / 1e6 / f, ph_win.all[0] / 1e6 / f, line, (ph_win.rep - parts) / 1e6 / f);
+        else
+            rt_log("perf: frame %llu: slice workers by part per frame: %.3f ms recording slices, summed over the workers "
+                   "(cpu %.3f)%s; rest of their slices %.3f", (unsigned long long)frame, ph_win.all[1] / 1e6 / f,
+                   ph_win.allc[1] / 1e6 / f, line, (ph_win.all[1] - parts) / 1e6 / f);
+    }
+    memset(&ph_win, 0, sizeof ph_win);
+}
+
 static void ph_frame(uint64_t frame, uint64_t d, uint64_t rep, int slow) {
-    static const char *const name[PERF_PH_N] = {
-        [PERF_FENCE] = "fence waits", [PERF_DRAIN] = "recorder drains", [PERF_PIPE] = "pipeline waits",
-        [PERF_XLATE] = "shader translation", [PERF_TEX] = "texture uploads", [PERF_ASTC] = "ASTC decode",
-        [PERF_PH_IMPORT] = "pool imports on first use", [PERF_PH_MIRROR] = "mirrors made on first use",
-        [PERF_PH_MIRROR_BEGIN] = "mirror pre-snapshot", [PERF_PH_MSYNC] = "mirror syncs",
-        [PERF_PH_WW] = "write-watch queries", [PERF_PH_SHADER] = "shader lookups (new program stages)",
-        [PERF_PH_IMAGE] = "texture images made", [PERF_PH_DLSS_CREATE] = "DLSS feature creation",
-        [PERF_PH_DLSS_EVAL] = "DLSS evaluation", [PERF_PH_TEMPORAL] = "temporal inputs (motion pass)",
-        [PERF_PH_SPIRV_HASH] = "SPIR-V hashes (upscaler match)", [PERF_PH_SLICE_START] = "slice worker start",
-        [PERF_PH_SLICE_WAIT] = "waits for slices", [PERF_PH_SUBMIT] = "part submits",
-        [PERF_PH_USNAP] = "uniform snapshot", [PERF_PH_BUDGET] = "VRAM budget queries"};
+    const char *const *name = ph_name;
     int64_t ns[2][PERF_PH_N], cnt[2][PERF_PH_N], mx[2][PERF_PH_N], cpu[2][PERF_PH_N], all[2], allc[2];
     for (int b = 0; b < 2; b++) {
         for (int i = 0; i < PERF_PH_N; i++)
@@ -439,6 +486,12 @@ static void ph_frame(uint64_t frame, uint64_t d, uint64_t rep, int slow) {
         all[b] = plat_xchg64(&ph_all_ns[b], 0), allc[b] = plat_xchg64(&ph_all_cpu[b], 0);
     }
     int64_t nns = plat_xchg64(&ph_new_ns, 0), ndraws = plat_xchg64(&ph_new_draws, 0), npass = plat_xchg64(&ph_new_passes, 0);
+    for (int b = 0; b < 2; b++) {   // ph_window_log's sums
+        for (int i = 0; i < PERF_PH_N; i++)
+            ph_win.ns[b][i] += ns[b][i], ph_win.cnt[b][i] += cnt[b][i], ph_win.cpu[b][i] += cpu[b][i];
+        ph_win.all[b] += all[b], ph_win.allc[b] += allc[b];
+    }
+    ph_win.rep += (int64_t)rep, ph_win.frames++;
     if (!slow) return;
     for (int b = 0; b < 2; b++) {
         if (b && !all[1]) break;
@@ -548,6 +601,7 @@ void perf_present(uint64_t frame) {
     if (!win_start) win_start = now;
     if (frame % 60) return;
     lock_waits_log(frame);
+    ph_window_log(frame);
     uint64_t span = now - win_start;
     int64_t win[PERF_CNT_N];
     for (int i = 0; i < PERF_CNT_N; i++) {

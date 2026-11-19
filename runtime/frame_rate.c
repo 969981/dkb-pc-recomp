@@ -210,6 +210,12 @@ static int fps60_set = -2;
 static unsigned limit_seen;
 static int limit_read;
 static int limit_hz = -1;   // 0: display; LIMIT_NONE: unlimited; -1 before the first read
+// Bananza with the real-time step: the highest frame rate the pacer allows, whatever the limit (TOTK_REALTIME_MAX_FPS,
+// default 120, 0 for none). Above 120 fps the step falls under half a 60 Hz frame, and the 3.2.0 Emerald Rush challenge
+// levels then crash in the draw-record merge job (main+0xa68f80, #411: a record block freed while still linked); the
+// same levels play through at 120 fps and with a fixed 1/60 s step. Which game code breaks below 1/120 s is not found
+// yet, so the ceiling keeps every step at 1/120 s or longer instead of handing the game a shorter one.
+static int rt_max_hz;
 
 static int limit_parse(void) {
     const char *e = cfg_get("TOTK_FPS_LIMIT"), *old = cfg_get("TOTK_FPS60");
@@ -228,8 +234,15 @@ static void frame_limit_live(void) {
     if (limit_read && v == limit_seen) return;
     limit_read = 1;
     limit_seen = v;
+    const char *mx = cfg_get("TOTK_REALTIME_MAX_FPS");
+    int max_hz = !step_word || rt_game_version ? 0 : mx && *mx ? atoi(mx) : 120;
+    if (max_hz && max_hz < LIMIT_MIN_HZ) max_hz = LIMIT_MIN_HZ;
     int hz = limit_parse();
-    if (hz == limit_hz) return;
+    if (hz == limit_hz && max_hz == rt_max_hz) return;
+    if (max_hz != rt_max_hz && step_word && !rt_game_version)
+        rt_log("frame rate: real-time step held to %d fps at most%s", max_hz,
+               max_hz ? " (TOTK_REALTIME_MAX_FPS; 0 lifts it, #411)" : ", no ceiling (TOTK_REALTIME_MAX_FPS=0)");
+    rt_max_hz = max_hz;
     limit_hz = hz;
     if (fps60_set == -2) fps60_set = rt_patch_set("fps60");
     if (fps60_set >= 0) rt_patch_switch(fps60_set, hz != 30);
@@ -252,10 +265,11 @@ static void frame_limit_live(void) {
 
 uint64_t frame_step_cap_ns(void) {
     frame_limit_live();
-    if (limit_hz == LIMIT_NONE && step_word) return 0;   // pace() presents at once
-    double hz = limit_hz > 0 ? limit_hz : gfx_window_refresh_hz();
+    if (limit_hz == LIMIT_NONE && step_word && !rt_max_hz) return 0;   // pace() presents at once
+    double hz = limit_hz > 0 ? limit_hz : limit_hz == LIMIT_NONE ? LIMIT_MAX_HZ : gfx_window_refresh_hz();
     if (hz < LIMIT_MIN_HZ) hz = 60;   // display rate unknown (no window yet)
     if (hz > LIMIT_MAX_HZ) hz = LIMIT_MAX_HZ;
+    if (rt_max_hz && hz > rt_max_hz) hz = rt_max_hz;
     return (uint64_t)(1e9 / hz + 0.5);
 }
 
@@ -263,9 +277,11 @@ uint64_t frame_step_cap_ns(void) {
 // most without the real-time step; 0 before the first frame read the setting.
 double frame_step_limit_hz(void) {
     int hz = limit_hz;
+    if (hz == LIMIT_NONE && rt_max_hz) return rt_max_hz;
     if (hz < 0) return 0;   // not read yet, or unlimited: the overlay shows no limit
     double r = hz ? hz : gfx_window_refresh_hz();
     if (r < LIMIT_MIN_HZ) r = 60;
+    if (rt_max_hz && r > rt_max_hz) r = rt_max_hz;
     return !step_word && r > 60 ? 60 : r > LIMIT_MAX_HZ ? LIMIT_MAX_HZ : r;
 }
 

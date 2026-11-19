@@ -8,6 +8,9 @@
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
+// Player 2 (coop = 1): a second gamepad (or DKB_LIVE_INPUT2), the same bits and axes as input_poll; nothing while the
+// text entry or the menu is open. Returns 1 while player 2 is connected. Callable from any thread.
+int input_poll2(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 void input_block(int on);
 // The in-game menu (ui/menu.h): input_menu(1) when it opens (input_poll reports nothing, the cursor is released), (0) when
@@ -40,6 +43,7 @@ int input_pad_devices(InputPadDevice **devices);
 typedef struct {
     uint32_t *ids, pending;
     int count, initialized, automatic, force;
+    int keep;   // a new arrival does not take over while the current device is still connected (coop: it is player 2)
     char preferred[128];
 } InputPadSelection;
 uint32_t input_pad_choose(InputPadSelection *s, const InputPadDevice *devices, int count,

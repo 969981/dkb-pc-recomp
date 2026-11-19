@@ -177,6 +177,8 @@ class App:
         self.vars['lang'] = tk.StringVar()
         self.fsr4_var = tk.BooleanVar(value=False)   # Bananza: AMD FSR 4 wanted
         self.fsr4_accepted = False                   # the license of fsr4.TAG was accepted in this window
+        self.in_place_var = tk.BooleanVar(value=False)   # Bananza: read the RomFS folder in place, no packed copy
+        self.in_place_touched = False                    # ticked or cleared here: the install's record no longer sets it
         self.lang_code = default_game_language(ui_lang)
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
@@ -377,6 +379,11 @@ class App:
         self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=4)
         ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 1, column=1, sticky='ew', pady=4)
         self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(8, 0))
+        if self.game == 'bananza':
+            box = ttk.Checkbutton(f, variable=self.in_place_var,
+                                  command=lambda: setattr(self, 'in_place_touched', True))
+            self.bind_text(box, 'text', 'dkb.ui.romfs_in_place')
+            box.pack(anchor='w', pady=(8, 0))
         if self.game == 'bananza' and os.name == 'nt':   # AMD's libraries are for Windows only
             self.fsr4_box = ttk.Checkbutton(f, variable=self.fsr4_var, command=self.toggle_fsr4)
             self.bind_text(self.fsr4_box, 'text', 'dkb.ui.fsr4')
@@ -730,7 +737,7 @@ class App:
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     lang=self.selected_lang(), dest=self.vars['dest'].get(), game=self.game,
                     exefs=self.vars['exefs'].get(), romfs=self.vars['romfs'].get(), package=self.vars['package'].get(),
-                    nup=self.vars['nup'].get(), fsr4=self.fsr4_choice())
+                    nup=self.vars['nup'].get(), fsr4=self.fsr4_choice(), romfs_in_place=self.in_place_var.get())
 
     # AMD FSR 4 (installer/fsr4.py). Ticking the box shows AMD's license of the pinned release, fetched from AMD's
     # repository; only "I accept" leaves it ticked. A folder whose setup recorded that release starts ticked.
@@ -810,6 +817,8 @@ class App:
         state = form.installed_state()
         if self.game == 'bananza' and not self.fsr4_accepted:
             self.fsr4_var.set(bool(state) and state.get('fsr4') == fsr4.TAG)
+        if self.game == 'bananza' and not self.in_place_touched:
+            self.in_place_var.set(bool(state) and bool(state.get('sources', {}).get('romfs_in_place')))
         if state is not None:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
             recorded = ini.canonical_language(state.get('lang'))

@@ -144,6 +144,12 @@
 # frame limit) or counter (the frame rate as a large outlined number with no background). F10 cycles the modes in
 # game, as do both stick clicks (L3 + R3) on a controller.
 # perf_overlay = off
+# The start-up screen: from the moment the window opens to the game's first picture, the window shows a scene of
+# its own with what the start prepares (the shaders, the pipelines earlier runs met), how far each step is and, on a
+# long start, about how long it has left. 1 draws it in a canyon at sunrise, 2 in a cavern deep under the ground,
+# lit by a shaft of light from far above, 3 over a dawn above a jungle ridge; 0 opens the window at the game's first
+# frame instead, as before. Read at start.
+# splash = 1
 # Which GPU to use: its index in the log, or part of its name. Default: the first discrete GPU with Vulkan 1.3.
 # gpu_index = 0
 # gpu_name = NVIDIA
@@ -304,6 +310,9 @@
 # open to pair it with this PC; after that any button reconnects it. Do not pair it in the system's Bluetooth settings.
 # Over USB they work through SDL without this. Takes effect at the next start. docs/controls.md, "Switch 2 controllers".
 # switch2 = 0
+# Two-player mode (Bananza: Pause > Co-op mode > Share controllers, player 2 is Pauline): a second gamepad is player 2
+# while one is connected, and it no longer takes player 1 over when it is plugged in. 0 keeps one controller.
+# coop = 1
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). xbox_prompts: the buttons as nintendo, and the game's prompts swapped to the Xbox
@@ -343,6 +352,9 @@
 # Folder with RomFS mod files that replace or add game files (docs/dkb-testing.md, "Mods"). Default: the mods folder next
 # to dkb.exe; 0 turns mods off.
 # romfs_mods =
+# The extracted RomFS folder the game reads in place of romfs/romfs.bin. The setup writes it when "Use the RomFS where it
+# is" is ticked (--romfs-in-place); the folder must then stay where it is. Default: unset, the packed romfs.bin.
+# romfs_dir =
 
 [diagnostics]
 # Experimental Switch 2 reads of up to 4 KiB without waiting; requires replay_async = 1. Opt-in only: its background
