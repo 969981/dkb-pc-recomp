@@ -23,6 +23,7 @@ from pathlib import Path
 from . import layout as layouts
 from . import state as statefile
 from . import ini
+from . import dlss
 from . import fsr4
 from .events import LauncherReporter, Reporter
 from .runner import Context, InstallError, Step, run_steps
@@ -577,6 +578,10 @@ class Check(Step):
             command += ['-I', ctx.layout.deps / 'include']
         if os.name != 'nt':
             command += ['-ldl']
+            homebrew = Path('/opt/homebrew/include')
+            if (homebrew / 'vulkan').is_dir():
+                # Homebrew's prefix is not in clang's default search list: the Vulkan header lives there (tools/build_game.py:384)
+                command += ['-I', homebrew]
         if ctx.layout.sysroot:
             # The release's clang has no system headers of its own: build against the sysroot, as the game does (#293)
             command += ['--target=x86_64-linux-gnu', f'--sysroot={ctx.layout.sysroot}']
@@ -1043,6 +1048,47 @@ class Fsr4(Step):
         return {'files': True, 'tag': fsr4.TAG}
 
 
+class Dlss(Step):
+    """NVIDIA's nvngx_dlss.dll next to dkb.exe (installer/dlss.py), only when the user asked for it and accepted NVIDIA's
+    license of the pinned release: --dlss accept (the window asks first), recorded as state['dlss'] = that release so a
+    later setup keeps it. --dlss off stops fetching it; files already there stay. A failed download warns and setup
+    goes on; the next setup tries again. DLSS needs an NVIDIA RTX GPU; setup does not check for one."""
+    id = 'dkb_dlss'
+
+    def key(self, ctx):
+        return digest('dlss', ctx.state.get('dlss') or 'off')
+
+    def current(self, ctx, record):
+        if not ctx.state.get('dlss') or not fsr4_platform():
+            return True
+        try:   # sizes only here; verify hashes them
+            return record.get('files') is True and all(
+                (ctx.dest / name).stat().st_size == size for _, name, size, _ in (dlss.LICENSE, *dlss.FILES))
+        except OSError:
+            return False
+
+    def verify(self, ctx, record):
+        return not ctx.state.get('dlss') or not fsr4_platform() or dlss.installed(ctx.dest)
+
+    def run(self, ctx):
+        if not ctx.state.get('dlss'):
+            return {'files': False}
+        if not fsr4_platform():
+            ctx.reporter.log('dlss: DLSS is for Windows only here; nothing fetched')
+            return {'files': False}
+        for _, name, _, _ in (dlss.LICENSE, *dlss.FILES):
+            ensure_plain(ctx.dest / name)
+            ensure_plain(ctx.dest / (name + '.part'))
+        total = dlss.total_bytes()
+        ctx.reporter.progress(self.id, 'dkb_fetch', 0, total, 'bytes', force=True)
+        try:
+            dlss.fetch(ctx.dest, lambda done: ctx.reporter.progress(self.id, 'dkb_fetch', done, total, 'bytes'))
+        except dlss.FetchError as error:
+            ctx.reporter.warning('warn.dkb_dlss_failed', file=error.args[0], detail=error.args[1])
+            return {'files': False}   # not current: the next setup tries again
+        return {'files': True, 'tag': dlss.TAG}
+
+
 class Prepare(Step):
     id = 'dkb_verify'
 
@@ -1084,7 +1130,7 @@ class Cleanup(Step):
 
 
 def all_steps():
-    return [Check(), Data(), Translator(), Lift(), Compile(), Shaders(), WideLayouts(), PadPrompts(), Fsr4(), Prepare(),
+    return [Check(), Data(), Translator(), Lift(), Compile(), Shaders(), WideLayouts(), PadPrompts(), Fsr4(), Dlss(), Prepare(),
             Cleanup()]
 
 
@@ -1100,6 +1146,124 @@ def write_owner(path, value):
     except FileExistsError:
         if json.loads(path.read_text(encoding='utf-8')) != value:
             raise InstallError('dkb.temp_unrelated', path=str(path.parent)) from None
+
+
+def work_folder(dest, temp, layout_temp):
+    """The folder that holds this install's generated C, objects and logs, for a resolved dest."""
+    raw_base = (temp or layout_temp or dest.parent / '.dkb-setup').absolute()
+    ensure_plain(raw_base)
+    tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:12]
+    # The work folder's name goes onto compiler and MSBuild command lines that split on spaces (issue 134): keep
+    # only characters that need no quoting. The tag already tells two destinations apart; a name that was safe
+    # keeps its folder, so an interrupted setup still resumes.
+    safe = ''.join(ch if ch.isascii() and (ch.isalnum() or ch in '._-') else '_' for ch in dest.name)
+    return raw_base.resolve() / f'dkb-{safe}-{tag}'
+
+
+def folder_size(folder):
+    return sum(p.stat().st_size for p in folder.rglob('*') if p.is_file())
+
+
+def clean(dest, temp=None, layout_temp=None):
+    """Delete the work folder of the install at dest, once its owner file says it is ours; returns (folder, bytes
+    freed). dest itself is never touched."""
+    ensure_plain(dest.absolute())
+    dest = dest.resolve()
+    folder = work_folder(dest, temp, layout_temp)
+    if not folder.is_dir():
+        raise InstallError('dkb.clean_nothing', path=str(folder))
+    try:
+        ensure_plain(folder / OWNER)
+        owner = json.loads((folder / OWNER).read_text(encoding='utf-8'))
+        ours = (isinstance(owner, dict) and owner.get('destination') == str(dest) and owner.get('temporary') == str(folder)
+                and owner.get('game') in TARGETS)
+    except (OSError, ValueError):
+        ours = False
+    if not ours:
+        raise InstallError('dkb.temp_unrelated', path=str(folder))
+    plain_tree(folder)
+    # A setup running on this folder holds its lock: dkb.busy then. The lock is released before the delete, since
+    # Windows cannot delete a file this process holds open; a setup starting in between is the window that remains.
+    lock_temp(folder).close()
+    size = folder_size(folder)
+    shutil.rmtree(folder)
+    return folder, size
+
+
+def clean_main(options):
+    rep = Reporter()
+    try:
+        folder, size = clean(options.dest, options.temp, layouts.find(options.root).temp)
+    except InstallError as e:
+        rep.error(e.id, e.params)
+        return 1
+    rep.emit('cleaned', folder=str(folder), bytes=size)
+    return 0
+
+
+KEPT_SAVES = ('profile', 'dkb.ini', 'mods')   # the player's own files (saves, settings, loose mods), kept unless asked
+
+
+def uninstall(dest, temp=None, layout_temp=None, keep_saves=True):
+    """Remove the install at dest and its work folder; returns (removed paths, bytes freed). Needs our state or owner
+    record for this destination. With keep_saves, profile/ and dkb.ini stay and dest itself stays; links are refused
+    before anything is deleted and never followed."""
+    ensure_plain(dest.absolute())
+    dest = dest.resolve()
+    ensure_plain(dest / STATE)
+    ensure_plain(dest / DEST_OWNER)
+    try:
+        old = statefile.load(dest, STATE)
+        ours = old is not None and old.get('game') in TARGETS and old.get('destination') == str(dest)
+        if not ours and old is None:
+            owner = json.loads((dest / DEST_OWNER).read_text(encoding='utf-8'))
+            ours = isinstance(owner, dict) and owner.get('destination') == str(dest) and owner.get('game') in TARGETS
+    except (OSError, ValueError, statefile.StateError):
+        ours = False
+    if not ours:
+        raise InstallError('dkb.uninstall_unowned', path=str(dest))
+    # dkb.busy while a setup runs. Taken before the listing, since it creates the lock file the listing must include;
+    # released before the deletes, since Windows cannot delete a file this process holds open.
+    lock_temp(dest).close()
+    entries = [p for p in dest.iterdir() if not (keep_saves and p.name.lower() in KEPT_SAVES)]
+    for p in entries:
+        plain_tree(p)
+        if linked(p):
+            raise InstallError('dkb.path_link', path=str(p))
+    folder = work_folder(dest, temp, layout_temp)
+    plain_tree(folder)
+    removed, freed = [], 0
+    if folder.is_dir():
+        try:
+            folder, size = clean(dest, temp, layout_temp)
+            removed.append(str(folder))
+            freed += size
+        except InstallError as e:
+            if e.id != 'dkb.clean_nothing':
+                raise
+    for p in entries:
+        if p.is_dir():
+            freed += folder_size(p)
+            shutil.rmtree(p)
+        else:
+            freed += p.stat().st_size
+            p.unlink()
+        removed.append(str(p))
+    if not keep_saves:
+        dest.rmdir()
+    return removed, freed
+
+
+def uninstall_main(options):
+    rep = Reporter()
+    try:
+        removed, freed = uninstall(options.dest, options.temp, layouts.find(options.root).temp,
+                                   keep_saves=not options.delete_saves)
+    except InstallError as e:
+        rep.error(e.id, e.params)
+        return 1
+    rep.emit('uninstalled', removed=removed, bytes=freed, saves_kept=not options.delete_saves)
+    return 0
 
 
 def main(options):
@@ -1127,17 +1291,9 @@ def main(options):
                         value and Path(value).exists()):
                     setattr(options, name, Path(value))
         layout = tool_layout(found, options)
-        raw_base = (options.temp or layout.temp or dest.parent / '.dkb-setup').absolute()
-        ensure_plain(raw_base)
-        base = raw_base.resolve()
-        if os.name != 'nt' and unsafe_temp_chars(base):
-            raise InstallError('dkb.temp_unsafe_path', path=str(base))
-        tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:12]
-        # The work folder's name goes onto compiler and MSBuild command lines that split on spaces (issue 134): keep
-        # only characters that need no quoting. The tag already tells two destinations apart; a name that was safe
-        # keeps its folder, so an interrupted setup still resumes.
-        safe = ''.join(ch if ch.isascii() and (ch.isalnum() or ch in '._-') else '_' for ch in dest.name)
-        temp = base / f'dkb-{safe}-{tag}'
+        temp = work_folder(dest, options.temp, layout.temp)
+        if os.name != 'nt' and unsafe_temp_chars(temp.parent):
+            raise InstallError('dkb.temp_unsafe_path', path=str(temp.parent))
         info = preflight(layout, options, dest, temp, rep)
         # All read-only validation succeeded. Logs and owned output may now be created.
         temp.mkdir(parents=True, exist_ok=True)
@@ -1169,6 +1325,14 @@ def main(options):
         elif ctx.state.get('fsr4') not in (None, fsr4.TAG):
             ctx.state.pop('fsr4', None)   # accepted for another release: its license is to be accepted again
             rep.warning('warn.dkb_fsr4_new_release', release=fsr4.TAG)
+        choice = getattr(options, 'dlss', None)   # accept: the user accepted NVIDIA's license of dlss.TAG
+        if choice == 'accept':
+            ctx.state['dlss'] = dlss.TAG
+        elif choice == 'off':
+            ctx.state.pop('dlss', None)
+        elif ctx.state.get('dlss') not in (None, dlss.TAG):
+            ctx.state.pop('dlss', None)   # accepted for another release: its license is to be accepted again
+            rep.warning('warn.dkb_dlss_new_release', release=dlss.TAG)
         steps = all_steps()
         rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
                  game=info['game'], game_exe='dkb' + EXE, steps=[s.id for s in steps])

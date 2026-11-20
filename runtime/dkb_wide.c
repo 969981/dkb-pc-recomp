@@ -42,6 +42,14 @@ int dkb_wide_output(unsigned out[2]) {
 // fill the bands above and below the 16:9 area).
 int dkb_ui_overlay(void) { return wide_enabled || tall_ui; }
 
+float dkb_dlss_mode_ratio(const char *mode) {
+    static const struct { const char *name; float ratio; } modes[] = {
+        {"dlaa", 1.0f}, {"quality", 1.5f}, {"balanced", 1.724f}, {"performance", 2.0f}, {"ultra_performance", 3.0f}};
+    for (size_t i = 0; i < sizeof modes / sizeof *modes; i++)
+        if (!strcmp(mode, modes[i].name)) return modes[i].ratio;
+    return 0;
+}
+
 // TOTK_SCENE_RES: "auto" leaves the game's dynamic resolution alone. "full" (ratio 1.0) or a ratio from 1.0 to 3.0
 // draws the 3D scene at the virtual display divided by that ratio: the patched store in the controller at main
 // 3c12b4 (patches-dkb100.txt, set dkbscene) loads the ratio from page +0x118. Under emulation the game's own
@@ -51,6 +59,15 @@ static float dkb_scene_ratio(void) {
     const char *value = cfg_value("TOTK_SCENE_RES");
     float ratio = 0;
     char tail;
+    // dlss_mode names a ratio for the temporal upscalers, and applies only while scene_res is auto
+    const char *up = cfg_value("TOTK_UPSCALER");
+    if (!strcmp(value, "auto") && (!strcmp(up, "dlss") || !strcmp(up, "fsr3") || !strcmp(up, "fsr4")) &&
+        (ratio = dkb_dlss_mode_ratio(cfg_value("TOTK_DLSS_MODE"))) != 0) {
+        static int logged;
+        if (!logged++) rt_log("Bananza resolution: dlss_mode = %s sets the 3D scene ratio %.3f (scene_res is auto)",
+                              cfg_value("TOTK_DLSS_MODE"), ratio);
+        return ratio;
+    }
     if (!strcmp(value, "full")) ratio = 1.0f;
     else if (sscanf(value, "%f%c", &ratio, &tail) != 1 || ratio < 1.0f || ratio > 3.0f) ratio = 0;
     return ratio;

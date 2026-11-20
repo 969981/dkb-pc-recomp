@@ -197,6 +197,13 @@
 # output_res divided by that ratio and upscales it to output_res (1.5 with upscaler = dlss: DLSS Quality at output_res).
 # Read at start.
 # scene_res = auto
+# Bananza only: the 3D scene ratio of upscaler = dlss, fsr3 or fsr4 by name, used while scene_res is auto: auto, dlaa
+# (1.0), quality (1.5), balanced (1.724), performance (2.0) or ultra_performance (3.0). Read at start.
+# dlss_mode = auto
+# A set of defaults for a class of PC (output_res, scene_res, upscaler, astc_bc, fps_limit, frame_gen): custom (nothing
+# changes), recommended (from your GPU memory, RAM and processors) or 1 Minimum, 2 Low, 3 Medium, 4 High, 5 Ultra
+# (docs/dkb-testing.md). A key you set here wins over it. Read at start.
+# preset = custom
 # Sharpening of the finished picture, 0 (off) to 100, at any window size, the game resolution's size included, and on the
 # game's own HDR picture too. Takes effect at once.
 # sharpness = 80

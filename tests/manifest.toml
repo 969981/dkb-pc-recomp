@@ -100,6 +100,12 @@ area = "installer"
 cmd = ["{python}", "tests/installer_fsr4_test.py"]
 
 [[test]]
+name = "installer-dlss"
+tier = 0
+area = "installer"
+cmd = ["{python}", "tests/installer_dlss_test.py"]
+
+[[test]]
 name = "lowend-bench"
 tier = 0
 area = "tools"

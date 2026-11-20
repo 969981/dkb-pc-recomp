@@ -491,6 +491,10 @@ void vk_astc_stats(uint64_t *dispatches, uint64_t *texels);   // since start
 void vk_astc_time_enable(int on);
 int vk_astc_time_get(uint32_t bw, uint32_t bh, uint64_t *texels, uint64_t *calls, double *us);   // totals so far
 void vk_astc_time_summary(void);        // logs the totals
+// Before the Vulkan instance of the game exists: the largest device-local heap (MiB) of the best GPU (the discrete one,
+// else an integrated one; TOTK_GPU_INDEX picks), whether it is integrated and whether it is NVIDIA's. Makes and drops
+// an instance of its own. 0 when no GPU answers (vk_device.c).
+int vk_hw_probe(unsigned *vram_mib, int *integrated, int *nvidia);
 void vk_astc_release(void);             // vk_device.c, before the device goes: frees the decoder's objects
 // Protect objects retired from here on until this timeline value completes. Announce before recording their users;
 // this is a destruction frontier, not a report that the value was submitted or issued.

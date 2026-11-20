@@ -28,6 +28,11 @@ int cfg_from_env(const char *name);
 int cfg_is_set(const char *name);
 // The device profile in use, "deck" or "desktop" (TOTK_DEVICE_PROFILE, else what the machine is).
 const char *cfg_device_profile(void);
+// The performance preset (TOTK_PRESET: custom, recommended or 1..5) as a defaults table below the environment and
+// totk.ini. cfg_init resolves it (recommended probes the GPU, the memory and the processors); the probe calls it after
+// loading its own file. cfg_preset_score is the level a machine fits; parts (optional) gets the VRAM, RAM and CPU levels.
+void cfg_preset_resolve(void);
+int cfg_preset_score(unsigned vram_mib, unsigned ram_mib, unsigned cpus, int integrated, int parts[3]);
 // Writes the keys cfg_set changed since the last save into totk.ini next to totk.exe (cfg_save_to: the file at path).
 // Only those lines change: the last line of a changed key gets the new value, a missing key goes under its section
 // (after the commented example line of the key when the section has one; the section is added at the end of the file

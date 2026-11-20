@@ -1015,11 +1015,15 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
         fault_hook((uint64_t)(uintptr_t)si->si_addr))
         return;
     uintptr_t rip = (uintptr_t)arm_thread_state64_get_pc(u->uc_mcontext->__ss);
-    Dl_info at, self;
-    if (crash_fn && dladdr((void *)rip, &at) && dladdr((void *)plat_crash_hook, &self) && at.dli_fbase == self.dli_fbase) {
+    Dl_info at = {0}, self = {0};
+    if (crash_fn) {   // a fault in another module is reported too, by file name: see linux.c fault_handler
+        int known = dladdr((void *)rip, &at) && at.dli_fbase;
+        dladdr((void *)plat_crash_hook, &self);
         PlatCrash c = {.what = sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error"
                         : sig == SIGILL ? "illegal instruction" : "arithmetic exception",
-                       .code = (uint32_t)sig, .rip = rip, .offset = rip - (uintptr_t)self.dli_fbase, .access = -1};
+                       .code = (uint32_t)sig, .rip = rip, .offset = known ? rip - (uintptr_t)at.dli_fbase : rip,
+                       .access = -1};
+        if (!known || at.dli_fbase != self.dli_fbase) c.module = known && at.dli_fname ? at.dli_fname : "unknown module";
         if (sig == SIGSEGV || sig == SIGBUS) {
             c.access = ec == 0x20 || ec == 0x21 ? 8 : (esr & (1u << 6)) ? 1 : 0;
             c.addr = (uint64_t)(uintptr_t)si->si_addr;

@@ -772,6 +772,12 @@ static void rows_render_options(const MenuTarget &target) {
     // 2880x1620 virtual display on a 1440p or 1080p screen, it hid DLSS from the players of issues #152 and #306.
     if (no_upscale && rt_game_version) opt_disable_next(UI_MENU_NO_UPSCALING);
     opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC, up_cur);
+    if (!rt_game_version && rt_patch_set("dkbscene") >= 0 && up_cur > 0) {   // dkb_wide.c dkb_scene_ratio
+        static const UiTextId modes[] = {UI_MENU_AUTO, UI_MENU_DLSS_MODE_DLAA, UI_MENU_DLSS_MODE_QUALITY,
+                                         UI_MENU_DLSS_MODE_BALANCED, UI_MENU_DLSS_MODE_PERFORMANCE,
+                                         UI_MENU_DLSS_MODE_ULTRA_PERF};
+        opt_choice("TOTK_DLSS_MODE", UI_MENU_DLSS_MODE, modes, 6, UI_MENU_DLSS_MODE_DESC);
+    }
     // The Window scaling filter (TOTK_WINDOW_FILTER, live): how the finished picture is scaled to the window, with
     // every upscaler. While the window is the picture's size the row stays open with a note that the filter only
     // matters for Sharpness there (window_filter.h wf_plan: Linear, Catmull-Rom and Lanczos sharpen at any size, FSR 1
@@ -847,6 +853,12 @@ static bool settings_section(UiTextId title, const char *id, bool first = false)
 static void tab_display(float scale) {
     opt_begin("##screen", scale);
     if (settings_section(UI_MENU_RESOLUTION_GROUP, "resolution", true)) {
+        if (!rt_game_version) {   // cfg.c PRESETS: the options below that the player set by hand win over it
+            static const UiTextId presets[] = {UI_MENU_PRESET_CUSTOM, UI_MENU_PRESET_RECOMMENDED, UI_MENU_PRESET_MINIMUM,
+                                               UI_MENU_PRESET_LOW, UI_MENU_PRESET_MEDIUM, UI_MENU_PRESET_HIGH,
+                                               UI_MENU_PRESET_ULTRA};
+            opt_choice("TOTK_PRESET", UI_MENU_PRESET, presets, 7, UI_MENU_PRESET_DESC);
+        }
         row_window_mode();
         if (!rt_game_version) row_dkb_resolution();
         else row_output_res();

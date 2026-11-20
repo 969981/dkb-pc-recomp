@@ -981,11 +981,17 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
     if (sig == SIGSEGV && access_hook && access_hook((uint64_t)(uintptr_t)si->si_addr)) return;   // a sealed page
     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
-    Dl_info at, self;
-    if (crash_fn && dladdr((void *)rip, &at) && dladdr((void *)plat_crash_hook, &self) && at.dli_fbase == self.dli_fbase) {
+    Dl_info at = {0}, self = {0};
+    if (crash_fn) {
+        // A fault in another module (a driver, a Vulkan layer) is reported too, named by its file, like the Windows
+        // last-chance filter does. Before, it took the default action at once and could end the process while
+        // another thread was still writing its report; crash_fn makes such a thread wait for that report.
+        int known = dladdr((void *)rip, &at) && at.dli_fbase;
+        dladdr((void *)plat_crash_hook, &self);
         PlatCrash c = {sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error"
                        : sig == SIGILL ? "illegal instruction" : "arithmetic exception",
-                       (uint32_t)sig, rip, rip - (uintptr_t)self.dli_fbase, -1, 0};
+                       (uint32_t)sig, rip, known ? rip - (uintptr_t)at.dli_fbase : rip, -1, 0};
+        if (!known || at.dli_fbase != self.dli_fbase) c.module = known && at.dli_fname ? at.dli_fname : "unknown module";
         if (sig == SIGSEGV || sig == SIGBUS)
             c.access = (err & 16) ? 8 : (err & 2) ? 1 : 0, c.addr = (uint64_t)(uintptr_t)si->si_addr;
         crash_fn(&c);

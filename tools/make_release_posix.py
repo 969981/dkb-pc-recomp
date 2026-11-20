@@ -35,7 +35,7 @@ LICENSES = {'runtime/shaders/ffx/LICENSE.txt': 'FidelityFX-FSR-LICENSE.txt',
 README_SETUP = """\
 DKB Recomp setup for {label}
 
-This folder builds Donkey Kong Bananza (base game 1.0.0) from your own dump. It holds the sources and the command-line
+This folder builds Donkey Kong Bananza (base game 1.0.0, or update 3.2.0) from your own dump. It holds the sources and the command-line
 installer only: no game data, no prebuilt binaries. Status: {status}
 
 Requirements
@@ -46,7 +46,7 @@ Run
       Lists what is missing and the command that installs it; changes nothing. Exit code 0 when all is present.
   {setup} --exefs DIR --romfs DIR --dest DIR
       Creates .venv with uv (Python 3.12), then runs: python -m installer --game bananza <your arguments>
-      --exefs: the ExeFS folder of the 1.0.0 base game. --romfs: its RomFS folder. --dest: where the game is built.
+      --exefs: the ExeFS folder of the base game 1.0.0 or of update 3.2.0. --romfs: its RomFS folder. --dest: where the game is built.
       Further options (--toolchain, --deps, --ninja, --translator, --dotnet, --jobs) are passed through; see
       `.venv/bin/python -m installer --help`.
   {setup} --source PATH --dest DIR

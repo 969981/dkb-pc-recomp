@@ -229,9 +229,18 @@ static uint64_t lifted_function(uintptr_t rip) {
 }
 
 static void crash_handler(const PlatCrash *x) {
-    static volatile int32_t busy;
-    if (plat_xchg32(&busy, 1)) {   // a fault while the report is made: no report, but still a dump
+    // The thread that writes the report, by id. A second fault on that thread, inside the report, gets no report but
+    // still a dump. A fault on another thread waits for the report to end in plat_exit: exiting at once cut the first
+    // thread's register dump short (#443), since several guest threads often fault on the same bad data together.
+    static volatile int32_t owner;
+    int32_t me = (int32_t)plat_thread_id();
+    int32_t prev = plat_cas32(&owner, me, 0);
+    if (prev == me) {
         plat_crash_dump();
+        plat_exit(71);
+    }
+    if (prev) {
+        for (int i = 0; i < 300; i++) plat_sleep_ms(100);   // 30 s: the report or its dump hung
         plat_exit(71);
     }
     // A stack overflow leaves too little stack for the report (rt_vlogf alone takes 2 KB): dump first there, from the

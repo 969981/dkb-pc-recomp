@@ -429,6 +429,94 @@ static void test_cores(Cpu *c) {
     CHECK(ok || !gate, "virtual cores");
 }
 
+// ---- directed core hand-off (kernel.c, TOTK_SCHED_HANDOFF): threads on core 3 alone. A holder L (priority 50) hands
+// a mutex to a waiter H (40). Case 1: L releases it with ArbitrateUnlock, then runs host code without an SVC for
+// 40 ms, where nothing stops it (the asynchronous preemption only interrupts lifted code); with the hand-off H gets the
+// core as the SVC returns, without it at L's next SVC, 40 ms later. Case 2: L releases it inside
+// WaitProcessWideKeyAtomic, which blocks L, while X (55) waits for the core at the end of a SleepThread; with the
+// hand-off the core goes to H, without it to X, which returns from the SVC and runs host code 40 ms before it exits.
+typedef struct { volatile uint32_t *lock, *key; uint32_t tag; int mode; } HoJob;
+static volatile uint32_t g_hol __attribute__((aligned(8))), g_hok __attribute__((aligned(8)));
+static volatile uint32_t g_ho_h;   // H's handle, for L to watch
+static volatile uint64_t g_ho_t0, g_ho_at, g_ho_xs;   // L's release, H's acquisition, X's sleep start
+static uint64_t a_ho_holder, a_ho_waiter, a_ho_busy;
+
+#define HO_XSLEEP_NS 100000000ll
+
+static void busy_ns(uint64_t ns) {
+    uint64_t until = kern_now_ns() + ns;
+    while (kern_now_ns() < until) plat_pause();
+}
+
+static void ho_holder(Cpu *c) {
+    HoJob *j = arg_p(c, 0);
+    user_lock(c, j->lock, j->tag);
+    while (!g_ho_h || kern_thread_state(g_ho_h) != KERN_WAIT_LOCK) sleep_ms(c, 1);   // the core is free meanwhile
+    if (j->mode == 2)   // holding the core until 10 ms after X's sleep has ended: X waits for it in SleepThread
+        while (kern_now_ns() < g_ho_xs + HO_XSLEEP_NS + 10000000) plat_pause();
+    g_ho_t0 = kern_now_ns();
+    if (j->mode == 1) user_unlock(c, j->lock, j->tag);
+    else sv(c, 0x1C, ga(j->lock), ga(j->key), j->tag, 50000000);   // times out: no one signals the key
+    busy_ns(40000000);
+    exit_thread(c);
+}
+
+static void ho_waiter(Cpu *c) {
+    HoJob *j = arg_p(c, 0);
+    user_lock(c, j->lock, j->tag);
+    g_ho_at = kern_now_ns();
+    user_unlock(c, j->lock, j->tag);
+    exit_thread(c);
+}
+
+static void ho_busy(Cpu *c) {
+    g_ho_xs = kern_now_ns();
+    sv(c, 0x0B, HO_XSLEEP_NS, 0, 0, 0);
+    busy_ns(40000000);
+    exit_thread(c);
+}
+
+static uint32_t on_core3(Cpu *c, uint64_t entry, void *arg, int prio) {
+    uint32_t h = create(c, entry, arg, prio, -2);
+    CHECK(sv(c, 0x0F, h, 3, 1u << 3, 0) == 0, "SetThreadCoreMask %#x to core 3", h);
+    return h;
+}
+
+static double ho_case(Cpu *c, int mode) {
+    g_hol = g_hok = 0;
+    g_ho_h = 0;
+    g_ho_t0 = g_ho_at = g_ho_xs = 0;
+    uint32_t hx = 0;
+    if (mode == 2) {   // X first, so that it is asleep before L takes the core
+        hx = on_core3(c, a_ho_busy, NULL, 55);
+        start(c, hx);
+        while (!g_ho_xs) sleep_ms(c, 1);
+    }
+    HoJob jl = {.lock = &g_hol, .key = &g_hok, .mode = mode}, jh = jl;
+    uint32_t hl = on_core3(c, a_ho_holder, &jl, 50), hh = on_core3(c, a_ho_waiter, &jh, 40);
+    jl.tag = hl;
+    jh.tag = hh;
+    start(c, hl);
+    while (ld(&g_hol) != hl) sleep_ms(c, 1);
+    g_ho_h = hh;
+    start(c, hh);
+    join(c, hh);
+    join(c, hl);
+    if (hx) join(c, hx);
+    return g_ho_at > g_ho_t0 ? (double)(g_ho_at - g_ho_t0) / 1e6 : -1;
+}
+
+static void test_handoff(Cpu *c) {
+    int on = __atomic_load_n(&kern_sched_handoff, __ATOMIC_RELAXED);
+    double d1 = ho_case(c, 1), d2 = ho_case(c, 2);
+    int ok = d1 >= 0 && d2 >= 0 && (!on || (d1 < 15 && d2 < 15));
+    printf("core hand-off (%s): a better waiter got a released mutex's core after %.3f ms (ArbitrateUnlock, holder "
+           "busy 40 ms after it) and %.3f ms (WaitProcessWideKeyAtomic, a worse thread queued for the core): %s\n",
+           on ? "TOTK_SCHED_HANDOFF on, want under 15 ms" : "off, about 40 ms expected", d1, d2,
+           !ok ? "FAIL" : on ? "ok" : "ok (not checked)");
+    CHECK(ok, "core hand-off");
+}
+
 // ---- fibers: two fibers switch to each other; each checks its callee-saved registers, sp and tpidr survive
 typedef struct { uint64_t self, other; int id; } FiberJob;
 static volatile int32_t g_switches, g_runs[3];
@@ -625,6 +713,7 @@ static void probe_main(Cpu *c) {
     test_arbiter(c);
     test_events(c);
     test_cores(c);
+    test_handoff(c);
     test_fibers(c);
     test_exit(c);
     test_lifted_ticks(c);
@@ -649,6 +738,85 @@ static void plat_worker(void *arg) {
 static int cmp_u64(const void *a, const void *b) {
     uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
     return x < y ? -1 : x > y;
+}
+
+// ---- costs the kernel's scheduling pays, printed only (no pass or fail; the numbers depend on the machine): a clock
+// read (kernel.c's core wait counters take a few per wait), a stop and resume of a running thread as the asynchronous
+// preemption does it (kernel.c ap_try: plat_intr_stop, plat_intr_resume, without and with a context write), and a
+// wake-up through a condition variable to a thread blocked on it (kernel.c wake to the waiter's return from block).
+static volatile int g_spin_stop, g_pp_turn;
+static PlatIntr *volatile g_spin_intr;
+static PlatMutex g_ppm = PLAT_MUTEX_INIT;
+static PlatCond g_ppc[2] = {PLAT_COND_INIT, PLAT_COND_INIT};
+static uint64_t g_pp_sent;
+static uint64_t g_pp_lat[400];
+
+static void bench_spinner(void *arg) {
+    (void)arg;
+    g_spin_intr = plat_intr_self();
+    while (!__atomic_load_n(&g_spin_stop, __ATOMIC_RELAXED)) plat_pause();
+}
+
+static void bench_ponger(void *arg) {   // side 1: waits for its turn, notes the wake latency, gives the turn back
+    (void)arg;
+    plat_mutex_lock(&g_ppm);
+    for (int i = 0; i < 400; i++) {
+        while (g_pp_turn != 1) plat_cond_wait(&g_ppc[1], &g_ppm);
+        g_pp_lat[i] = plat_now_ns() - g_pp_sent;
+        g_pp_turn = 0;
+        plat_cond_signal(&g_ppc[0]);
+    }
+    plat_mutex_unlock(&g_ppm);
+}
+
+static void bench_sched(void) {
+    enum { CLK = 1000000, STOPS = 400 };
+    uint64_t t0 = plat_now_ns(), sink = 0;
+    for (int i = 0; i < CLK; i++) sink += plat_now_ns();
+    double clk = (double)(plat_now_ns() - t0) / CLK;
+    g_spin_stop = 0;
+    PlatThread *s = plat_thread_new(bench_spinner, NULL, "probe-kernel spinner");
+    while (s && !g_spin_intr) plat_yield();
+    static uint64_t a[STOPS], b[STOPS];
+    int ok = s && g_spin_intr;
+    for (int i = 0; ok && i < STOPS; i++) {
+        uint64_t rip, rsp, x = plat_now_ns();
+        ok = plat_intr_stop(g_spin_intr, &rip, &rsp);
+        if (ok) plat_intr_resume(g_spin_intr, 0);
+        uint64_t y = plat_now_ns();
+        if (ok) ok = plat_intr_stop(g_spin_intr, &rip, &rsp);
+        if (ok) plat_intr_resume(g_spin_intr, rip);   // a context write sending it back where it was
+        a[i] = y - x, b[i] = plat_now_ns() - y;
+        plat_sleep_ns(20000);
+    }
+    g_spin_stop = 1;
+    if (s) plat_thread_join(s);
+    if (g_spin_intr) plat_intr_free(g_spin_intr);
+    if (ok) {
+        qsort(a, STOPS, sizeof *a, cmp_u64);
+        qsort(b, STOPS, sizeof *b, cmp_u64);
+    }
+    PlatThread *p = plat_thread_new(bench_ponger, NULL, "probe-kernel ponger");
+    plat_mutex_lock(&g_ppm);
+    for (int i = 0; p && i < 400; i++) {
+        plat_mutex_unlock(&g_ppm);
+        plat_sleep_ns(i & 1 ? 0 : 50000);   // half the wake-ups find the waiter asleep a while, half just after
+        plat_mutex_lock(&g_ppm);
+        g_pp_sent = plat_now_ns();
+        g_pp_turn = 1;
+        plat_cond_signal(&g_ppc[1]);
+        while (g_pp_turn != 0) plat_cond_wait(&g_ppc[0], &g_ppm);
+    }
+    plat_mutex_unlock(&g_ppm);
+    if (p) {
+        plat_thread_join(p);
+        qsort(g_pp_lat, 400, sizeof *g_pp_lat, cmp_u64);
+    }
+    printf("  scheduling costs: clock read %.1f ns; stop and resume of a running thread %s median %.1f us p90 %.1f max "
+           "%.1f, with a context write median %.1f us p90 %.1f max %.1f; condition variable wake-up median %.1f us p90 "
+           "%.1f max %.1f (%llu)\n", clk, ok ? "" : "(failed)", a[STOPS / 2] / 1e3, a[STOPS * 9 / 10] / 1e3,
+           a[STOPS - 1] / 1e3, b[STOPS / 2] / 1e3, b[STOPS * 9 / 10] / 1e3, b[STOPS - 1] / 1e3, g_pp_lat[200] / 1e3,
+           g_pp_lat[360] / 1e3, g_pp_lat[399] / 1e3, (unsigned long long)(sink & 1));
 }
 
 static void test_platform(void) {
@@ -686,6 +854,7 @@ static void test_platform(void) {
     qsort(over, N, sizeof *over, cmp_u64);
     printf("  plat_sleep_ns(1 ms) overshoot: median %.3f ms, max %.3f ms\n", over[N / 2] / 1e6, over[N - 1] / 1e6);
     CHECK(over[N / 2] < 500000, "plat_sleep_ns(1 ms) median overshoot %.3f ms (want < 0.5)", over[N / 2] / 1e6);
+    bench_sched();
 }
 
 int probe_kernel(void) {
@@ -701,6 +870,9 @@ int probe_kernel(void) {
     a_fiber_exit_thread = hostfn_register("probe-kernel fiber exit thread", fiber_exit_thread);
     a_fiber_exit_fn = hostfn_register("probe-kernel fiber exit", fiber_exit_fn);
     a_tick_worker = hostfn_register("probe-kernel tick worker", tick_worker);
+    a_ho_holder = hostfn_register("probe-kernel hand-off holder", ho_holder);
+    a_ho_waiter = hostfn_register("probe-kernel hand-off waiter", ho_waiter);
+    a_ho_busy = hostfn_register("probe-kernel hand-off busy", ho_busy);
     a_fib_init = hostfn_register(KERN_SYM_INITIALIZE_FIBER, kern_fiber_initialize);   // the loader's addresses
     a_fib_fin = hostfn_register(KERN_SYM_FINALIZE_FIBER, kern_fiber_finalize);
     a_fib_switch = hostfn_register(KERN_SYM_SWITCH_TO_FIBER, kern_fiber_switch);

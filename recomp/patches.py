@@ -12,7 +12,9 @@ Lifted code cannot be byte-patched when the game runs, so a patch is applied whe
                                             before the instruction at <address> (whose word <original> is checked),
                                             when the set is on and the runtime's check rt_guard_<kind>(x<n>) fails,
                                             go to <target> in the same function, after storing the 32-bit <value>
-                                            at x<b> + <offset> (signed hex) when the st32 action is given
+                                            at x<b> + <offset> (signed hex) when the st32 action is given;
+                                            kind `load` guards an `ldr x<t>, [x<n>, x<m>{, lsl #3}]` at <address>
+                                            and checks the 8 bytes it reads, rt_guard_load(x<n> + (x<m> << shift))
 
 <address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
 the generator), each <replacement> an instruction word (hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>`
@@ -52,7 +54,8 @@ import re
 from pathlib import Path
 
 PAGE = 0x1000
-GUARD_KINDS = ('ptr', 'vcall', 'edge')   # runtime/patches.c rt_guard_ptr, rt_guard_vcall, rt_guard_edge
+# runtime/patches.c rt_guard_ptr, rt_guard_vcall, rt_guard_edge, rt_guard_load
+GUARD_KINDS = ('ptr', 'vcall', 'edge', 'load')
 REG = re.compile(r'x([0-9]|[12][0-9]|30)')
 
 
@@ -141,10 +144,19 @@ def load(path, mods):
                 if f[8] != 'st32' or not REG.fullmatch(f[9]):
                     raise PatchError(f'{where}: guard action {f[8]} {f[9]} is not st32 x<n>')
                 act = ('st32', int(f[9][1:]), int(f[10], 16), int(f[11], 16) & 0xffffffff)
+            reg = int(f[6][1:])
+            if f[5] == 'load':
+                # LDR (register), 64-bit: 11111000 011 Rm option S 10 Rn Rt, option 011 (lsl/uxtx); the register named
+                # is the base, the index and shift come from the word, so the check covers the element it loads
+                n, m = (orig >> 5) & 31, (orig >> 16) & 31
+                if (orig & 0xffe0ec00) != 0xf8606800 or n != reg or m == 31:
+                    raise PatchError(f'{where}: guard load needs ldr x<t>, [x{reg}, x<m>, lsl #0/#3] at the address, '
+                                     f'not {orig:08x}')
+                reg = (n, m, 3 if orig & 0x1000 else 0)
             mod = guards.setdefault(f[2], {})
             if off in mod:
                 raise PatchError(f'{where}: {f[2]}+{off:#x} guarded twice')
-            mod[off] = (index[f[1]], target, f[5], int(f[6][1:]), orig, act)
+            mod[off] = (index[f[1]], target, f[5], reg, orig, act)
         elif f[0] == 'spin' and len(f) >= 4:
             if f[1] not in bases:
                 raise PatchError(f'{where}: module {f[1]} not in the layout')

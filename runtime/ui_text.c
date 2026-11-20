@@ -147,6 +147,19 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                               "How the finished picture is then fitted to the window is the Window scaling filter's.",
     [UI_MENU_UPSCALER_GAME] = "Game's own", [UI_MENU_UPSCALER_DLSS] = "NVIDIA DLSS",
     [UI_MENU_UPSCALER_FSR3] = "AMD FSR 3.1", [UI_MENU_UPSCALER_FSR4] = "AMD FSR 4",
+    [UI_MENU_PRESET] = "Performance preset",
+    [UI_MENU_PRESET_DESC] = "Sets the render resolution, upscaler, texture compression and frame generation "
+                            "for a class of PC. Recommended picks the level from your GPU memory, RAM and processor count. "
+                            "Options you set by hand override the preset. Applies at the next start.",
+    [UI_MENU_PRESET_CUSTOM] = "Custom", [UI_MENU_PRESET_RECOMMENDED] = "Recommended", [UI_MENU_PRESET_MINIMUM] = "1 Minimum",
+    [UI_MENU_PRESET_LOW] = "2 Low", [UI_MENU_PRESET_MEDIUM] = "3 Medium", [UI_MENU_PRESET_HIGH] = "4 High",
+    [UI_MENU_PRESET_ULTRA] = "5 Ultra",
+    [UI_MENU_DLSS_MODE] = "Upscaler quality mode",
+    [UI_MENU_DLSS_MODE_DESC] = "How far the 3D scene is scaled up by DLSS, FSR 3.1 or FSR 4: DLAA draws it at the output size, "
+                               "Ultra Performance at a third of it. Used while the 3D scene resolution is Auto. Applies at the next start.",
+    [UI_MENU_DLSS_MODE_DLAA] = "DLAA (native)", [UI_MENU_DLSS_MODE_QUALITY] = "Quality",
+    [UI_MENU_DLSS_MODE_BALANCED] = "Balanced", [UI_MENU_DLSS_MODE_PERFORMANCE] = "Performance",
+    [UI_MENU_DLSS_MODE_ULTRA_PERF] = "Ultra Performance",
     [UI_MENU_FILTER] = "Window scaling filter",
     [UI_MENU_FILTER_DESC] = "How the finished picture is scaled to the window, with any Upscaling method. AMD FSR 1, the default, "
                             "enlarges with AMD's edge-adaptive upscaler where the window is larger than the picture, as before. "
@@ -557,6 +570,20 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                               "(видеокарта RTX, nvngx_dlss.dll рядом с dkb.exe), AMD FSR 3.1 и AMD FSR 4 заменяют его; DLSS "
                               "применяется при следующем запуске. Как готовая картинка потом подгоняется под окно, определяет "
                               "фильтр масштабирования под окно.",
+    [UI_MENU_PRESET] = "Набор настроек производительности",
+    [UI_MENU_PRESET_DESC] = "Задаёт разрешение рендеринга, апскейлер, сжатие текстур и генерацию кадров для "
+                            "класса ПК. «Рекомендуемый» выбирает уровень по видеопамяти, ОЗУ и числу процессоров. "
+                            "Параметры, заданные вручную, важнее набора. Действует после перезапуска.",
+    [UI_MENU_PRESET_CUSTOM] = "Свои настройки", [UI_MENU_PRESET_RECOMMENDED] = "Рекомендуемый",
+    [UI_MENU_PRESET_MINIMUM] = "1 Минимальный", [UI_MENU_PRESET_LOW] = "2 Низкий", [UI_MENU_PRESET_MEDIUM] = "3 Средний",
+    [UI_MENU_PRESET_HIGH] = "4 Высокий", [UI_MENU_PRESET_ULTRA] = "5 Ультра",
+    [UI_MENU_DLSS_MODE] = "Режим качества апскейлера",
+    [UI_MENU_DLSS_MODE_DESC] = "Во сколько раз DLSS, FSR 3.1 или FSR 4 увеличивают 3D-сцену: DLAA рисует её в размере "
+                               "вывода, «Ультра-производительность» втрое меньше. Работает, пока разрешение 3D-сцены «Авто». "
+                               "Действует после перезапуска.",
+    [UI_MENU_DLSS_MODE_DLAA] = "DLAA (нативно)", [UI_MENU_DLSS_MODE_QUALITY] = "Качество",
+    [UI_MENU_DLSS_MODE_BALANCED] = "Баланс", [UI_MENU_DLSS_MODE_PERFORMANCE] = "Производительность",
+    [UI_MENU_DLSS_MODE_ULTRA_PERF] = "Ультра-производительность",
     [UI_MENU_UPSCALER_GAME] = "Апскейлер игры", [UI_MENU_UPSCALER_DLSS] = "NVIDIA DLSS",
     [UI_MENU_UPSCALER_FSR3] = "AMD FSR 3.1", [UI_MENU_UPSCALER_FSR4] = "AMD FSR 4",
     [UI_MENU_FILTER] = "Фильтр масштабирования под окно",

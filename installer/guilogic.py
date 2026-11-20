@@ -27,7 +27,7 @@ TEXT = Path(__file__).resolve().parent / 'text'
 UI_LANGUAGES = ('en', 'ru')
 STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 DKB_STEP_ORDER = ('check', 'dkb_data', 'dkb_translator', 'lift', 'compile', 'dkb_shaders', 'dkb_wide', 'dkb_prompts',
-                  'dkb_fsr4', 'dkb_verify', 'cleanup')
+                  'dkb_fsr4', 'dkb_dlss', 'dkb_verify', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
@@ -127,6 +127,7 @@ class Form:
     package: str = ''
     nup: str = ''
     romfs_in_place: bool = False   # Bananza: --romfs-in-place, the game reads the RomFS folder where it is
+    dlss: str = ''   # Bananza: the same for NVIDIA DLSS
     fsr4: str = ''   # Bananza: 'accept' (the user accepted AMD's license in the window), 'off', or '' to keep the record
 
     def installed_state(self):
@@ -201,6 +202,8 @@ class Form:
             cmd.append('--romfs-in-place')
         if self.game == 'bananza' and self.fsr4:
             cmd += ['--fsr4', self.fsr4]
+        if self.game == 'bananza' and self.dlss:
+            cmd += ['--dlss', self.dlss]
         if self.game == 'bananza':
             for flag, value in (tools or {}).items():
                 if value is not None:

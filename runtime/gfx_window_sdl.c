@@ -39,6 +39,10 @@ static PlatOnce g_thread_once = PLAT_ONCE_INIT;
 static uint32_t g_window_tid;            // the window thread, which runs the video calls
 static volatile int32_t g_density_milli = 1000;   // pixels per window unit, x1000
 
+// DKB_HEADLESS=1: no window and no event loop: the renderer draws to offscreen images (frame capture, scripted
+// runs). SDL's video driver is not started: there is no window to show and no event loop to run.
+static int headless_on(void) { return cfg_get("DKB_HEADLESS") != NULL; }
+
 // ---- work on the window thread
 typedef struct {
     void (*fn)(void *arg);
@@ -238,6 +242,10 @@ static void handle(const SDL_Event *e) {
 // SDL video, on the thread that also runs the event loop below. Sets g_video_ready either way.
 static void video_init(void) {
     g_window_tid = plat_thread_id();
+    if (headless_on()) {   // no SDL video: the other threads only need the ready signal
+        plat_event_set(&g_video_ready);
+        return;
+    }
     SDL_SetHint(SDL_HINT_APP_ID, "totk-recomp");   // Wayland's app id: the desktop file and the taskbar match it
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "0");
     g_video_ok = SDL_Init(SDL_INIT_VIDEO);
@@ -280,7 +288,7 @@ static void window_main(void *arg) {
 // (boot.c rt_boot). This is called on the main thread and does not return while the process lives.
 void gfx_window_main_thread(void) {
     video_init();
-    window_loop();
+    if (!headless_on()) window_loop();
     // No video (a headless run with TOTK_GPU=null, or a session without a display): the game thread ends the process.
     for (;;) plat_sleep_ms(1000);
 }
@@ -323,6 +331,7 @@ int gfx_window_vk_extensions(const char **out, int max) {
 }
 
 int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t family) {
+    if (headless_on()) return 1;   // no surface to present to: any graphics+compute family will do
     return video_up() && SDL_Vulkan_GetPresentationSupport(inst, pd, family);
 }
 
@@ -350,6 +359,10 @@ static void open_window(void *arg) {
 }
 
 int wsys_open(void) {
+    if (headless_on()) {
+        open_ok = 1;   // no window: the renderer draws offscreen
+        return 1;
+    }
     if (!video_up()) return 0;
     if (!g_win) run_on_window(open_window, NULL);
     return open_ok;
@@ -366,6 +379,7 @@ static void make_surface(void *arg) {
 }
 
 VkSurfaceKHR wsys_surface(VkInstance inst) {
+    if (headless_on()) return VK_NULL_HANDLE;
     SurfaceReq r = {inst, VK_NULL_HANDLE};
     run_on_window(make_surface, &r);
     return r.surface;
@@ -379,6 +393,10 @@ static void query_client_size(void *arg) {
 }
 
 void wsys_client_size(int *w, int *h) {
+    if (headless_on()) {
+        gfx_cfg_window_size(w, h);   // the offscreen picture's size: the window setting's
+        return;
+    }
     *w = *h = 0;
     if (!g_win) return;
 #ifdef __APPLE__
@@ -412,6 +430,7 @@ static void resize_window(void *arg) {
 }
 
 void wsys_resize(int w, int h) {
+    if (!g_win) return;   // a headless run has no window to resize
     int wh[2] = {w, h};
     run_on_window(resize_window, wh);
 }

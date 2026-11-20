@@ -164,6 +164,7 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     uint64_t t0 = tm ? kern_now_ns() : 0;
     if (__builtin_expect(!kern_host_track || !c->thread, 1)) {
         svc_body(c, imm, pc);
+        if (__atomic_load_n(&kern_sched_handoff, __ATOMIC_RELAXED)) kern_svc_return();
         if (tm) svc_slow_note(imm, pc, t0);
         return;
     }
@@ -174,6 +175,7 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     int n = *d - 1;
     __atomic_store_n(d, n, __ATOMIC_RELAXED);
     if (!n && kern_preempt_pending(t)) kern_host_left(t);
+    if (__atomic_load_n(&kern_sched_handoff, __ATOMIC_RELAXED)) kern_svc_return();
     if (tm) svc_slow_note(imm, pc, t0);
 }
 

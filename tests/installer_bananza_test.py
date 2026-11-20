@@ -243,6 +243,80 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual((target / 'keep.txt').read_text(), 'untouched')
         self.assertFalse(self.dest.exists())
 
+    def test_clean_deletes_only_an_owned_work_folder(self):
+        code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        folder = b.work_folder(self.dest.resolve(), self.temp, None)
+        self.assertTrue(folder.is_dir())
+        expected = b.folder_size(folder)
+        before = tree(self.dest)
+        out = io.StringIO()
+        args = SimpleNamespace(dest=self.dest, temp=self.temp, root=self.root)
+        with patch.object(b.layouts, 'find', return_value=self.layout), contextlib.redirect_stdout(out):
+            self.assertEqual(b.clean_main(args), 0)
+        self.assertEqual(json.loads(out.getvalue().splitlines()[-1])['bytes'], expected)
+        self.assertFalse(folder.exists())
+        self.assertEqual(tree(self.dest), before)
+        with patch.object(b.layouts, 'find', return_value=self.layout), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(b.clean_main(args), 1)   # nothing left to delete
+
+    def test_clean_refuses_a_missing_or_wrong_owner_file(self):
+        folder = b.work_folder(self.dest.resolve(), self.temp, None)
+        folder.mkdir(parents=True)
+        (folder / 'keep.txt').write_text('untouched')
+        with self.assertRaises(b.InstallError):
+            b.clean(self.dest, self.temp)
+        (folder / b.OWNER).write_text(json.dumps({'game': b.GAME, 'destination': 'elsewhere', 'temporary': str(folder)}))
+        with self.assertRaises(b.InstallError):
+            b.clean(self.dest, self.temp)
+        self.assertEqual((folder / 'keep.txt').read_text(), 'untouched')
+
+    def installed_with_saves(self):
+        code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        (self.dest / 'profile').mkdir()
+        (self.dest / 'profile' / 'save.bin').write_text('save')
+        (self.dest / 'dkb.ini').write_text('[x]')
+        (self.dest / 'mods').mkdir()
+        return b.work_folder(self.dest.resolve(), self.temp, None)
+
+    def test_uninstall_keeps_saves_by_default(self):
+        folder = self.installed_with_saves()
+        removed, freed = b.uninstall(self.dest, self.temp)
+        self.assertGreater(freed, 0)
+        self.assertIn(str(folder), removed)
+        self.assertFalse(folder.exists())
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ['dkb.ini', 'mods', 'profile'])
+        self.assertEqual((self.dest / 'profile' / 'save.bin').read_text(), 'save')
+
+    def test_uninstall_can_delete_saves_too(self):
+        folder = self.installed_with_saves()
+        (self.dest / '.dkb-setup.lock').unlink(missing_ok=True)   # uninstall's own lock file must go too
+        b.uninstall(self.dest, self.temp, keep_saves=False)
+        self.assertFalse(folder.exists())
+        self.assertFalse(self.dest.exists())
+
+    def test_uninstall_refuses_a_folder_that_is_not_ours(self):
+        self.dest.mkdir()
+        (self.dest / 'mine.txt').write_text('mine')
+        with self.assertRaises(b.InstallError):
+            b.uninstall(self.dest, self.temp, keep_saves=False)
+        self.assertEqual((self.dest / 'mine.txt').read_text(), 'mine')
+
+    def test_uninstall_refuses_a_link_and_deletes_nothing(self):
+        if not symlinks_allowed():
+            self.skipTest('symlinks are not allowed here')
+        folder = self.installed_with_saves()
+        outside = Path(self.work.name) / 'outside'
+        outside.mkdir()
+        (outside / 'keep.txt').write_text('keep')
+        (self.dest / 'shader-cache-link').symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(b.InstallError):
+            b.uninstall(self.dest, self.temp)
+        self.assertTrue(folder.is_dir())
+        self.assertTrue((self.dest / 'dkb-install.json').is_file())
+        self.assertEqual((outside / 'keep.txt').read_text(), 'keep')
+
     def test_fsr4_only_after_accept(self):
         # Without --fsr4 nothing is fetched; accept fetches into the install folder and records the release, which a
         # later setup keeps without asking again; a failed fetch warns and is tried again; off stops it.
@@ -283,12 +357,52 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
             self.assertIn('warn.dkb_fsr4_failed', [e.get('id') for e in events if e['type'] == 'warning'])
             self.assertFalse(b.statefile.load(self.dest, b.STATE)['steps']['dkb_fsr4']['files'])
 
+    def test_dlss_only_after_accept(self):
+        # Without --dlss nothing is fetched; accept fetches into the install folder and records the release, which a
+        # later setup keeps without asking again; a failed fetch warns and is tried again; off stops it.
+        fetched = []
+        def fetch(folder, progress=None, repo=None):
+            fetched.append(Path(folder))
+            for _, name, _, _ in (b.dlss.LICENSE, *b.dlss.FILES):
+                (Path(folder) / name).write_bytes(b'x')
+        sizes = [(path, name, 1, sha) for path, name, _, sha in (b.dlss.LICENSE, *b.dlss.FILES)]
+        platform = patch.object(b, 'fsr4_platform', return_value=True)   # the step acts on Windows only
+        platform.start()
+        self.addCleanup(platform.stop)
+        with patch.object(b.dlss, 'fetch', side_effect=fetch), patch.object(b.dlss, 'LICENSE', sizes[0]), \
+                patch.object(b.dlss, 'FILES', tuple(sizes[1:])):
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(fetched, [])
+            self.assertNotIn('dlss', b.statefile.load(self.dest, b.STATE))
+            self.options.dlss = 'accept'
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(fetched, [self.dest])
+            state = b.statefile.load(self.dest, b.STATE)
+            self.assertEqual(state['dlss'], b.dlss.TAG)
+            self.assertTrue(state['steps']['dkb_dlss']['files'])
+            self.options.dlss = None   # recorded: kept, nothing fetched again
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(fetched, [self.dest])
+            (self.dest / b.dlss.FILES[0][1]).unlink()   # a file gone: fetched again
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(len(fetched), 2)
+            self.options.dlss = 'off'
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertNotIn('dlss', b.statefile.load(self.dest, b.STATE))
+            self.assertEqual(len(fetched), 2)
+        with patch.object(b.dlss, 'fetch', side_effect=b.dlss.FetchError('nvngx_dlss.dll', 'offline')):
+            self.options.dlss = 'accept'
+            code, events = self.run_install()
+            self.assertEqual(code, 0, events)
+            self.assertIn('warn.dkb_dlss_failed', [e.get('id') for e in events if e['type'] == 'warning'])
+            self.assertFalse(b.statefile.load(self.dest, b.STATE)['steps']['dkb_dlss']['files'])
+
     def test_fresh_portable_install_and_resume(self):
         code, events = self.run_install()
         self.assertEqual(code, 0, events)
         state = b.statefile.load(self.dest, b.STATE)
         self.assertEqual(state['game'], 'dkb100')
-        self.assertEqual(set(state['steps']), {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_wide','dkb_prompts','dkb_fsr4','dkb_verify'})
+        self.assertEqual(set(state['steps']), {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_wide','dkb_prompts','dkb_fsr4','dkb_dlss','dkb_verify'})
         self.assertEqual((self.dest/'exefs/main').read_bytes(), (self.exefs/'main').read_bytes())
         self.assertTrue((self.dest/('dkb'+b.EXE)).is_file())
         self.assertFalse((self.dest/'build.ninja').exists())
@@ -298,7 +412,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual(code, 0, events)
         self.assertEqual(self.calls, [])
         self.assertEqual({e['step'] for e in events if e['type']=='step' and e['state']=='skipped'},
-                         {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_wide','dkb_prompts','dkb_fsr4','dkb_verify'})
+                         {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_wide','dkb_prompts','dkb_fsr4','dkb_dlss','dkb_verify'})
 
     def test_wide_presets_install_both_variants_and_repair_without_rebuild(self):
         self.assertEqual(self.run_install()[0], 0)

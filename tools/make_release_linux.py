@@ -22,8 +22,10 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
     bin/       totk_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, VERSION
     AppRun, totk-setup.desktop, totk-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
+    setup.sh, play.sh                             the same entry for the unpacked folder (--tarball); play.sh = --play
 
---appimage packs the folder with appimagetool and the static type-2 runtime (no libfuse2 on the host). --prove compiles
+--appimage packs the folder with appimagetool and the static type-2 runtime (no libfuse2 on the host). --tarball packs
+the same folder as a .tar.gz, for launchers that cannot mount an AppImage (a Flatpak sandbox, #402). --prove compiles
 the generated C and links build/release-linux-check/totk with the folder's tools only, then runs the probes beside it.
 Like tools/make_release.py, both need one game version extracted and lifted first (generated/v121, else v143).
 
@@ -452,6 +454,15 @@ export TK_LIBRARY="$HERE/python/lib/tk9.0"
 exec "$HERE/python/bin/python3" -m installer.gui "$@"
 '''
 
+# The folder's own entries, for the --tarball copy: the AppRun the AppImage runs, from wherever the folder was unpacked.
+SETUP_SH = '''#!/bin/sh
+exec "$(dirname "$(readlink -f "$0")")/AppRun" "$@"
+'''
+PLAY_SH = '''#!/bin/sh
+# The finished game in DIR, started and waited for: play.sh DIR (the install folder the setup built).
+exec "$(dirname "$(readlink -f "$0")")/AppRun" --play "$@"
+'''
+
 DESKTOP = '''[Desktop Entry]
 Type=Application
 Name={title}
@@ -467,6 +478,9 @@ def build_entry(out):
     icon = GAMES[GAME]['icon']
     (out / 'AppRun').write_text(APPRUN, encoding='utf-8')
     (out / 'AppRun').chmod(0o755)
+    for name, text in (('setup.sh', SETUP_SH), ('play.sh', PLAY_SH)):
+        (out / name).write_text(text, encoding='utf-8')
+        (out / name).chmod(0o755)
     (out / f'{icon}-setup.desktop').write_text(DESKTOP.format_map(GAMES[GAME]), encoding='utf-8')
     shutil.copy2(out / 'runtime' / f'{icon}.png', out / f'{icon}-setup.png')
     (out / '.DirIcon').symlink_to(f'{icon}-setup.png')
@@ -479,6 +493,16 @@ def write_appimage(out, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, ARCH='x86_64', APPIMAGE_EXTRACT_AND_RUN='1')
     run([tool, '--no-appstream', '--runtime-file', runtime, out, path], env=env)
+    print(f'{path}: {mr.mib(path.stat().st_size)}')
+
+
+def write_tarball(out, path):
+    """The folder as path (.tar.gz), under one top folder named like the archive; symlinks and modes kept."""
+    import tarfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    top = path.name.removesuffix('.tar.gz')
+    with tarfile.open(path, 'w:gz', compresslevel=6) as t:
+        t.add(out, arcname=top)
     print(f'{path}: {mr.mib(path.stat().st_size)}')
 
 
@@ -636,6 +660,7 @@ def main():
                     help='totk (default) or dkb: generated/dkb100, the Bananza installer, DKB-Setup and no hactool')
     ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
     ap.add_argument('--appimage', type=Path, help='also pack the folder as this AppImage')
+    ap.add_argument('--tarball', type=Path, help='also pack the folder as this .tar.gz (setup.sh and play.sh at the top)')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
     ap.add_argument('--stub', action='store_true',
                     help='dkb only: build the runtime library against tools/ci/stub/dkb100 instead of a real game, so the '
@@ -682,7 +707,7 @@ def main():
                '-e', 'HOME=/tmp', '-e', 'DOTNET_ROOT=/usr/share/dotnet',
                '-v', f'{MAIN_ROOT}:{MAIN_ROOT}', '-v', f'{out}:{out}', '-w', str(MAIN_ROOT),
                image, 'python3', str(ROOT / 'tools' / 'make_release_linux.py'),
-               '--game', GAME, '--out', str(out), '--no-rmtree'] + (['--stub'] if STUB else []) + (['--appimage', str(args.appimage)] if args.appimage else [])
+               '--game', GAME, '--out', str(out), '--no-rmtree'] + (['--stub'] if STUB else []) + (['--appimage', str(args.appimage)] if args.appimage else []) + (['--tarball', str(args.tarball)] if args.tarball else [])
         _sp.run(cmd, check=True)
         return
     if args.prove:
@@ -712,6 +737,8 @@ def main():
     if args.appimage:
         write_appimage(out, args.appimage.resolve())
         write_zsync(args.appimage.resolve())
+    if args.tarball:
+        write_tarball(out, args.tarball.resolve())
 
 
 if __name__ == '__main__':

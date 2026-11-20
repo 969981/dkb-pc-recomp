@@ -35,16 +35,16 @@ static const char *const known[] = {
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CRIT", "CRUMB_BIND", "CRIT_OUT", "CRT_FILTER", "CRT_LINES", "DESC_C0_SERIAL", "DESC_KEEP", "DESC_SAMP_GEN", "DESC_STAGE_ORIGIN", "DESC_TD_HASH", "DESC_TEMPLATE", "DEVICE_PROFILE", "DLSS_PRESET", "DLSS_WARM_FULL", "DRAW_MERGE", "DRAW_PROFILE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DYN_KEEP", "DYN_UBO",
+    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CORE_WAITS", "CRIT", "CRUMB_BIND", "CRIT_OUT", "CRT_FILTER", "CRT_LINES", "DESC_C0_SERIAL", "DESC_KEEP", "DESC_SAMP_GEN", "DESC_STAGE_ORIGIN", "DESC_TD_HASH", "DESC_TEMPLATE", "DEVICE_PROFILE", "DLSS_MODE", "PRESET", "DLSS_PRESET", "DLSS_WARM_FULL", "DRAW_MERGE", "DRAW_PROFILE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DYN_KEEP", "DYN_UBO",
     "EXEFS", "EXPERIMENTAL_GEOMETRY", "FEEDBACK", "FIXED_STEP", "FIX_C0", "FIX_INDIRECT_RESET", "FIX_LQ_FOLD", "FIX_SCREEN_UV", "FIX_VS_FAULT", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
     "FLIGHT_THUMBS", "CONSOLE", "COOP", "FMZ", "FMZ_SEL", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_GEN", "FRAME_GEN_BY", "FREEZE_IDLE", "FRZ_WHOLE", "FSR4_LDR", "FSR_DIR", "FREE_CORES", "FULLSCREEN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_CHECKPOINTS", "GPU_HANG_S",
-    "GPU_INDEX", "GPU_NAME", "GS_STORAGE_WRITEBACK", "HDR", "HDR_GAME_NITS", "HDR_NATIVE", "HDR_PEAK_NITS", "HDR_SHOULDER", "HDR_TRACE", "HDR_UI_NITS", "HEAP_LAZY", "HIGHFPS_FIX", "HOST_PROPS_CACHE", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+    "GPU_INDEX", "GPU_NAME", "GS_STORAGE_WRITEBACK", "HDR", "HDR_GAME_NITS", "HDR_NATIVE", "HDR_PEAK_NITS", "HDR_SHOULDER", "HDR_TRACE", "HDR_UI_NITS", "HEADLESS", "HEAP_LAZY", "HIGHFPS_FIX", "HOST_PROPS_CACHE", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LIST_RESTART", "LOCALE", "LOCK_HOLDS", "LOD_GUARD", "LOOKAHEAD", "MEMORY", "MEM_AVAIL_RESERVE_MB", "MEM_COMMIT_RESERVE_MB", "MEM_REPORT", "MEM_TRIM", "MENU_LANG", "MENU_THEME", "MENU_TEST",
-    "MENU_TEST_DIR", "MENU_TEST_SET", "MERGE_STATS", "MINIMAL_LAYOUT", "MIRROR_GAP", "MIRROR_OWN", "MIRROR_PRESNAP", "MIRROR_STAGED", "MOTION", "MOUSE_CAMERA", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE", "MVK_UPSCALE_BLIT", "NAN_GUARD", "NATIVE_GS", "NX2_READ_NOWAIT",
+    "MENU_TEST_DIR", "MENU_TEST_SET", "MERGE_STATS", "MINIMAL_LAYOUT", "MIRROR_GAP", "MIRROR_OWN", "MIRROR_PRESNAP", "MIRROR_STAGED", "MOTION", "MOUSE_CAMERA", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE", "MUTEX_SPIN", "MVK_UPSCALE_BLIT", "NAN_GUARD", "NATIVE_GS", "NX2_READ_NOWAIT",
     "NVN2_MODE_TRACE", "NVN2_MODE_TRACE_START_MS", "NVN2_MODE_TRACE_DURATION_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_DEVICE", "PAD_FULLSCREEN_HOLD", "PAD_LAYOUT", "PAD_PROMPTS", "PAR_DEFER", "PAR_DEFER_DEPTH", "PAR_INDIRECT", "PASS_GPU", "PATCH_OUTPUT", "PATCH_SCENE", "PCACHE_GATE", "PERF_OVERLAY", "PERF_SLOW_GPU_MS", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POOL_FINI_WAIT", "POOL_IMPORT_LOG", "POOL_LAZY",
     "PRESENT_HOLD", "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROFILE_REPLAY", "PROFILE_SLOW", "PROFILE_VQ", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REALTIME_MAX_FPS", "REC_BEGIN", "REC_END", "REC_SUBMIT", "REEXEC",
-    "RENDER_SCALE", "SCENE_RES", "REPLAY_ASYNC", "REPLAY_HELPERS", "REPLAY_PAR", "REPLAY_THREADS", "CALL_REF", "RESET_BATCH", "RESET_CPU_LIST",
+    "RENDER_SCALE", "SCENE_RES", "SCHED_HANDOFF", "REPLAY_ASYNC", "REPLAY_HELPERS", "REPLAY_PAR", "REPLAY_THREADS", "CALL_REF", "RESET_BATCH", "RESET_CPU_LIST",
     "REPLAY_CHECK", "RESOLVE_CHECK", "ROMFS", "ROMFS_DIR", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_HD", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
     "SHADER_MEMO", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SKIP_CS", "SKIP_FS", "SKIP_VS", "SMAA", "SPARSE_MIRROR_COPY", "SPEED_PROBE", "STALL_DUMP", "SPIN", "SPIN_HANDOFF_US", "SPLASH", "SPLASH_SHOTS", "SPLASH_TEST", "SPLASH_WATCH", "SPLIT_DRAWS", "SPLIT_US", "STAGED_BLK_CHECK", "STAGED_FETCH_TEST", "STAGED_INJECT", "STAGED_READ_PROBE", "STAGED_WB", "STAMP_BATCH", "STICK_DEADZONE", "SVC_SLOW", "SWITCH2", "SWKBD_ANSWER",
@@ -57,8 +57,8 @@ static const char *const known[] = {
 static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"ANTILAG", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
-    {"FULLSCREEN", "display"}, {"CONSOLE", "display"}, {"WINDOW_MODE", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
-    {"GPU_INDEX", "display"}, {"VULKAN_DRIVER", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"}, {"WINDOW_FILTER", "display"}, {"DLSS_PRESET", "display"}, {"FSR_DIR", "display"}, {"FSR4_LDR", "display"}, {"SCENE_RES", "display"},
+    {"FULLSCREEN", "display"}, {"CONSOLE", "display"}, {"WINDOW_MODE", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"}, {"HEADLESS", "display"},
+    {"GPU_INDEX", "display"}, {"VULKAN_DRIVER", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"}, {"WINDOW_FILTER", "display"}, {"DLSS_MODE", "display"}, {"PRESET", "display"}, {"DLSS_PRESET", "display"}, {"FSR_DIR", "display"}, {"FSR4_LDR", "display"}, {"SCENE_RES", "display"},
     {"ULTRAWIDE", "display"}, {"HUD_POSITION", "display"},
     {"SHARPNESS", "display"}, {"SMAA", "display"}, {"CRT_FILTER", "display"}, {"CRT_LINES", "display"}, {"FRAME_GEN", "display"}, {"FRAME_GEN_BY", "display"}, {"ASPECT", "display"}, {"FOV", "display"}, {"COLOR_PRESET", "display"},
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
@@ -102,7 +102,7 @@ static const CfgMeta metas[] = {
     // Screen
     {"FULLSCREEN", "0", "0|1", LIVE}, {"CONSOLE", "1", "0|1", RESTART}, {"WINDOW_MODE", "windowed", "windowed|borderless|fullscreen", LIVE},
     {"WINDOW_SIZE", "1920x1080", NULL, LIVE},
-    {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
+    {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"HEADLESS", "", NULL, RESTART}, {"GPU_INDEX", "", NULL, RESTART},
     // The path of a Vulkan ICD JSON file ("~" expands) to use instead of the system's drivers; empty: the system's.
     // vk_driver_env.c sets VK_DRIVER_FILES from it before the loader runs.
     {"VULKAN_DRIVER", "", NULL, RESTART},
@@ -115,6 +115,10 @@ static const CfgMeta metas[] = {
     // how the finished picture is scaled to the window, with every upscaler (vk_present.c, vk_fsr.c); the menu shows
     // the two settings as the Upscaling method and Window scaling filter rows (ui/menu.cpp rows_render_options).
     {"UPSCALER", "fsr", "fsr|bilinear|dlss|fsr3|fsr4", LIVE}, {"DLSS_PRESET", "auto", "auto|k|m", LIVE},   // vk_dlss.c preset_for
+    // Bananza: the 3D scene ratio of the temporal upscalers by name, when scene_res is auto (dkb_wide.c dkb_scene_ratio)
+    {"DLSS_MODE", "auto", "auto|dlaa|quality|balanced|performance|ultra_performance", RESTART},
+    // A defaults table by level, below the environment and totk.ini (cfg.c PRESETS); custom changes nothing
+    {"PRESET", "custom", "custom|recommended|1|2|3|4|5", RESTART},
     {"FSR4_LDR", "0", "0|1", RESTART},   // vk_fsr4.c: diagnosis, the colour is taken as perceptual up to 1
     {"WINDOW_FILTER", "fsr1", "fsr1|linear|catmull_rom|lanczos", LIVE},
     {"SHARPNESS", "80", "0..100", LIVE}, {"SMAA", "off", "off|low|medium|high", LIVE},
@@ -332,6 +336,92 @@ static int profile_of(void) {
 
 const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop"; }
 
+// The GPU probe lives in vk_device.c (vk.h); this weak stand-in answers "no GPU" in builds that link cfg.c alone (the
+// tests) or without the Vulkan back end.
+int vk_hw_probe(unsigned *vram_mib, int *integrated, int *nvidia) __attribute__((weak));
+int vk_hw_probe(unsigned *vram_mib, int *integrated, int *nvidia) {
+    *vram_mib = 0, *integrated = 0, *nvidia = 0;
+    return 0;
+}
+
+// vk_driver_env.c: sets VK_DRIVER_FILES from vulkan_driver (Linux); the probe below has to see the renderer's driver list.
+int vk_driver_env_apply(void) __attribute__((weak));
+int vk_driver_env_apply(void) { return 0; }
+
+// ---- performance presets: a defaults table per level, layered like the device profile (below the environment and
+// totk.ini, above the built-in table), so every key the player sets wins. preset = custom (the default) changes
+// nothing; 1..5 is Minimum, Low, Medium, High, Ultra; recommended picks the level the machine fits (cfg_preset_score).
+// A NULL cell leaves the key at the built-in default. On Bananza OUTPUT_RES is the game's virtual display (built-in
+// 2880x1620); the game draws its 3D smaller and upscales it unless SCENE_RES = full (level 4: DLAA with DLSS). No
+// frame limit here: below or above 60 it needs the experimental real-time step (frame_rate.c frame_limit_live).
+// "dlss|fsr3" is DLSS on an NVIDIA GPU with nvngx_dlss.dll next to dkb.exe, FSR 3.1
+// otherwise (cfg_preset_resolve). Not applied on the Steam Deck profile, which has its own table.
+static const struct { const char *key, *level[5]; } PRESETS[] = {
+    {"OUTPUT_RES", {"1280x720", "1920x1080", NULL, "2560x1440", "3840x2160"}},
+    {"SCENE_RES", {"auto", "auto", "auto", "full", "auto"}},
+    {"UPSCALER", {"fsr", "fsr", "dlss|fsr3", "dlss|fsr3", "dlss|fsr3"}},
+    {"ASTC_BC", {"1", "1", "0", "0", "0"}},
+    {"FRAME_GEN", {"off", "off", "off", "off", "auto"}},
+};
+static int preset = -1;   // 0 none, 1..5; -1 until cfg_preset_resolve
+static int preset_nvidia;
+
+// The level a machine fits: the lowest of what its video memory (MiB), memory (MiB) and logical processors allow, an
+// integrated GPU at 2 at most. The cut-offs sit a little under the round sizes, as cards report slightly less than
+// their nominal memory (a "12 GB" card shows 11.9 GiB). parts (optional) gets the three single levels.
+int cfg_preset_score(unsigned vram_mib, unsigned ram_mib, unsigned cpus, int integrated, int parts[3]) {
+    int v = vram_mib < 4900 ? 1 : vram_mib < 6900 ? 2 : vram_mib < 9900 ? 3 : vram_mib < 11800 ? 4 : 5;
+    int r = ram_mib < 11000 ? 1 : ram_mib < 23000 ? 4 : 5;
+    int c = cpus <= 4 ? 2 : cpus < 8 ? 3 : cpus < 12 ? 4 : 5;
+    if (parts) parts[0] = v, parts[1] = r, parts[2] = c;
+    int l = v < r ? v : r;
+    if (c < l) l = c;
+    return integrated && l > 2 ? 2 : l;
+}
+
+void cfg_preset_resolve(void) {
+    const char *set = raw_get(PREFIX "PRESET");
+    int p = set && set[0] >= '1' && set[0] <= '5' && !set[1] ? set[0] - '0' : 0;
+    int recommended = set && !strcasecmp(set, "recommended");
+    if (profile_of()) p = 0, recommended = 0;
+    unsigned vram = 0;
+    int integrated = 0, ok = 0;
+    if (recommended || p >= 3) vk_driver_env_apply();
+    if (recommended || p >= 3) ok = vk_hw_probe(&vram, &integrated, &preset_nvidia);   // the Vulkan device is not up yet here
+    if (preset_nvidia) {   // DLSS only with its model next to dkb.exe, where vk_dlss.c init looks for it
+        char path[1024] = "";
+        char *cut = plat_exe_path(path, sizeof path - 16) ? strrchr(path, '\\') : NULL;
+        if (!cut) cut = strrchr(path, '/');
+        FILE *f = NULL;
+        if (cut) strcpy(cut + 1, "nvngx_dlss.dll"), f = fopen(path, "rb");
+        if (f) fclose(f);
+        else preset_nvidia = 0;
+    }
+    if (recommended) {
+        float used, total, proc;
+        plat_mem_info(&used, &total, &proc);
+        int parts[3];
+        p = cfg_preset_score(ok ? vram : 0, total > 0 ? (unsigned)total : 0, plat_cpu_usable(), integrated, parts);
+        rt_log("[host] preset: recommended -> %d (VRAM %.1f GiB -> %d, RAM %.0f GiB -> %d, %u logical -> %d%s)", p,
+               vram / 1024.0, parts[0], total / 1024.0, parts[1], plat_cpu_usable(), parts[2],
+               integrated ? ", integrated GPU caps at 2" : ok ? "" : ", no Vulkan GPU found");
+    } else if (p) {
+        rt_log("[host] preset: %d", p);
+    }
+    __atomic_store_n(&preset, p, __ATOMIC_RELEASE);
+}
+
+static const char *preset_value(const char *key) {
+    int p = __atomic_load_n(&preset, __ATOMIC_ACQUIRE);
+    if (p <= 0) return NULL;
+    for (size_t i = 0; i < sizeof PRESETS / sizeof *PRESETS; i++) {
+        if (strcasecmp(PRESETS[i].key, key)) continue;
+        const char *v = PRESETS[i].level[p - 1];
+        return v && !strcmp(v, "dlss|fsr3") ? (preset_nvidia ? "dlss" : "fsr3") : v;
+    }
+    return NULL;
+}
+
 // DKB_X in the environment stands for TOTK_X and wins over it: the TOTK_ names come from TotK Recomp and stay, so its
 // fixes keep applying without a rename.
 static const char *dkb_alias(const char *name) {
@@ -357,7 +447,8 @@ static const char *raw_get(const char *name) {
 
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
-    if (v || strncmp(name, PREFIX, PREFIX_LEN) || !profile_of()) return v;
+    if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
+    if (!profile_of()) return preset_value(name + PREFIX_LEN);
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
         if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
     return NULL;
@@ -774,6 +865,7 @@ static void load_ini(void) {
 
 void cfg_init(void) {
     load_ini();
+    cfg_preset_resolve();
     if (profile_of())
         rt_log("cfg: device profile Steam Deck: defaults for the keys the settings file does not set (TOTK_DEVICE_PROFILE=desktop "
                "turns it off)");

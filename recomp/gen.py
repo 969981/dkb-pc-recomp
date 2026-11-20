@@ -467,7 +467,8 @@ class Emitter:
                     _, b, o, v = act
                     st = f'{{ uint64_t ea = c->x[{b}] + {o:#x}ull; ST32(ea, {v:#x}u); }} ' if o >= 0 else \
                          f'{{ uint64_t ea = c->x[{b}] - {-o:#x}ull; ST32(ea, {v:#x}u); }} '
-                emit(i, f'    if (rt_patch_on[{gk}] && !rt_guard_{kind}(c->x[{r}])) {{ {st}goto L_{gt:x}; }}')
+                arg = f'c->x[{r[0]}] + (c->x[{r[1]}] << {r[2]})' if isinstance(r, tuple) else f'c->x[{r}]'
+                emit(i, f'    if (rt_patch_on[{gk}] && !rt_guard_{kind}({arg})) {{ {st}goto L_{gt:x}; }}')
             if a in self.patched:
                 emit(i, patch(i, ins, a))
             elif k == 'op':
@@ -546,7 +547,7 @@ def chunk_text(name, number, emitter, fns):
                    '#ifdef _WIN32\n#define RT_SETJMP setjmp\n#else\n#define RT_SETJMP _setjmp\n#endif\n')
     if emitter.uses_guards:
         protos += ('int rt_guard_ptr(uint64_t p);\nint rt_guard_vcall(uint64_t obj);\n'
-                   'int rt_guard_edge(uint64_t node);\n')
+                   'int rt_guard_edge(uint64_t node);\nint rt_guard_load(uint64_t p);\n')
     return (header(f'{name} chunk {number:04d}') + '#include "cpu.h"\n#include "simd.h"\n\n' + protos + '\n'
             + '\n\n'.join(body) + '\n')
 

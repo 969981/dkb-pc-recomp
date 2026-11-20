@@ -160,6 +160,14 @@ int rt_guard_ptr(uint64_t p) {
     return guard_readable(p, 0x50) ? 1 : guard_fail("ptr unmapped", p, 0);
 }
 
+// The element an `ldr x<t>, [x<n>, x<m>, lsl #3]` reads (patches.py guard kind `load`): base plus scaled index, 8
+// bytes. A ptr guard on the base alone passes when the base is mapped but the index runs past it (#443, a cell's
+// element array at main+0x429594 on update 3.2.0).
+int rt_guard_load(uint64_t p) {
+    if (!guard_ok(p)) return guard_fail("load", p, 0);
+    return guard_readable(p, 8) ? 1 : guard_fail("load unmapped", p, 0);
+}
+
 // An object whose first word is a vtable in main and whose slot +0x10 points into main, as a devirtualised call
 // expects before it loads that slot and compares or calls it. A zeroed object (a cell that was never constructed), a
 // pointer into main's code, or an object whose vtable slot is gone fails it instead of calling through garbage.

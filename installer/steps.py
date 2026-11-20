@@ -272,6 +272,10 @@ class Check(Step):
             command += [f'--sysroot={layout.sysroot}', '-fuse-ld=lld']
         if os.name != 'nt':
             command.append('-ldl')
+            homebrew = '/opt/homebrew/include'
+            if Path(homebrew, 'vulkan').is_dir():
+                # Homebrew's prefix is not in clang's default search list: the Vulkan header lives there (tools/build_game.py:384)
+                command += ['-I', homebrew]
         r = subprocess.run(command, capture_output=True, text=True, errors='replace')
         if r.returncode:
             ctx.reporter.log(r.stdout + r.stderr)

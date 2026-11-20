@@ -11,7 +11,7 @@ static int setting, set_index, scene_index, switched, scene_switched, heapdef_gr
 static int native_index = -1, native_switched, native_switches;
 static int tall_index = -1, tall_switched, host_registered;
 static unsigned settings_version;
-static const char *resolution, *scene_res, *upscaler = "fsr";
+static const char *resolution, *scene_res, *upscaler = "fsr", *dlss_mode = "auto";
 static uint8_t test_page[4096];
 
 #define CHECK(c) do { checks++; if (!(c)) { \
@@ -23,7 +23,9 @@ int cfg_bool(const char *key) {
     return setting;
 }
 const char *cfg_value(const char *key) {
-    CHECK(!strcmp(key, "TOTK_OUTPUT_RES") || !strcmp(key, "TOTK_SCENE_RES") || !strcmp(key, "TOTK_UPSCALER"));
+    CHECK(!strcmp(key, "TOTK_OUTPUT_RES") || !strcmp(key, "TOTK_SCENE_RES") || !strcmp(key, "TOTK_UPSCALER") ||
+          !strcmp(key, "TOTK_DLSS_MODE"));
+    if (!strcmp(key, "TOTK_DLSS_MODE")) return dlss_mode;
     return !strcmp(key, "TOTK_UPSCALER") ? upscaler : key[5] == 'O' ? resolution : scene_res;
 }
 // dkb_native_aa_live reads the settings version to check the Upscaler setting again after a change.
@@ -61,6 +63,7 @@ static void reset(const char *text) {
     resolution = text;
     scene_res = "auto";
     upscaler = "fsr";
+    dlss_mode = "auto";
     native_index = -1;
     native_switched = native_switches = 0;
     tall_index = 3;
@@ -217,6 +220,19 @@ static void scene_pool(void) {
     scene_index = 1;
     dkb_wide_init();
     CHECK(page_pool() >= dkb_wide_pool_bytes(7680, 4320));
+    // dlss_mode gives the ratio only for a temporal upscaler and only while scene_res is auto
+    const char *sr[] = {"auto", "full", "auto"}, *up[] = {"dlss", "dlss", "fsr"};
+    float want[] = {1.5f, 1.0f, 0};
+    for (int i = 0; i < 3; i++) {
+        reset("3840x2160");
+        scene_res = sr[i], upscaler = up[i], dlss_mode = "quality";
+        scene_index = 1;
+        heapdef_grown = 1;
+        memset(test_page, 0, sizeof test_page);
+        dkb_wide_init();
+        memcpy(&ratio, test_page + 0x118, 4);
+        CHECK(ratio == want[i]);
+    }
 }
 
 // Native anti-aliasing: on only with the set present, the 3D at the output size and a temporal upscaler chosen; it

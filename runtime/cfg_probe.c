@@ -486,6 +486,50 @@ int probe_cfg(void) {
         if (!ok) fprintf(stderr, "FAIL cfg: default '%s' of %s is not one of its values '%s'\n", m->def, m->key, m->values), fails++;
     }
     CHECK(listed >= 30, "the defaults table was walked");
+
+    // dlss_mode names a scene ratio; presets: the table by level, below the environment and totk.ini
+    CHECK(dkb_dlss_mode_ratio("dlaa") == 1.0f && dkb_dlss_mode_ratio("quality") == 1.5f &&
+              dkb_dlss_mode_ratio("balanced") > 1.72f && dkb_dlss_mode_ratio("balanced") < 1.73f &&
+              dkb_dlss_mode_ratio("performance") == 2.0f && dkb_dlss_mode_ratio("ultra_performance") == 3.0f &&
+              dkb_dlss_mode_ratio("auto") == 0 && dkb_dlss_mode_ratio("nonsense") == 0,
+          "dlss_mode: the name gives the scene ratio, auto and a typo give none");
+    int parts[3];
+    CHECK(cfg_preset_score(8192, 32768, 16, 0, parts) == 3 && parts[0] == 3 && parts[1] == 5 && parts[2] == 5,
+          "preset score: 8 GB card, 32 GB, 16 logical -> 3");
+    CHECK(cfg_preset_score(16384, 32768, 16, 0, NULL) == 5 && cfg_preset_score(12100, 32768, 12, 0, NULL) == 5 &&
+              cfg_preset_score(8192, 16384, 8, 0, NULL) == 3 && cfg_preset_score(8192, 16384, 4, 0, NULL) == 2 &&
+              cfg_preset_score(3072, 8192, 4, 0, NULL) == 1 && cfg_preset_score(16384, 32768, 16, 1, NULL) == 2,
+          "preset score: top, a 12 GB card, a 4-core machine, the minimum and the integrated cap");
+    plat_setenv("TOTK_DEVICE_PROFILE", "desktop");   // the checks below assume a desktop, also on a Steam Deck
+    plat_setenv("TOTK_PRESET", "custom");
+    cfg_preset_resolve();
+    CHECK(cfg_get("TOTK_OUTPUT_RES") == NULL, "preset custom changes no default");
+    plat_setenv("TOTK_PRESET", "1");
+    cfg_preset_resolve();
+    CHECK(EQ(cfg_get("TOTK_OUTPUT_RES"), "1280x720") && cfg_get("TOTK_FPS_LIMIT") == NULL &&
+              EQ(cfg_get("TOTK_UPSCALER"), "fsr") && EQ(cfg_get("TOTK_ASTC_BC"), "1") && EQ(cfg_get("TOTK_FRAME_GEN"), "off"),
+          "preset 1 sets its keys");
+    plat_setenv("TOTK_PRESET", "3");
+    cfg_preset_resolve();
+    CHECK(cfg_get("TOTK_OUTPUT_RES") == NULL && EQ(cfg_get("TOTK_ASTC_BC"), "0") &&
+              (EQ(cfg_get("TOTK_UPSCALER"), "dlss") || EQ(cfg_get("TOTK_UPSCALER"), "fsr3")),
+          "preset 3: the built-in output, a temporal upscaler, no BC3");
+    plat_setenv("TOTK_PRESET", "5");
+    cfg_preset_resolve();
+    CHECK(EQ(cfg_get("TOTK_OUTPUT_RES"), "3840x2160") && EQ(cfg_get("TOTK_SCENE_RES"), "auto") &&
+              EQ(cfg_get("TOTK_FRAME_GEN"), "auto"),
+          "preset 5: 4K output from a 1440p scene, frame generation");
+    plat_setenv("TOTK_PRESET", "4");
+    cfg_preset_resolve();
+    cfg_set("TOTK_FPS_LIMIT", "45");
+    plat_setenv("TOTK_ASTC_BC", "1");
+    CHECK(EQ(cfg_get("TOTK_OUTPUT_RES"), "2560x1440") && EQ(cfg_get("TOTK_SCENE_RES"), "full") && EQ(cfg_get("TOTK_FPS_LIMIT"), "45") && EQ(cfg_get("TOTK_ASTC_BC"), "1"),
+          "preset 4: a totk.ini value and an environment value beat the preset");
+    plat_setenv("TOTK_ASTC_BC", NULL);
+    plat_setenv("TOTK_PRESET", NULL);
+    cfg_preset_resolve();
+    CHECK(cfg_get("TOTK_OUTPUT_RES") == NULL, "no preset: the table's default applies again");
+    plat_setenv("TOTK_DEVICE_PROFILE", NULL);
     printf("probe-cfg: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }

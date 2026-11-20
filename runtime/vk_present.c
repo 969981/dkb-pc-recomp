@@ -24,6 +24,7 @@
 
 #define FRAMES 2
 #define MAX_IMAGES 16
+#define OFF_IMAGES 4   // the DKB_HEADLESS offscreen pool: two present slots, two frames of headroom
 
 // ---- queue lock
 static PlatRMutex g_ql;
@@ -33,6 +34,7 @@ void vk_queue_unlock(void) { plat_rmutex_unlock(&g_ql); }
 // ---- the device's window state
 static VkSurfaceKHR g_surface;
 static int g_started;
+static int g_headless;               // DKB_HEADLESS: the "swapchain" is a pool of offscreen images
 
 // ---- swapchain and present state (g_pl)
 static PlatRMutex g_pl;
@@ -43,6 +45,7 @@ static VkExtent2D g_sc_ext;
 static int g_scaler;                        // the last present: 0 the picture 1:1, 1 blit, 2 FSR 1, 3 to 5 window pass
 static uint32_t g_sc_n;
 static VkImage g_sc_img[MAX_IMAGES];
+static VmaAllocation g_sc_img_alloc[MAX_IMAGES];   // the offscreen pool's images (g_headless)
 static VkImageView g_sc_view[MAX_IMAGES];   // colour attachment views for the menu overlay
 static VkSemaphore g_render_done[MAX_IMAGES];
 static VkCommandPool g_pool;
@@ -150,6 +153,71 @@ static void free_capture(void) {
     g_cap_valid = 0;
 }
 
+
+// DKB_HEADLESS: the "swapchain" is a pool of plain images at the offscreen picture's size, with no surface and no
+// present. The images have the same usages as a swapchain's (the blit writes them, the menu overlay draws into
+// them), so the present path below runs the same code as with a window. The pool is all-or-nothing: a failed
+// build keeps the previous one.
+static int build_offscreen(void) {
+    VkCtx *c = vk_ctx();
+    int cw = 0, ch = 0;
+    wsys_client_size(&cw, &ch);
+    if (!cw || !ch) return 0;
+    vk_queue_lock();
+    vkDeviceWaitIdle(c->device);
+    VkFormat fmt = VK_FORMAT_B8G8R8A8_UNORM;
+    VkImage new_img[OFF_IMAGES] = {0};
+    VmaAllocation new_alloc[OFF_IMAGES] = {0};
+    VkImageView new_view[OFF_IMAGES] = {0};
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt,
+                            .extent = {(uint32_t)cw, (uint32_t)ch, 1}, .mipLevels = 1, .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    for (uint32_t i = 0; i < OFF_IMAGES; i++) {
+        if (vmaCreateImage(c->vma, &ci, &ai, &new_img[i], &new_alloc[i], NULL) != VK_SUCCESS) break;
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = new_img[i],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        if (vkCreateImageView(c->device, &vi, NULL, &new_view[i]) != VK_SUCCESS) {
+            vmaDestroyImage(c->vma, new_img[i], new_alloc[i]);
+            new_img[i] = VK_NULL_HANDLE;
+            break;
+        }
+    }
+    for (uint32_t i = 0; i < OFF_IMAGES; i++) {
+        if (!new_view[i]) {   // a failed image: free what was made, the old pool (if any) stays
+            for (uint32_t j = 0; j < i; j++) {
+                vkDestroyImageView(c->device, new_view[j], NULL);
+                vmaDestroyImage(c->vma, new_img[j], new_alloc[j]);
+            }
+            vk_queue_unlock();
+            return 0;
+        }
+    }
+    for (uint32_t i = 0; i < g_sc_n; i++) {
+        if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
+        if (g_sc_img_alloc[i]) vmaDestroyImage(c->vma, g_sc_img[i], g_sc_img_alloc[i]);
+    }
+    memcpy(g_sc_img, new_img, sizeof new_img);
+    for (uint32_t i = 0; i < OFF_IMAGES; i++) {
+        g_sc_img_alloc[i] = new_alloc[i];
+        g_sc_view[i] = new_view[i];
+        if (!g_render_done[i]) {
+            VkSemaphoreCreateInfo semi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            vkCreateSemaphore(c->device, &semi, NULL, &g_render_done[i]);
+        }
+    }
+    g_sc_fmt = fmt;
+    g_sc_ext = (VkExtent2D){(uint32_t)cw, (uint32_t)ch};
+    g_sc_n = OFF_IMAGES;
+    __atomic_store_n(&g_present_got, "offscreen", __ATOMIC_RELEASE);
+    free_capture();
+    vk_queue_unlock();
+    return 1;
+}
 static int build_swapchain(void) {
     flip_locked();   // the acquired image goes out before its swapchain is replaced
     VkCtx *c = vk_ctx();
@@ -247,6 +315,11 @@ int vk_present_hdr10(void) { return __atomic_load_n(&g_sc_hdr, __ATOMIC_ACQUIRE)
 // on the window thread, and the driver does not report the swapchain as out of date.
 static int create_swapchain(void) {
     gfx_window_take_dirty();
+    if (g_headless) {
+        int b = build_offscreen();
+        if (!b) gfx_window_mark_dirty();   // a failed build keeps g_sc_n at 0: mark for retry, as the window branch does
+        return b;
+    }
     if (build_swapchain()) return 1;
     gfx_window_mark_dirty();
     return 0;
@@ -449,10 +522,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     plat_rmutex_lock(&g_pl);
     if (gfx_window_exiting()) { plat_rmutex_unlock(&g_pl); return; }
     flip_locked();
-    if (!g_sc || gfx_window_dirty()) {
-        if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
+    if (gfx_window_dirty() || (!g_sc && !g_headless)) {
+        if (!wsys_minimized() && !create_swapchain() && !g_sc && !g_headless) goto out;
     }
-    if (wsys_minimized() || !g_sc) goto out;
+    if (wsys_minimized() || (!g_sc && !g_headless) || !g_sc_n) goto out;
 
     unsigned slot = g_frame % FRAMES;
     VkResult fw = vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull);
@@ -467,15 +540,20 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         perf_present_gpu((uint64_t)((double)(tv[1] - tv[0]) * g_ts_period));
     g_ts_on[slot] = 0;
     uint32_t idx = 0;
-    VkResult r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        gfx_window_mark_dirty();
-        if (!create_swapchain()) goto out;
+    VkResult r = VK_SUCCESS;
+    if (g_headless) {
+        idx = g_frame % g_sc_n;   // the pool's round robin; each slot's fence was waited for before its reuse
+    } else {
         r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+        if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+            gfx_window_mark_dirty();
+            if (!create_swapchain()) goto out;
+            r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+        }
+        vk_device_fault_report(r);
+        if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;     // lost, not ready: skip the frame
+        if (r == VK_SUBOPTIMAL_KHR) gfx_window_mark_dirty();
     }
-    vk_device_fault_report(r);
-    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;     // lost, not ready: skip the frame
-    if (r == VK_SUBOPTIMAL_KHR) gfx_window_mark_dirty();
     vkResetFences(c->device, 1, &g_fence[slot]);
     if (g_sc_hdr) vk_hdr_metadata(g_sc, 0);   // a changed peak or white goes to the display
     if (g_th_pending[slot]) {   // that fence has signalled: the thumbnail its submission wrote is complete
@@ -654,8 +732,9 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_render_done[idx],
                                  .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
     VkCommandBufferSubmitInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
-    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait,
-                        .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = 1,
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = g_headless ? 0 : 1,
+                        .pWaitSemaphoreInfos = &wait,
+                        .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = g_headless ? 0 : 1,
                         .pSignalSemaphoreInfos = &sig};
     vk_queue_lock();
     r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
@@ -713,7 +792,7 @@ void vk_present_splash(VkImage src, int w, int h, const char *shot) {
 
 void vk_present_extent(uint32_t *w, uint32_t *h) {
     plat_rmutex_lock(&g_pl);
-    *w = g_sc ? g_sc_ext.width : 0, *h = g_sc ? g_sc_ext.height : 0;
+    *w = g_sc || g_headless ? g_sc_ext.width : 0, *h = g_sc || g_headless ? g_sc_ext.height : 0;
     plat_rmutex_unlock(&g_pl);
 }
 
@@ -771,13 +850,18 @@ void vk_present_release(void) {
         }
         for (uint32_t i = 0; i < g_sc_n; i++) {
             vkDestroySemaphore(c->device, g_render_done[i], NULL);
+            g_render_done[i] = VK_NULL_HANDLE;   // a later offscreen build must create fresh ones
             if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
             g_sc_view[i] = VK_NULL_HANDLE;
+            if (g_sc_img_alloc[i]) {   // the offscreen pool's images (g_headless)
+                vmaDestroyImage(c->vma, g_sc_img[i], g_sc_img_alloc[i]);
+                g_sc_img_alloc[i] = VK_NULL_HANDLE;
+            }
         }
         if (g_pool) vkDestroyCommandPool(c->device, g_pool, NULL);
         if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
-        g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
+        g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0; g_headless = 0;
         g_started = 0;     // the window and its thread stay; the next gfx_window_start makes a new surface
     }
     plat_rmutex_unlock(&g_pl);
@@ -792,8 +876,9 @@ void vk_present_window_start(void) {
         VkCtx *c = vk_ctx();
         static int opened;
         if (!opened && !(opened = wsys_open())) rt_fatal("gfx: window creation failed");
+        g_headless = cfg_get("DKB_HEADLESS") != NULL;
         g_surface = wsys_surface(c->instance);
-        if (!g_surface) rt_fatal("gfx: no Vulkan surface for the window");
+        if (!g_surface && !g_headless) rt_fatal("gfx: no Vulkan surface for the window");
 
         VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = c->gfx_family};

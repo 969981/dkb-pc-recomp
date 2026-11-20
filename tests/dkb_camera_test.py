@@ -60,6 +60,8 @@ int64_t plat_file_size(const char *p) {abort();}
 int plat_file_write_atomic(const char *p,const void *d,size_t n) {abort();}
 int plat_exe_path(char *p,size_t n) {abort();}
 int plat_setenv(const char *n,const char *v) {abort();}
+uint32_t plat_cpu_usable(void) {abort();}
+void plat_mem_info(float *u,float *t,float *p) {abort();}
 '''+functions+r'''
 int main(void) {
     float d[2]; cfg_set("TOTK_DEVICE_PROFILE","desktop");cfg_set("TOTK_MOUSE_SENS","1");

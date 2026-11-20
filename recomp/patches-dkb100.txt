@@ -136,14 +136,16 @@ site mousecamera main 173587c aa0003f3 aa0003f3 94346a71   # AcceptRequest manua
 #   41075c: the cell, before an entry flagged in bit 31 branches to 410eb8 (tbnz at 410764) and before its vtable slot
 #           +0x10 is loaded and compared or called at 410768 (only the fall-through reaches it) -> next entry.
 #   410ee0: the cell's +0x48 on the bit-31 path; 410edc already sends a null one to 41164c -> 41164c.
-#   410794: the cell's element array (+0x4f10, loaded at 410790) -> 410e54, the path of an index past the cell's count.
+#   410794: the element the cell's array (+0x4f10, loaded at 410790) gives at the index (x10 + x21 * 8; a check of
+#           the array base alone passed while the element was unmapped, #443) -> 410e54, the path of an index past
+#           the cell's count.
 # Every failed check is logged (runtime/patches.c guard_fail). Opt-out: DKB_FIX_POOL_GUARD=0. Update 3.2.0
 # (patches-dkb458752.txt) carries the same guards at main+0x429480.
 set poolguard DKB_FIX_POOL_GUARD 1
 guard poolguard main 410df0 410d4c ptr x9 f9401927 st32 x29 -2c ffffffff
 guard poolguard main 41075c 410d4c vcall x9 b940028a
 guard poolguard main 410ee0 41164c ptr x20 aa1403e0
-guard poolguard main 410794 410e54 ptr x10 f875794a
+guard poolguard main 410794 410e54 load x10 f875794a
 # #218 crash 2: f_7000108020 caches up to 256 ids in nodes taken from a free list (owner+0x76b38+0x18, count +0x28). When the
 # free list is empty its own code takes a null node and loads its payload at +0x10 (108510). The guard continues the
 # loop instead (108468): the id is not cached and may come back on a later pass.

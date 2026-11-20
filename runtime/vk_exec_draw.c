@@ -4654,17 +4654,20 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 // and texel fetches. Until it is found the dispatch is replaced by a linear blit of its input (texture slot 0) to its
 // output (image slot 1): the picture is right, without the game's own reconstruction and sharpening. The shaders are
 // matched by the hash of their SPIR-V (the name TOTK_DUMP prints), so a translator change that alters them turns this
-// off by itself. Other drivers never take this path.
+// off by itself. The blit is the MoltenVK-only part; on other drivers the hash table below only identifies the
+// upscaler's shader (game_upscaler falls back to it after its shape check, on every platform).
 // Whole images, mip 0, layer 0: the game makes each input texture at the size it renders (1920x1080 and 1280x720 for
 // the intro, the current dynamic resolution such as 2095x1179 in play, a new texture when it changes), so the full
 // extent is the rendered area; a run in the mining tunnel showed no stretch or border.
 // The upscaler's variants: fixed resolution (the intro: 1920x1080 or 1280x720 in) and dynamic resolution (gameplay
 // after the intro, e.g. 2095x1179 in).
-// The hashes move with the translator: the first two are from an older translator, the last two from the one of
-// 2026-11-09 (found with the log line "dlss: compute shader ... is not the game's upscaler" of upscaler = dlss).
+// The hashes move with the translator: the first two are from an older translator, the next two from the one of
+// 2026-11-09, the last two from the 0.4.2 build's translator (0x9bf9c9b0219fa9b4 the fixed 1280x720-in
+// variant, 0xc714f7479e0e112b the dynamic-resolution one; both from the log line "compute shader ... is taken for
+// the game's upscaler by its images" of the seen_log above).
 static int mvk_upscale_cs(uint64_t h) {
     return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full || h == 0xb14741d70eb26339ull ||
-           h == 0xbd63ebb7ee8d50eaull;
+           h == 0xbd63ebb7ee8d50eaull || h == 0x9bf9c9b0219fa9b4ull || h == 0xc714f7479e0e112bull;
 }
 
 // Whether the device can blit from format f with linear filtering (src) or into it (dst), optimal tiling.

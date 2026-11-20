@@ -255,6 +255,7 @@ void perf_summary_flush(void) {   // at exit (prof_write)
         ft_report(kern_now_ns(), "exit");
         gfx_exit_log();
         mem_commit_report("exit");
+        if (rt_trace & RT_TRACE_PERF) kern_core_waits_exit();
     }
     summary_t0 = 0;
 }
@@ -575,6 +576,7 @@ void perf_present(uint64_t frame) {
     kern_core_diag_frame(frame, d);
     if (flight_on) flight_frame(frame, now, d, frame_ns, counts);
     if (!(rt_trace & RT_TRACE_PERF)) {
+        kern_core_waits_frame(frame, d, 0);
         memset(frame_ns, 0, sizeof frame_ns);
         last = now;
         return;
@@ -584,6 +586,7 @@ void perf_present(uint64_t frame) {
         const char *e = cfg_get("TOTK_PERF_SLOW_MS");
         slow_ns = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 50) * 1000000ull;
     }
+    kern_core_waits_frame(frame, d, (last && d >= slow_ns) | (frame % 60 ? 0 : 2));
     if (last) {
         sum += d;
         n++;

@@ -106,6 +106,8 @@ esac
 
 check || exit 1
 cd "$here"
+# uv's download cache in this folder, not ~/.cache/uv, so deleting the folder leaves nothing behind (#402)
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$here/build/uv-cache}"
 [ -d .venv ] || uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r tools/requirements-installer.txt
 exec .venv/bin/python -m installer --game bananza "$@"
