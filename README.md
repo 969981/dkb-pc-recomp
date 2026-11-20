@@ -24,37 +24,40 @@ As far as we know, no other static recompilation of a Switch 2 game is public.
 ## Status
 
 **Playable on recent NVIDIA cards, well past the first level.** Players report runs through layer -101, sublayer 200,
-the Glacier layer, Snow World (Layer 500) and the Tempest layer. The current release is 0.4.2 (18 November), with fewer stalls on first runs and on 4 to 7 thread CPUs and the community pull requests since 0.4.1. The
-[latest release](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries an installer that
-builds the game from your own dump (`.nup`, `.nx` or folders), and a Linux AppImage: [docs/installer.md](docs/installer.md).
-0.4.0 fixes the Snow World and Glacier device loss on NVIDIA (#196, #197, #264), turns the Vulkan recorder off on AMD's
-Windows driver (the device loss fix for #84, #124, #142, #155, #167, #176), and guards the guest crashes at the title
-screen and on loads (#157, #206), on layer changes (#218) and in a record loop (#229). What still fails:
+the Glacier layer, Snow World (Layer 500), the Resort and the Tempest layer. The current release is 0.5.1
+(20 November), a fix for 0.5.0's NVIDIA shader cache on Windows (#437). The [latest release](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries
+`DKB-Launcher.exe`, one small Windows file that installs the build tools, builds the game from your own dump (`.nup`,
+`.nx` or folders) and updates in place with one click. It also has the setup zip, a Linux AppImage and tarball, and a
+macOS preview: [docs/installer.md](docs/installer.md).
 
-- GPU hangs under RADV on Linux (#99, #122, #198, #204), and some AMD reports that wait for a retest (#193, #206).
-- Guest crashes without a reproduction (#126, #136, #148).
-- Intel Arc A770: a driver fault about 20 s in (#3).
-- Missing effects in the Tempest layer (#221): a player reports the tornado draws on `bananza`; retest asked.
-- Heavy scenes below 60 fps (#141, #156). Since 0.4.0 new defaults raise our heavy test scene
-  from about 53 to 58 fps and halve the frames over 25 ms; a stall of about 0.45 s on area loads is left. See
-  [docs/dkb-lowend.md](docs/dkb-lowend.md).
-- A soft 3D picture: the game's dynamic resolution draws the scene at 2/3 of the output (1280x720 at 1080p, #210).
-  On `bananza` (9190e6b), `scene_res = full` draws it at the output size.
-- Add-on content: the installer unpacks DLC from a `.nup` (57eaed9); a player confirmed the DLC and the 3.2.0
-  update load (#183). Loose RomFS mods load from a `mods` folder beside `dkb.exe` (7779dda).
+New in 0.5.0:
+- Performance presets (`preset = 1..5` or `recommended`, F1 menu "Preset") and expected frame rates per hardware tier:
+  [docs/requirements.md](docs/requirements.md).
+- `dlss_mode` picks the DLSS and FSR quality mode by name. The setup can fetch NVIDIA's DLSS DLL or AMD's FSR 4 after
+  you accept their licenses.
+- Local co-op with a second gamepad as Pauline (#240), Thai on 3.2.0 (#180), and 16:10 screens (#249).
+- Prompts follow your button swaps (#416, #440), and a start-up screen shows progress (#430).
+- Entering a level stalls about half as long on Windows with NVIDIA (#442).
+- 4 to 7 thread CPUs stall less: draws cost about 14% less to record, and level transitions no longer starve the
+  replay.
+- `replay_threads` is on by default on every discrete AMD card on the proprietary driver.
+- Crash fixes: a 1.0.0 banana pickup crash (#428), a layer-change crash (#443, #204), and EmeraldRush with
+  `realtime = 1` (#411).
+- Setup and launcher work: RomFS in place (#305), the packed shader cache, Uninstall, `--set`, `--play`, and every
+  cache kept inside the install folder (#402).
 
-Since 0.4.0 (in 0.4.1): FSR 3.1 and FSR 4 temporal upscalers (`upscaler = fsr3` or `fsr4`, #270), DLSS and
-both FSR upscalers as native anti-aliasing on 3.2.0 when `scene_res = full`, frame generation with an Auto mode,
-3x to 8x and AMD's FSR 3.1 frame interpolation (`frame_gen_by = fsr3`), optional CRT filters (`crt_filter`) and
-window scaling filters (`window_filter`), sharper text above 1080p behind `DKB_FONT_SCALE=1` (#214), Polish
-(`lang = pl`, #335), evenly paced audio (#133), HD rumble on Switch Pro Controllers and Joy-Con (#285, untested),
-the AppImage setup fix (#293) and the setup check on CPUs without AVX2 (#318). The CRT and window filters and the
-FSR 3.1 frame interpolation come from community pull requests and have had little testing in play. New in 0.4.2: HD rumble is off by default (`rumble_hd = auto` turns it on; third-party pads broke with it, #363, #383) and falls back to two motors for the session
-after a pad drops (#363), and fewer lock waits and scans in the replay (#354, #361, #365). The Landfill Layer device loss
-on NVIDIA 50-series (#304) is avoided by skipping one vertex stage (45e1a6f48cb7872e), `console = 0` works with Windows
-Terminal (#238), and 23 more community pull requests landed (samplers, Linux memory and lazy write-back, GPU write bookkeeping, fewer VirtualQuery calls, HDR screenshots, DLSS warm-up). The smash blur ends above 60 fps on 1.0.0 too (#389, #390), and DLC from a container whose base package has title id 0 installs (#388). PCs with 4 to 7 logical processors now record big passes on 3 threads (frames over 50 ms in the heaviest scene tested fell about tenfold on 6), and a first run with an empty pipeline cache stalls far less: the longest wait for one pipeline fell from 2.4 s to 0.23 s and the first heavy frame from about 10 s to 3 s (#309). The layer -200 scene holds 60 fps on a Ryzen 7 5700X and RTX 5060 Ti with warm caches.
+The full list, with credits, is in the release notes. What still fails:
 
-On `bananza` since 0.4.2: local co-op with a second gamepad as Pauline (#240), 16:10 screens (#249), Thai on update 3.2.0 (`lang = th`, #180), a start-up screen with progress (#430), and a setup that packs the shader cache into one file so an install deletes in seconds (#402). Entering a level or layer stalls about half as long on Windows with NVIDIA (the staged mirror, #442: worst frame 444 to 230 ms on an RTX 5060 Ti 8 GB). The game's Switch-letter prompts follow X/Y and A/B swaps in the bindings, and `xbox_prompts` now works in Bananza (#440). Fixed: a 1.0.0 crash when picking up bananas in busy areas, where the game walked past its 256-entry GPU buffer list (#428, `DKB_FIX_LIST_CAP`); the setup no longer stops at its DLL check when its tool package folder lacks the DLLs (#433), and no longer asks for the dump folders when they were moved after an install (#438). The replay runs above the game's loading threads while it submits, so level transitions no longer stall on CPUs with few cores (6 logical processors: 11 ms to 0.25 ms a frame); recording a draw costs about 14% less (frames over 50 ms in the heaviest scene on 6 logical processors: about 22 to 15 a minute); a weak GPU was simulated by locking the clock at 900 MHz, and at 1080p the game still held 56 to 59 fps (docs/dkb-lowend.md, "Weak GPU"); `DKB-Launcher.exe` (#420) installs the build tools in one file. `replay_threads` is now on by default on every dedicated AMD card on the proprietary driver, not only the RX 9070 series: RX 7900 XTX, 7800 XT and 6650 XT players ran 4 to 8 threads for 30 minutes or more without device loss (#141, #418). Integrated AMD GPUs keep it off. Performance presets (`preset = 1..5` or `recommended`, which picks a level from the video memory, RAM and processor count; F1 menu "Preset") and a DLSS/FSR quality mode by name (`dlss_mode`); the setup can fetch NVIDIA's DLSS DLL or AMD's FSR 4 after you accept their licenses, both unticked by default. System requirements with measured frame rates: [docs/requirements.md](docs/requirements.md). Sharp text above 1080p needs `scene_res = full` (#214). Fixed: a crash in the layer-change loop where the guard checked the array but not the element it loads (#443, also the RX 6600 crash in #204); crash reports keep their full register dump when several threads fault at once, and name the driver or Vulkan layer a Linux or macOS fault is in. Setup and launchers (#402): `DKB-Setup.exe --play [DIR]`, setup options passed on by `DKB-Setup.exe` and the AppImage, the AppImage's folder as a `.tar.gz`, Delete build files and Uninstall (`--clean`, `--uninstall`, saves kept unless `--delete-saves`), and every cache inside the install folder. macOS install-check fixes and a windowless `DKB_HEADLESS=1` mode (#444).
+- GPU hangs under RADV on Linux (#99, #122, #198, #204), and a driver fault on Intel Arc (#3).
+- Black shards where salt, acid or muck meets slime (#139, #266, #387, #439).
+- Guest crashes without a reproduction here (#126, #148), and a device loss on an RTX 5080 at B1000 (#336).
+- Hitches in the Resort and Tempest layers on 4 GB cards (#437; `preset = 1` or `astc_bc = 1`).
+- Heavy scenes stay around 40 to 45 fps on CPUs with 4 to 6 threads ([docs/dkb-lowend.md](docs/dkb-lowend.md)).
+- Text is soft above 1080p unless `scene_res = full` (#214).
+
+Earlier releases: 0.4.0 fixed the Snow World and Glacier device loss on NVIDIA and the AMD Windows device loss.
+0.4.1 added the FSR 3.1 and FSR 4 upscalers, frame generation, CRT and window filters, and Polish. 0.4.2 cut
+stalls in heavy scenes, on first runs and on CPUs with few threads.
 
 RecompLauncher on Linux and macOS: [docs/recomp-launcher.md](docs/recomp-launcher.md). Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 20 November 2026.
 

@@ -893,6 +893,7 @@ static void pad2_scan(void) {
     SDL_JoystickID p1 = pad && SDL_GamepadConnected(pad) ? SDL_GetGamepadID(pad) : 0;
     if (pad2 && SDL_GamepadConnected(pad2) && SDL_GetGamepadID(pad2) != p1) return;
     if (pad2) {   // SDL counts opens per gamepad, so this keeps player 1's handle when both were the same pad
+        SDL_RumbleGamepad(pad2, 0, 0, 0);
         SDL_CloseGamepad(pad2);
         pad2 = NULL;
         rt_log("input: player 2 gamepad released");
@@ -900,14 +901,15 @@ static void pad2_scan(void) {
     uint64_t now = plat_now_ns() / 1000000u;
     if (!p1 || now < pad2_next_scan) return;
     pad2_next_scan = now + RESCAN_MS;
-    int n = 0;
-    SDL_JoystickID *ids = SDL_GetGamepads(&n);
-    for (int i = 0; i < n && !pad2; i++)
-        if (ids[i] != p1) pad2 = open_pad_locked(ids[i]);
-    SDL_free(ids);
+    InputPadDevice *devices;
+    int n = devices_locked(&devices);
+    uint32_t want = input_pad2_choose(devices, n, p1, 0);
+    free(devices);
+    if (want) pad2 = open_pad_locked(want);
     if (!pad2) return;
     pad2_east_a = SDL_GetGamepadButtonLabel(pad2, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
-    rt_log("input: player 2 gamepad \"%s\"", SDL_GetGamepadName(pad2));
+    rt_log("input: player 2 gamepad \"%s\" (ID %u; player 1 is ID %u, its rumble goes to it, motion follows player 1)",
+           SDL_GetGamepadName(pad2), (unsigned)SDL_GetGamepadID(pad2), (unsigned)p1);
 }
 
 int input_poll2(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
@@ -917,6 +919,7 @@ int input_poll2(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state == 1 && !cfg_bool("TOTK_COOP") && pad2) {
+        SDL_RumbleGamepad(pad2, 0, 0, 0);
         SDL_CloseGamepad(pad2);
         pad2 = NULL;
     }
@@ -1080,6 +1083,15 @@ int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
         ok = SDL_RumbleGamepad(pad, low, high, ms);
         if (triggers) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
     }
+    plat_mutex_unlock(&lock);
+    return ok;
+}
+
+int input_rumble2(uint16_t low, uint16_t high, uint32_t ms) {
+    int ok = 0;
+    plat_mutex_lock(&lock);
+    if (state == 1 && pad2 && SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad2), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false))
+        ok = SDL_RumbleGamepad(pad2, low, high, ms);
     plat_mutex_unlock(&lock);
     return ok;
 }

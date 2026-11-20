@@ -243,6 +243,59 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual((target / 'keep.txt').read_text(), 'untouched')
         self.assertFalse(self.dest.exists())
 
+    def appimage_install(self):
+        """A run as the AppImage runs it: APPIMAGE set, no --temp, and a layout without a temp folder."""
+        self.options.temp = None
+        self.layout = self.layout.__class__(**{**self.layout.__dict__, 'temp': None})
+        return patch.dict(os.environ, {'APPIMAGE': '/tmp/DKB-Setup.AppImage'})
+
+    def test_appimage_work_folder_lives_in_the_install_folder(self):
+        with self.appimage_install():
+            code, events = self.run_install()
+            self.assertEqual(code, 0, events)
+            folder = b.work_folder(self.dest.resolve(), None, None)
+            self.assertEqual(folder.parent, self.dest.resolve() / '.dkb-setup')
+            self.assertTrue((folder / b.OWNER).is_file())
+            self.assertFalse((self.dest.parent / '.dkb-setup').exists())
+            self.calls.clear()
+            self.assertEqual(self.run_install()[0], 0)   # a resume does not trip over its own work folder
+            self.assertEqual(self.calls, [])
+            freed = b.clean(self.dest)[1]
+            self.assertGreater(freed, 0)
+            self.assertFalse(folder.exists())
+            self.assertTrue((self.dest / 'dkb-install.json').is_file())
+            self.assertEqual(self.run_install()[0], 0)
+            removed, _ = b.uninstall(self.dest, keep_saves=False)
+            self.assertIn(str(folder), removed)
+            self.assertFalse(self.dest.exists())
+
+    def test_appimage_still_refuses_a_temp_inside_the_install_folder(self):
+        with self.appimage_install():
+            self.options.temp = self.dest / 'work'
+            self.assertEqual(self.run_install()[0], 1)
+            self.assertFalse(self.dest.exists())
+
+    def test_outside_the_appimage_the_work_folder_stays_beside_the_install_folder(self):
+        with patch.dict(os.environ):
+            os.environ.pop('APPIMAGE', None)
+            self.assertEqual(b.work_folder(self.dest.resolve(), None, None).parent,
+                             self.dest.resolve().parent / '.dkb-setup')
+            self.layout = self.layout.__class__(**{**self.layout.__dict__, 'temp': None})
+            self.options.temp = self.dest / 'work'
+            self.assertEqual(self.run_install()[0], 1)
+
+    def test_setup_writes_only_to_the_install_and_work_folders(self):
+        # The same idea as the CI job's empty HOME (.github/workflows/installer-tests.yml), as a test: the home, config,
+        # cache and temp folders a tool could fall back on all point at one empty folder, which must stay empty (#402).
+        home = Path(self.work.name) / 'home'
+        home.mkdir()
+        names = ('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+                 'TMP', 'TEMP', 'TMPDIR')
+        with patch.dict(os.environ, {n: str(home) for n in names}), patch.object(tempfile, 'tempdir', str(home)):
+            code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        self.assertEqual(list(home.iterdir()), [])
+
     def test_clean_deletes_only_an_owned_work_folder(self):
         code, events = self.run_install()
         self.assertEqual(code, 0, events)

@@ -65,8 +65,10 @@ static int instance_ext_present(const char *name) {
 // default in ~/.cache and up to 1 GB: about 35 MB in a minute of the title screen. A Deck's /home is small and the game
 // usually sits on the SD card, so unless MESA_SHADER_CACHE_DIR names a folder, it goes to mesa-cache beside the exe.
 // NVIDIA's Linux driver does the same in ~/.cache/nvidia: __GL_SHADER_DISK_CACHE_PATH sends it to nv-cache beside the
-// exe, so the install folder holds every cache and deleting it leaves nothing behind (#402). Windows drivers read
-// neither name.
+// exe, so the install folder holds every cache and deleting it leaves nothing behind (#402). NVIDIA's Windows driver
+// reads __GL_SHADER_DISK_CACHE_PATH too, but does not create the folder: pointed at a missing one, it keeps no disk
+// cache and compiles every pipeline again at each start (#437: the library prebuild took 300 s instead of 0.2 s on a
+// GTX 1650). So the folder is created before the variable names it.
 static void cache_beside_exe(const char *var, const char *name) {
     char dir[PLAT_PATH_MAX * 2];
     if (plat_getenv(var, dir, sizeof dir)) return;
@@ -74,6 +76,7 @@ static void cache_beside_exe(const char *var, const char *name) {
     char *cut = len ? plat_last_sep(dir) : NULL;
     if (!cut) return;
     strcpy(cut + 1, name);
+    plat_file_mkdir_p(dir);
     plat_setenv(var, dir);
 }
 

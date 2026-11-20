@@ -69,6 +69,26 @@ class ForwardTest(unittest.TestCase):
             self.assertEqual(gui.main(['--source', 'x.nup', '--dest=out', '--prepare']), 7)
             cli_main.assert_called_once_with(['--source', 'x.nup', '--dest=out', '--prepare'])
 
+    def test_source_and_dest_alone_prefill_the_window(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from installer import gui
+        with tempfile.TemporaryDirectory() as d:
+            nup = Path(d) / 'game.nup'
+            nup.write_bytes(b'x')
+            vars = {n: mock.Mock() for n in ('nup', 'exefs', 'romfs', 'package', 'dest')}
+            app = SimpleNamespace(vars=vars)
+            with mock.patch('installer.cli.main') as cli_main, mock.patch.object(gui.tk, 'Tk'),                     mock.patch.object(gui, 'App', return_value=app) as make, mock.patch.object(gui, 'fix_tcl_paths'),                     mock.patch.object(gui, 'fix_dpi_awareness'), mock.patch.object(gui, 'windows_ui_language', return_value='en'):
+                self.assertEqual(gui.main(['--source', str(nup), '--dest=out', '--lang', 'en']), 0)
+                make.assert_called_once()
+                cli_main.assert_not_called()
+                vars['nup'].set.assert_called_once_with(os.path.normpath(nup))
+                vars['dest'].set.assert_called_once_with('out')
+                vars['exefs'].set.assert_not_called()
+                # one option more and it is the command line again
+                cli_main.return_value = 3
+                self.assertEqual(gui.main(['--source', str(nup), '--prepare']), 3)
+
     def test_play_needs_a_finished_install(self):
         from unittest import mock
         from installer import gui

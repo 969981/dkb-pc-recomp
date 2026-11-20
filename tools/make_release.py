@@ -428,6 +428,8 @@ def build_sources(out):
         (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
     copy_tree(ROOT / 'installer', out / 'installer', lambda r: '__pycache__' in r or r.startswith('launcher/'))
     shutil.copy2(ROOT / 'totk.ini.example', out / ('dkb.ini.example' if GAME == 'dkb' else 'totk.ini.example'))
+    if GAME == 'dkb':   # RecompLauncher's profile for Windows (docs/recomp-launcher.md): the setup exe prepares and plays
+        shutil.copy2(ROOT / 'tools' / 'release' / 'recomplauncher-windows.json', out / 'recomplauncher.json')
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', out / 'THIRD_PARTY_NOTICES.md')
     for lic in sorted(ROOT.glob('LICENSE*')):   # GPL-3.0-or-later, and MIT for the files from TotK Recomp
         shutil.copy2(lic, out / lic.name)

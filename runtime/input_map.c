@@ -430,6 +430,14 @@ uint32_t input_pad_choose(InputPadSelection *s, const InputPadDevice *devices, i
     return wanted;
 }
 
+uint32_t input_pad2_choose(const InputPadDevice *devices, int count, uint32_t player1, uint32_t current2) {
+    if (!player1) return 0;
+    if (current2 != player1 && pad_list_has(devices, count, current2)) return current2;
+    for (int i = 0; i < count; i++)
+        if (devices[i].id != player1) return devices[i].id;
+    return 0;
+}
+
 int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]) {
     int edge = chord(held, buttons, 1ull << B_MINUS | 1ull << B_PLUS);
     if (menu_open) {

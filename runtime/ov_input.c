@@ -7,7 +7,8 @@
 // vibration devices (left, right) played on the gamepad's motors (TOTK_RUMBLE=0: none) and a six-axis sensor fed by
 // the gamepad's gyro and accelerometer (TOTK_MOTION=0, live: reads at rest). State layouts follow libnx HID.
 // Player 2 (coop = 1, the default): a second gamepad (input_poll2) is a full-key controller as No.2 (id 1), connected
-// while that pad is; it has no vibration or six-axis sensor of its own. Bananza's two-player mode puts Pauline on it.
+// while that pad is. Its vibration devices play on that gamepad's two motors (input_rumble2); it has no six-axis sensor
+// of its own (reads at rest). Bananza's two-player mode puts Pauline on it, and the game also reads it in single-player.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -72,13 +73,14 @@ static void ov_supported_styles(Cpu *c) {
     plat_mutex_unlock(&lock);
 }
 
+static volatile int32_t p2_on;   // player 2's gamepad is connected (as of the last player2 call)
+
 // Player 2's state (input_poll2); 1 while connected, logged on each change. s may be NULL.
 static int player2(NpadState *s) {
     NpadState t;
     if (!s) s = &t;
     int on = input_poll2(&s->buttons, &s->lx, &s->ly, &s->rx, &s->ry);
-    static volatile int32_t was;
-    if (plat_xchg32(&was, on) != on) rt_log("hid: player 2 (No.2, full-key) %s", on ? "connected" : "disconnected");
+    if (plat_xchg32(&p2_on, on) != on) rt_log("hid: player 2 (No.2, full-key) %s", on ? "connected" : "disconnected");
     return on;
 }
 
@@ -320,19 +322,25 @@ static const uint32_t *need_handle(const void *p, const char *fn) {
     return p;
 }
 
-// The vibration device (0 left, 1 right) a handle names on the connected controller, or -1 (logged once).
+// The vibration device a handle names on a connected controller, or -1 (logged once): 0 and 1 are player 1's left and
+// right, 2 and 3 player 2's (npad index 1, only while its gamepad is connected).
 static int vibration_side(const uint32_t *h, const char *fn) {
     uint32_t v = *need_handle(h, fn), dev = v >> 16 & 0xff;
     if ((v & 0xff) == pad_style_index() && (v >> 8 & 0xff) == pad_id() && dev < 2) return (int)dev;
+    if ((v & 0xff) == STYLE_INDEX_FULL_KEY && (v >> 8 & 0xff) == 1 && dev < 2 && allowed2 && p2_on) {
+        static volatile int32_t logged2;
+        if (!plat_xchg32(&logged2, 1)) rt_log("hid: player 2 vibration goes to its gamepad");
+        return 2 + (int)dev;
+    }
     static volatile int32_t warned;
     once(&warned, "hid: vibration call for handle %#x, not a device of the connected controller: ignored", v);
     return -1;
 }
 
 static PlatMutex vib_lock = PLAT_MUTEX_INIT;
-static VibrationValue vib_last[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};   // vib_lock
-static uint64_t vib_at[2], sent_at;                                          // vib_lock
-static uint16_t sent_low, sent_high;                                         // vib_lock
+static VibrationValue vib_last[4] = {{0, 160, 0, 320}, {0, 160, 0, 320}, {0, 160, 0, 320}, {0, 160, 0, 320}};   // vib_lock: [player * 2 + side]
+static uint64_t vib_at[4], sent_at[2];                                       // vib_lock
+static uint16_t sent_low[2], sent_high[2];                                   // vib_lock
 static int vib_allowed = 1;                                                  // vib_lock: PermitVibration
 
 static float clamp01(float v) { return v > 0 ? (v < 1 ? v : 1) : 0; }   // NaN -> 0
@@ -345,12 +353,12 @@ static float light_share(float f) { return f > 160 ? (f < 320 ? log2f(f / 160) :
 // (high) motor (light_share) and add up as energy per motor (root of the summed squares); the stronger side drives each
 // motor. A side the game has not updated for 250 ms is silent. Each send lasts 250 ms and is renewed every 50 ms while
 // the game streams, so the pad stops by itself when the game stops sending (pause, freeze). Under vib_lock.
-static void rumble_update(uint64_t now) {
+static void rumble_update_pad(uint64_t now, int pl) {
     float heavy = 0, light = 0, hd[2][4] = {{0, 160, 0, 320}, {0, 160, 0, 320}};   // hd: both sides' VibrationValues
     rumble_cfg();
     for (int s = 0; s < 2 && vib_allowed; s++) {
-        if (!vib_at[s] || now - vib_at[s] > RUMBLE_STALE_NS) continue;
-        const VibrationValue *v = &vib_last[s];
+        if (!vib_at[pl * 2 + s] || now - vib_at[pl * 2 + s] > RUMBLE_STALE_NS) continue;
+        const VibrationValue *v = &vib_last[pl * 2 + s];
         float al = clamp01(v->amp_low), ah = clamp01(v->amp_high), sl = light_share(v->freq_low), sh = light_share(v->freq_high);
         float h = sqrtf(al * (1 - sl) * al * (1 - sl) + ah * (1 - sh) * ah * (1 - sh));
         float l = sqrtf(al * sl * al * sl + ah * sh * ah * sh);
@@ -365,14 +373,22 @@ static void rumble_update(uint64_t now) {
         static const float neutral[2][4] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
         memcpy(hd, neutral, sizeof hd);
     }
-    input_rumble_stream(hd);   // a Switch 2 controller over Bluetooth takes every value, unthrottled (switch2.c)
-    static float sent_hd[2][4];
-    int changed = lo != sent_low || hi != sent_high || memcmp(hd, sent_hd, sizeof hd), on = lo || hi;
-    if (changed ? on && now - sent_at < RUMBLE_MIN_GAP_NS : !on || now - sent_at < RUMBLE_REFRESH_NS) return;
-    input_rumble(lo, hi, on ? RUMBLE_MS : 0);
-    input_rumble_hd(hd, on ? RUMBLE_MS : 0);
-    memcpy(sent_hd, hd, sizeof hd);
-    sent_low = lo, sent_high = hi, sent_at = now;
+    if (!pl) input_rumble_stream(hd);   // a Switch 2 controller over Bluetooth takes every value, unthrottled (switch2.c)
+    static float sent_hd[2][2][4];   // [player]
+    int changed = lo != sent_low[pl] || hi != sent_high[pl] || memcmp(hd, sent_hd[pl], sizeof hd), on = lo || hi;
+    if (changed ? on && now - sent_at[pl] < RUMBLE_MIN_GAP_NS : !on || now - sent_at[pl] < RUMBLE_REFRESH_NS) return;
+    if (pl) input_rumble2(lo, hi, on ? RUMBLE_MS : 0);   // player 2: the two-motor path only
+    else {
+        input_rumble(lo, hi, on ? RUMBLE_MS : 0);
+        input_rumble_hd(hd, on ? RUMBLE_MS : 0);
+    }
+    memcpy(sent_hd[pl], hd, sizeof hd);
+    sent_low[pl] = lo, sent_high[pl] = hi, sent_at[pl] = now;
+}
+
+static void rumble_update(uint64_t now) {
+    rumble_update_pad(now, 0);
+    rumble_update_pad(now, 1);
 }
 
 static void play(int side, const VibrationValue *v) {
@@ -438,7 +454,7 @@ static void ov_vib_info(Cpu *c) {
     VibrationDeviceInfo *out = arg_p(c, 0);
     if (!out) rt_fatal("nn::hid::detail::GetVibrationDeviceInfo: null output");
     int side = vibration_side(arg_p(c, 1), "GetVibrationDeviceInfo");
-    *out = side >= 0 ? (VibrationDeviceInfo){1, (uint32_t)side + 1} : (VibrationDeviceInfo){0, 0};
+    *out = side >= 0 ? (VibrationDeviceInfo){1, (uint32_t)(side & 1) + 1} : (VibrationDeviceInfo){0, 0};
     ret_x(c, 0);
 }
 

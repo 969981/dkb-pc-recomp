@@ -108,6 +108,12 @@ check || exit 1
 cd "$here"
 # uv's download cache in this folder, not ~/.cache/uv, so deleting the folder leaves nothing behind (#402)
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$here/build/uv-cache}"
+# the same for NuGet and the dotnet CLI (the translator build), and no telemetry or banner
+export NUGET_PACKAGES="${NUGET_PACKAGES:-$here/build/nuget/packages}"
+export NUGET_HTTP_CACHE_PATH="${NUGET_HTTP_CACHE_PATH:-$here/build/nuget/http-cache}"
+export DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$here/build/dotnet-home}"
+export DOTNET_CLI_TELEMETRY_OPTOUT="${DOTNET_CLI_TELEMETRY_OPTOUT:-1}"
+export DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
 [ -d .venv ] || uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r tools/requirements-installer.txt
 exec .venv/bin/python -m installer --game bananza "$@"

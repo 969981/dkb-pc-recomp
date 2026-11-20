@@ -1388,9 +1388,23 @@ def play_now(dest):
 CLI_OPTIONS = ('--dest', '--source', '--prepare', '--nup', '--exefs', '--romfs', '--keys', '--update', '--verify', '--clean', '--uninstall')
 
 
+def prefill_form(app, args):
+    if args.dest:
+        app.vars['dest'].set(os.path.normpath(args.dest))
+    if args.source:
+        from . import cli
+        found = cli.source_inputs(args.source)   # None: neither a file nor a folder with exefs/ and romfs/; leave blank
+        for name, path in zip(('nup', 'exefs', 'romfs'), found or ()):
+            if path:
+                app.vars[name].set(os.path.normpath(path))
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if any(a.split('=', 1)[0] in CLI_OPTIONS for a in argv):
+    given = {a.split('=', 1)[0] for a in argv if a.startswith('--')}
+    # Only --source and/or --dest (and --lang): open the window with those fields filled in instead of running the setup.
+    prefill = bool(given & {'--source', '--dest'}) and given <= {'--source', '--dest', '--lang'}
+    if not prefill and any(a.split('=', 1)[0] in CLI_OPTIONS for a in argv):
         if sys.stdout is None:   # pythonw.exe started with no handles: nobody reads the lines, the exit code still counts
             sys.stdout = sys.stderr = open(os.devnull, 'w')
         from . import cli
@@ -1404,6 +1418,8 @@ def main(argv=None):
     for name in ('package', 'toolchain', 'deps', 'ninja', 'dll-dir', 'translator', 'dotnet'):
         ap.add_argument('--' + name, type=Path)
     ap.add_argument('--jobs', type=int, default=6)
+    ap.add_argument('--source', type=Path, help='prefill the game field: a .nup file, or a folder with exefs/ and romfs/')
+    ap.add_argument('--dest', type=Path, help='prefill the install folder')
     ap.add_argument('--no-update-check', action='store_true', help='do not look for a newer release (or DKB_NO_UPDATE_CHECK=1)')
     ap.add_argument('--base', type=Path, help='the launcher folder (DKB-Recomp; launcher.c passes it)')
     ap.add_argument('--launcher', type=Path, help='the launcher exe that started this window')
@@ -1428,6 +1444,7 @@ def main(argv=None):
               check_updates=check, launcher=launcher)
     if args.package:
         app.vars['package'].set(str(args.package))
+    prefill_form(app, args)
     root.mainloop()
     return 0
 

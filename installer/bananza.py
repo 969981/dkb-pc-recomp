@@ -31,6 +31,7 @@ from .runner import Context, InstallError, Step, run_steps
 STATE = 'dkb-install.json'
 OWNER = '.dkb-setup-owner.json'
 DEST_OWNER = '.dkb-install-owner.json'
+NESTED = '.dkb-setup'   # the work folder's parent: beside the install folder, or inside it for the AppImage
 GAME = 'dkb100'
 TARGETS = (GAME, 'dkb458752')   # 1.0.0 and 3.2.0 (title version 458752); tools/data/expected-<target>.json
 NUP_SELECT = ('latest', 'base')
@@ -357,7 +358,10 @@ def preflight(layout, options, dest, temp, rep):
         raise InstallError('dkb.dest_unrelated', path=str(dest))
     if dest.exists() and not dest.is_dir():
         raise InstallError('dkb.dest_unrelated', path=str(dest))
+    nested = nested_work(dest, options.temp, layout.temp)
     for a, b in ((dest, temp), *((out, source) for out in (dest, temp) for source in inputs)):
+        if (a, b) == (dest, temp) and nested:
+            continue   # the AppImage's default work folder lives in the install folder, and nowhere else may
         if contains(a, b) or contains(b, a):
             raise InstallError('dkb.path_overlap', path=str(a), other=str(b))
     if dest.exists() and old is None and any(dest.iterdir()):
@@ -365,7 +369,7 @@ def preflight(layout, options, dest, temp, rep):
             ensure_plain(dest / DEST_OWNER)
             partial = json.loads((dest / DEST_OWNER).read_text(encoding='utf-8'))
             ours = partial == {'game': game, 'destination': str(dest)}
-            ours &= {p.name for p in dest.iterdir()} <= {DEST_OWNER, '.dkb-setup.lock'}
+            ours &= {p.name for p in dest.iterdir()} <= {DEST_OWNER, '.dkb-setup.lock', NESTED}
         except (OSError, ValueError):
             ours = False
         if not ours:
@@ -768,6 +772,7 @@ class Translator(Step):
             env = {'PATH': str(ctx.info['dotnet'].parent) + os.pathsep + os.environ.get('PATH', ''),
                    'DOTNET_ROOT': str(ctx.info['dotnet'].parent), 'DOTNET_CLI_HOME': str(ctx.temp / 'dotnet-home'),
                    'NUGET_PACKAGES': str(nuget),
+                   'NUGET_HTTP_CACHE_PATH': str(nuget / 'http-cache'),   # NuGet's download cache: in the work folder too
                    'DOTNET_PROCESSOR_COUNT': str(ctx.options.jobs),
                    # Reusable MSBuild nodes retain NuGet task DLLs after publish and block Windows cleanup.
                    # These settings affect only this build, not the owner's other .NET work.
@@ -776,7 +781,7 @@ class Translator(Step):
                    # A fresh DOTNET_CLI_HOME is a first run: without these, dotnet adds that home's tools folder to
                    # the user's PATH for good, one dead entry per install, until cmd can no longer find System32.
                    'DOTNET_ADD_GLOBAL_TOOLS_TO_PATH': 'false', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE': '1',
-                   'DOTNET_NOLOGO': '1'}
+                   'DOTNET_NOLOGO': '1', 'DOTNET_CLI_TELEMETRY_OPTOUT': '1'}
             command = [ctx.layout.python, ctx.layout.tools / 'build_xlate.py', '--out', out]
             if os.name != 'nt':
                 command += ['--llvm', ctx.layout.llvm]
@@ -1148,9 +1153,15 @@ def write_owner(path, value):
             raise InstallError('dkb.temp_unrelated', path=str(path.parent)) from None
 
 
+def nested_work(dest, temp, layout_temp):
+    """True when the work folder goes inside dest: the AppImage's mount is read-only and its folder may sit on a
+    full disk, so with no --temp the install folder (on the player's chosen drive) holds it."""
+    return bool(os.environ.get('APPIMAGE')) and not temp and not layout_temp
+
+
 def work_folder(dest, temp, layout_temp):
     """The folder that holds this install's generated C, objects and logs, for a resolved dest."""
-    raw_base = (temp or layout_temp or dest.parent / '.dkb-setup').absolute()
+    raw_base = (temp or layout_temp or (dest if nested_work(dest, temp, layout_temp) else dest.parent) / NESTED).absolute()
     ensure_plain(raw_base)
     tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:12]
     # The work folder's name goes onto compiler and MSBuild command lines that split on spaces (issue 134): keep

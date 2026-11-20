@@ -48,6 +48,9 @@ typedef struct {
 } InputPadSelection;
 uint32_t input_pad_choose(InputPadSelection *s, const InputPadDevice *devices, int count,
                           const char *preferred, uint32_t current);
+// Player 2's pad (coop): the one it already has while that is listed and is not player 1's, else the first listed device
+// that is not player 1's; 0 for none. Devices are told apart by instance id only: identical pads share name and GUID.
+uint32_t input_pad2_choose(const InputPadDevice *devices, int count, uint32_t player1, uint32_t current2);
 // The menu calls this after an explicit choice, including reselecting the saved preference after an auto takeover.
 void input_pad_selection_changed(void);
 int input_pad_automatic(void);   // read-only UI status: automatic takeover/fallback is currently in effect
@@ -98,6 +101,9 @@ int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
 // HD rumble for a Switch Pro Controller or Joy-Con (TOTK_RUMBLE_HD=auto): v[side][] = amplitude and frequency in Hz of the
 // low band, then of the high band, sent as one SDL_SendGamepadEffect packet; ms == 0 sends neutral. While it applies,
 // input_rumble leaves that pad alone. 1 if the pad took it; any other pad returns 0. Callable from any thread.
+// Player 2's gamepad (pad2): the two-motor path, values already scaled by the caller (no HD packets, no triggers).
+// 1 if it took it; 0 without a player 2 gamepad. Callable from any thread.
+int input_rumble2(uint16_t low, uint16_t high, uint32_t ms);
 int input_rumble_hd(const float v[2][4], uint32_t ms);
 // Every vibration value the game sets, both sides as for input_rumble_hd (curve and strength applied to the
 // amplitudes, silent sides neutral), for a pad that plays them as they come: a Switch 2 controller over Bluetooth

@@ -694,6 +694,7 @@ int main(int argc, char **argv) {
         } else if (!mode && !strncmp(argv[i], "--", 2)) {
             mode = argv[i];
         } else {
+            fprintf(stderr, "%s: unexpected argument '%s'\n", argv[0], argv[i]);
             return usage(argv[0]);
         }
     }
@@ -748,5 +749,6 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--translate-shaders")) return gfx_shader_tool(GFX_TOOL_TRANSLATE_SHADERS);
     if (!strcmp(mode, "--warm-shaders")) return gfx_shader_tool(GFX_TOOL_WARM_SHADERS);
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
+    fprintf(stderr, "%s: unknown option '%s'\n", argv[0], mode);   // a mistyped or unsupported flag is named (#402)
     return usage(argv[0]);
 }

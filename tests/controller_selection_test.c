@@ -71,6 +71,12 @@ int main(void) {
     assert(input_pad_choose(&s, d, 1, "xbox", 0) == 6);
     assert(input_pad_choose(&s, d, 3, "xbox", 6) == 8);
     free(s.ids);
+    // Two pads with the same name and GUID differ by instance id only: player 2 is the other one, and keeps it.
+    InputPadDevice twin[2] = {device(10, "pro:n1"), device(11, "pro:n2")};
+    assert(input_pad2_choose(twin, 2, 10, 0) == 11 && input_pad2_choose(twin, 2, 11, 0) == 10);
+    assert(input_pad2_choose(twin, 2, 10, 11) == 11 && input_pad2_choose(twin, 2, 11, 10) == 10);
+    assert(input_pad2_choose(twin, 2, 10, 10) == 11);   // never player 1's own pad
+    assert(input_pad2_choose(twin, 1, 10, 0) == 0 && input_pad2_choose(twin, 2, 0, 0) == 0);
     puts("controller selection: startup, arrivals, fallback, explicit choices, pending opens, topology stability and co-op passed");
     return 0;
 }

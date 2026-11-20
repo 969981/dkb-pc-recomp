@@ -56,8 +56,11 @@ def main():
         sysroot_flags = ['--target=x86_64-linux-gnu', f'--sysroot={args.sysroot}']
         include.append(str(args.sysroot / 'usr' / 'include'))
 
+    if build_game.DARWIN:
+        # Homebrew's SDL3 and Vulkan headers, and the pinned vk_mem_alloc.h (build_game.py, as the macOS setup builds).
+        include += ['/opt/homebrew/include', str(build_game.vma_include())]
     cmd_base = [cc, '-c', *flags, *sysroot_flags, *[f'-I{d}' for d in include]]
-    if os.name != 'nt':
+    if os.name != 'nt' and not build_game.DARWIN:
         cmd_base += ['-D__linux__']
 
     failed = 0
@@ -65,7 +68,7 @@ def main():
         obj = out / (src.stem + '.o')
         cmd = list(cmd_base)
         if src.suffix == '.cpp':
-            cmd += ['-std=c++20', '-nostdinc++',
+            cmd += ['-std=c++20', *(['-nostdinc++'] if args.sysroot else []),
                     '-I', str(ROOT / 'runtime' / 'third_party' / 'eglantine')]
             if args.sysroot:
                 cmd += ['-I', str(args.sysroot / 'usr' / 'include' / 'c++' / '10'),
