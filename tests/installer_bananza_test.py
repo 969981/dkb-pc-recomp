@@ -275,6 +275,103 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
             self.assertEqual(self.run_install()[0], 1)
             self.assertFalse(self.dest.exists())
 
+    def test_posix_appimage_with_prebuilt_translator_allows_brackets_in_install_folder(self):
+        with patch.object(b, 'POSIX', True), self.appimage_install():
+            code, events = self.run_install()
+            self.assertEqual(code, 0, events)
+            folder = b.work_folder(self.dest.resolve(), None, None)
+            self.assertEqual(folder.parent, self.dest.resolve() / '.dkb-setup')
+            self.assertTrue((folder / b.OWNER).is_file())
+            self.assertTrue((self.dest / ('dkb' + b.EXE)).is_file())
+
+    def test_posix_source_translator_build_rejects_unsafe_temp_parent_before_writes(self):
+        missing_xlate = self.root / 'bin' / 'missing-xlate'
+        missing_dotnet = self.root / 'toolchain' / 'dotnet' / 'missing-dotnet'
+        self.options.translator = None
+        self.options.dotnet = missing_dotnet
+        self.layout = b.replace(self.layout, xlate=missing_xlate)
+
+        with self.subTest(case='appimage-brackets-in-dest'):
+            with patch.object(b, 'POSIX', True), patch.object(b.shutil, 'which', return_value=None), \
+                    self.appimage_install():
+                code, events = self.run_install()
+            self.assertEqual(code, 1, events)
+            error = next(e for e in events if e['type'] == 'error')
+            self.assertEqual(error['id'], 'dkb.temp_unsafe_path')
+            self.assertEqual(error['params']['path'], str(self.dest.resolve() / '.dkb-setup'))
+            self.assertFalse(self.dest.exists())
+            self.assertEqual(self.calls, [])
+
+        with self.subTest(case='explicit-temp-with-parens'):
+            unsafe_temp = Path(self.work.name) / 'work (2)'
+            self.options.temp = unsafe_temp
+            with patch.object(b, 'POSIX', True), patch.object(b.shutil, 'which', return_value=None):
+                code, events = self.run_install()
+            self.assertEqual(code, 1, events)
+            error = next(e for e in events if e['type'] == 'error')
+            self.assertEqual(error['id'], 'dkb.temp_unsafe_path')
+            self.assertEqual(error['params']['path'], str(unsafe_temp.resolve()))
+            self.assertFalse(self.dest.exists())
+            self.assertFalse(unsafe_temp.exists())
+            self.assertEqual(self.calls, [])
+
+        with self.subTest(case='safe-temp-reaches-dotnet-check'):
+            self.options.temp = self.temp
+            with patch.object(b, 'POSIX', True), patch.object(b.shutil, 'which', return_value=None):
+                code, events = self.run_install()
+            self.assertEqual(code, 1, events)
+            error = next(e for e in events if e['type'] == 'error')
+            self.assertEqual(error['id'], 'dkb.dotnet_missing')
+            self.assertFalse(self.dest.exists())
+            self.assertFalse(self.temp.exists())
+
+    def test_build_game_cmd_arg_quotes_posix_shell_metacharacters_and_escapes_ninja_dollars(self):
+        import shlex
+        sys.path.insert(0, str(ROOT / 'tools'))
+        try:
+            import build_game
+        finally:
+            sys.path.pop(0)
+
+        with patch.object(build_game, 'WIN', False):
+            self.assertEqual(build_game.cmd_arg('plain/path_1-a.c'), 'plain/path_1-a.c')
+            samples = [
+                '/tmp/installed [game]/.dkb-setup/dkb-x/build',
+                '/tmp/DKB (2)/build',
+                '/tmp/cost $100 [a]/build',
+                "/tmp/don't $(rm) [x]/build",
+            ]
+            for raw in samples:
+                quoted = build_game.cmd_arg(raw)
+                # Every literal '$' must be doubled for Ninja before /bin/sh sees the command.
+                self.assertEqual(quoted.count('$$'), raw.count('$'), raw)
+                self.assertNotIn('$', quoted.replace('$$', ''), raw)
+                # After Ninja unescapes '$$' -> '$', POSIX /bin/sh must recover the exact token.
+                self.assertEqual(shlex.split(quoted.replace('$$', '$')), [raw], raw)
+
+            rt = Path(self.work.name) / 'rt [v1]'
+            gen = Path(self.work.name) / 'installed [game]' / 'gen'
+            out = Path(self.work.name) / 'cost $100 (2)' / 'build'
+            for folder in (rt, gen, out):
+                folder.mkdir(parents=True)
+            with patch.object(build_game, 'RUNTIME', rt), patch.object(build_game, 'DARWIN', False), \
+                    patch.object(build_game, 'DEPS', None), patch.object(build_game, 'vma_include', return_value=rt):
+                text = build_game.ninja_file(gen, out, {}, 2)[0]
+            vars_by_name = dict(line.split(' = ', 1) for line in text.splitlines() if ' = ' in line)
+            gen_tokens = shlex.split(vars_by_name['genflags'].replace('$$', '$'))
+            rt_tokens = shlex.split(vars_by_name['rtflags'].replace('$$', '$'))
+            ld_tokens = shlex.split(vars_by_name['ldflags'].replace('$$', '$'))
+            self.assertIn(build_game.flag_path(rt), gen_tokens)
+            self.assertIn(build_game.flag_path(gen), gen_tokens)
+            self.assertIn(build_game.flag_path(out), rt_tokens)
+            self.assertIn(f'-Map={build_game.flag_path(out / "totk.map")}', ld_tokens)
+
+        with patch.object(build_game, 'WIN', True):
+            self.assertEqual(build_game.cmd_arg('plain/path'), 'plain/path')
+            self.assertEqual(build_game.cmd_arg('C:/Program Files/dkb'), '"C:/Program Files/dkb"')
+            self.assertEqual(build_game.cmd_arg('C:/a$b/c d'), '"C:/a$$b/c d"')
+            self.assertEqual(build_game.cmd_arg('C:/a$b/cd'), 'C:/a$$b/cd')
+
     def test_outside_the_appimage_the_work_folder_stays_beside_the_install_folder(self):
         with patch.dict(os.environ):
             os.environ.pop('APPIMAGE', None)
@@ -339,8 +436,123 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertGreater(freed, 0)
         self.assertIn(str(folder), removed)
         self.assertFalse(folder.exists())
-        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ['dkb.ini', 'mods', 'profile'])
+        self.assertEqual({p.name for p in self.dest.iterdir()}, {b.SAVES_OWNER, 'dkb.ini', 'mods', 'profile'})
         self.assertEqual((self.dest / 'profile' / 'save.bin').read_text(), 'save')
+
+    def test_reinstall_after_keeping_saves_preserves_files_and_can_resume(self):
+        self.installed_with_saves()
+        (self.dest / 'mods').rmdir()
+        mods = self.dest / 'Mods'
+        mods.mkdir()
+        mod = mods / 'personal.txt'
+        mod.write_text('mod')
+        setting = self.dest / 'dkb.ini'
+        setting.write_text('music_volume = 37\n')
+        b.uninstall(self.dest, self.temp)
+
+        with patch.object(b.shutil, 'disk_usage', return_value=SimpleNamespace(free=0)):
+            self.assertEqual(self.run_install()[0], 1)
+        self.assertTrue((self.dest / b.SAVES_OWNER).is_file())
+        self.assertFalse((self.dest / b.STATE).exists())
+        self.assertFalse((self.dest / b.DEST_OWNER).exists())
+        with self.assertRaises(b.InstallError) as error:
+            b.uninstall(self.dest, self.temp, keep_saves=False)
+        self.assertEqual(error.exception.id, 'dkb.uninstall_unowned')
+
+        (self.dest / (b.STATE + '.tmp')).write_text('interrupted checkpoint')
+        code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        self.assertTrue((self.dest / b.STATE).is_file())
+        self.assertTrue((self.dest / b.DEST_OWNER).is_file())
+        self.assertFalse((self.dest / b.SAVES_OWNER).exists())
+        self.assertEqual((self.dest / 'profile' / 'save.bin').read_text(), 'save')
+        self.assertEqual(mod.read_text(), 'mod')
+        self.assertIn('music_volume = 37', setting.read_text())
+
+        b.uninstall(self.dest, self.temp, keep_saves=False)
+        self.assertFalse(self.dest.exists())
+
+    def test_reinstall_resumes_after_first_checkpoint_before_owner_transition(self):
+        self.installed_with_saves()
+        b.uninstall(self.dest, self.temp)
+        save = b.statefile.save
+        pending_owner = self.dest / (b.DEST_OWNER + '.tmp')
+
+        def interrupt(dest, state, name):
+            if name == b.DEST_OWNER:
+                pending_owner.write_text('partial owner')
+                raise KeyboardInterrupt
+            save(dest, state, name)
+
+        with patch.object(b.statefile, 'save', side_effect=interrupt):
+            self.assertEqual(self.run_install()[0], 3)
+        self.assertTrue((self.dest / b.STATE).is_file())
+        self.assertTrue((self.dest / b.SAVES_OWNER).is_file())
+        self.assertTrue(pending_owner.is_file())
+
+        code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        self.assertTrue((self.dest / b.DEST_OWNER).is_file())
+        self.assertFalse((self.dest / b.SAVES_OWNER).exists())
+        self.assertFalse(pending_owner.exists())
+        self.assertEqual((self.dest / 'profile' / 'save.bin').read_text(), 'save')
+
+    def test_reinstall_refuses_unrelated_content_and_unrecognized_markers(self):
+        self.installed_with_saves()
+        b.uninstall(self.dest, self.temp)
+        unrelated = self.dest / 'unrelated.txt'
+        unrelated.write_text('keep this')
+        code, events = self.run_install()
+        self.assertEqual(code, 1, events)
+        self.assertIn('dkb.dest_unrelated', [e.get('id') for e in events])
+        self.assertEqual(unrelated.read_text(), 'keep this')
+        unrelated.unlink()
+
+        marker = self.dest / b.SAVES_OWNER
+        original = marker.read_bytes()
+        marker.unlink()
+        for name, contents in (('', b''), (b.SAVES_OWNER, b'[]'), (b.SAVES_OWNER.upper(), original)):
+            with self.subTest(marker=name, contents=contents):
+                if name:
+                    (self.dest / name).write_bytes(contents)
+                code, events = self.run_install()
+                self.assertEqual(code, 1, events)
+                self.assertIn('dkb.dest_unrelated', [e.get('id') for e in events])
+                self.assertEqual((self.dest / 'profile' / 'save.bin').read_text(), 'save')
+                if name:
+                    (self.dest / name).unlink()
+
+    def test_reinstall_requires_the_recorded_game_version(self):
+        self.installed_with_saves()
+        b.uninstall(self.dest, self.temp)
+        self.update_fixture()
+        code, events = self.run_install()
+        self.assertEqual(code, 1, events)
+        self.assertIn('dkb.dest_unrelated', [e.get('id') for e in events])
+        self.assertFalse((self.dest / b.STATE).exists())
+        self.assertEqual((self.dest / 'profile' / 'save.bin').read_text(), 'save')
+
+    def test_uninstall_without_player_files_leaves_no_marker(self):
+        with patch.object(b.shutil, 'disk_usage', return_value=SimpleNamespace(free=0)):
+            self.assertEqual(self.run_install()[0], 1)
+        b.uninstall(self.dest, self.temp)
+        self.assertEqual(list(self.dest.iterdir()), [])
+
+    def test_uninstall_keeps_ownership_until_install_files_are_removed(self):
+        self.installed_with_saves()
+        rmtree = shutil.rmtree
+
+        def refuse_exefs(path):
+            if path == self.dest.resolve() / 'exefs':
+                raise PermissionError('ExeFS in use')
+            return rmtree(path)
+
+        with patch.object(b.shutil, 'rmtree', side_effect=refuse_exefs), self.assertRaises(PermissionError):
+            b.uninstall(self.dest, self.temp)
+        self.assertTrue((self.dest / b.STATE).is_file())
+        self.assertTrue((self.dest / b.DEST_OWNER).is_file())
+        b.uninstall(self.dest, self.temp)
+        self.assertEqual({p.name for p in self.dest.iterdir()}, {b.SAVES_OWNER, 'dkb.ini', 'mods', 'profile'})
 
     def test_uninstall_can_delete_saves_too(self):
         folder = self.installed_with_saves()
@@ -726,6 +938,50 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.options.verify = True
         code, events = self.run_install()
         self.assertEqual(code, 1)
+
+    def test_moved_source_folders_reject_changed_installed_romfs_index(self):
+        self.assertEqual(self.run_install()[0], 0)
+        self.romfs.rename(self.root / 'moved romfs')
+        self.exefs.rename(self.root / 'moved exefs')
+        self.options.exefs = self.options.romfs = None
+        original = b.statefile.load(self.dest, b.STATE)['steps']['dkb_data']
+
+        # Change a file's name without touching the packed image or the index's recorded image checksum.
+        index = self.dest / 'romfs' / 'index.json'
+        original_index = index.read_bytes()
+        manifest = json.loads(original_index)
+        manifest['files'][0]['path'] = 'renamed-resource.bin'
+        index.write_text(json.dumps(manifest), encoding='utf-8')
+        self.calls.clear()
+        for verify in (False, True):
+            with self.subTest(verify=verify):
+                self.options.verify = verify
+                code, events = self.run_install()
+                self.assertEqual(code, 1, events)
+                error = next(e for e in events if e['type'] == 'error')
+                self.assertEqual(error['id'], 'dkb.input_changed')
+                self.assertEqual(error['params']['path'], str(index.resolve()))
+                self.assertEqual(b.statefile.load(self.dest, b.STATE)['steps']['dkb_data'], original)
+                self.assertEqual(self.calls, [])
+
+        index.write_bytes(original_index)
+        code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        self.assertEqual(self.calls, [])
+
+    def test_moved_source_folders_need_a_recorded_romfs_index_hash(self):
+        self.assertEqual(self.run_install()[0], 0)
+        self.romfs.rename(self.root / 'moved romfs')
+        self.options.exefs = self.options.romfs = None
+        state = b.statefile.load(self.dest, b.STATE)
+        state['steps']['dkb_data'].pop('index_sha256')
+        b.statefile.save(self.dest, state, b.STATE)
+
+        code, events = self.run_install()
+        self.assertEqual(code, 1, events)
+        error = next(e for e in events if e['type'] == 'error')
+        self.assertEqual(error['id'], 'dkb.input_changed')
+        self.assertEqual(error['params']['path'], str(self.dest.resolve() / 'romfs' / 'index.json'))
 
     def test_concurrent_setup_lock_and_release(self):
         self.temp.mkdir()
@@ -1125,6 +1381,59 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.options.nup = None
         self.assertEqual(self.run_install()[0], 0)
         self.assertEqual(self.calls, [])
+
+    def test_removed_recorded_nup_updates_from_installed_game_data(self):
+        path = self.write_nup()
+        self.assertEqual(self.run_install()[0], 0)
+        old = b.statefile.load(self.dest, b.STATE)
+        path.unlink()
+
+        # An explicit archive or package choice still needs the archive.
+        for archive, package in ((path, None), (None, 'base')):
+            with self.subTest(archive=archive, package=package):
+                self.options.nup, self.options.nup_package = archive, package
+                code, events = self.run_install()
+                self.assertEqual(code, 1, events)
+                self.assertIn('dkb.need_nup', [e.get('id') for e in events])
+
+        self.options.nup = self.options.nup_package = None
+        self.layout = b.replace(self.layout, release='test-update')
+        (self.root / 'runtime/nvn2_lower.cpp').write_text('// changed synthetic runtime')
+        self.calls.clear()
+        code, events = self.run_install()
+        self.assertEqual(code, 0, events)
+        self.assertIn('compile', [step for step, _ in self.calls])
+        state = b.statefile.load(self.dest, b.STATE)
+        self.assertEqual(state['release'], 'test-update')
+        self.assertEqual(state['sources'], old['sources'])
+        self.assertEqual(state['steps']['dkb_data'], old['steps']['dkb_data'])
+
+        # Even an internally valid image must match the install's recorded RomFS hash.
+        (self.romfs / 'other.bin').write_bytes(b'changed RomFS')
+        other_pack = self.loose_pack(self.romfs)
+        for name in ('romfs.bin', 'index.json'):
+            shutil.copyfile(other_pack / name, self.dest / 'romfs' / name)
+        code, events = self.run_install()
+        self.assertEqual(code, 1, events)
+        self.assertIn('dkb.input_changed', [e.get('id') for e in events])
+
+    def test_changed_nup_is_read_when_present_or_explicitly_selected(self):
+        self.write_nup()
+        self.assertEqual(self.run_install()[0], 0)
+        for name in ('game.nup', 'different.nup'):
+            with self.subTest(archive=name):
+                (self.romfs / 'other.bin').write_bytes(name.encode())
+                path = self.write_nup(name=name)
+                if name == 'game.nup':
+                    self.options.nup = None  # use the original archive at its recorded path
+                self.calls.clear()
+                code, events = self.run_install()
+                self.assertEqual(code, 0, events)
+                self.assertIn('dkb_data', [step for step, _ in self.calls])
+                state = b.statefile.load(self.dest, b.STATE)
+                self.assertEqual(state['sources']['nup'], str(path.resolve()))
+                self.assertEqual(b.sha256(self.dest / 'romfs/romfs.bin'),
+                                 b.sha256(self.loose_pack(self.romfs) / 'romfs.bin'))
 
     def test_nup_with_update_builds_the_update_with_merged_romfs(self):
         base_romfs = tree(self.romfs)

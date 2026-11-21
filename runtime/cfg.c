@@ -30,7 +30,7 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // Every name the runtime reads (and the patch sets in generated/), without the prefix. A file key outside this list is
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line.
 static const char *const known[] = {
-    "AB", "ANTILAG", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_BC1", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_OFF", "AUDIO_PREFILL_MS",
+    "AB", "ANTILAG", "AP_FAULT", "AP_SAFE", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_BC1", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_OFF", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
@@ -38,17 +38,17 @@ static const char *const known[] = {
     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CORE_WAITS", "CRIT", "CRUMB_BIND", "CRIT_OUT", "CRT_FILTER", "CRT_LINES", "DESC_C0_SERIAL", "DESC_KEEP", "DESC_SAMP_GEN", "DESC_STAGE_ORIGIN", "DESC_TD_HASH", "DESC_TEMPLATE", "DEVICE_PROFILE", "DLSS_MODE", "PRESET", "DLSS_PRESET", "DLSS_WARM_FULL", "DRAW_MERGE", "DRAW_PROFILE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DYN_KEEP", "DYN_UBO",
     "EXEFS", "EXPERIMENTAL_GEOMETRY", "FEEDBACK", "FIXED_STEP", "FIX_C0", "FIX_INDIRECT_RESET", "FIX_LQ_FOLD", "FIX_SCREEN_UV", "FIX_VS_FAULT", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
     "FLIGHT_THUMBS", "CONSOLE", "COOP", "FMZ", "FMZ_SEL", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_GEN", "FRAME_GEN_BY", "FREEZE_IDLE", "FRZ_WHOLE", "FSR4_LDR", "FSR_DIR", "FREE_CORES", "FULLSCREEN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_CHECKPOINTS", "GPU_HANG_S",
-    "GPU_INDEX", "GPU_NAME", "GS_STORAGE_WRITEBACK", "HDR", "HDR_GAME_NITS", "HDR_NATIVE", "HDR_PEAK_NITS", "HDR_SHOULDER", "HDR_TRACE", "HDR_UI_NITS", "HEADLESS", "HEAP_LAZY", "HIGHFPS_FIX", "HOST_PROPS_CACHE", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+    "GPU_INDEX", "GPU_NAME", "GS_STORAGE_WRITEBACK", "HDR", "HDR_GAME_NITS", "HDR_NATIVE", "HDR_PEAK_NITS", "HDR_SHOULDER", "HDR_TRACE", "HDR_UI_NITS", "HEADLESS", "HEAP_LAZY", "HIGHFPS_FIX", "HOLD_TAKEBACK", "HOST_PROPS_CACHE", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LAZY_CHUNK_KB", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LIST_RESTART", "LOCALE", "LOCK_HOLDS", "LOD_GUARD", "LOOKAHEAD", "MEMORY", "MEM_AVAIL_RESERVE_MB", "MEM_COMMIT_RESERVE_MB", "MEM_REPORT", "MEM_TRIM", "MENU_LANG", "MENU_THEME", "MENU_TEST",
-    "MENU_TEST_DIR", "MENU_TEST_SET", "MERGE_STATS", "MINIMAL_LAYOUT", "MIRROR_GAP", "MIRROR_OWN", "MIRROR_PRESNAP", "MIRROR_STAGED", "MOTION", "MOUSE_CAMERA", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE", "MUTEX_SPIN", "MVK_UPSCALE_BLIT", "NAN_GUARD", "NATIVE_GS", "NX2_READ_NOWAIT",
-    "NVN2_MODE_TRACE", "NVN2_MODE_TRACE_START_MS", "NVN2_MODE_TRACE_DURATION_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_DEVICE", "PAD_FULLSCREEN_HOLD", "PAD_LAYOUT", "PAD_PROMPTS", "PAR_DEFER", "PAR_DEFER_DEPTH", "PAR_INDIRECT", "PASS_GPU", "PATCH_OUTPUT", "PATCH_SCENE", "PCACHE_GATE", "PERF_OVERLAY", "PERF_SLOW_GPU_MS", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POOL_FINI_WAIT", "POOL_IMPORT_LOG", "POOL_LAZY",
+    "MENU_TEST_DIR", "MENU_TEST_SET", "MERGE_STATS", "MINIMAL_LAYOUT", "MIRROR_BUDGET", "MIRROR_GAP", "MIRROR_OWN", "MIRROR_PRESNAP", "MIRROR_STAGED", "MOTION", "MOUSE_CAMERA", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE", "MUTEX_SPIN", "MVK_UPSCALE_BLIT", "NAN_GUARD", "NATIVE_GS", "NX2_READ_NOWAIT",
+    "NVN2_MODE_TRACE", "NVN2_MODE_TRACE_START_MS", "NVN2_MODE_TRACE_DURATION_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_DEVICE", "PAD_FULLSCREEN_HOLD", "PAD_LAYOUT", "PAD_PROMPTS", "PAR_COLLECT_WALK", "PAR_DEFER", "PAR_DEFER_DEPTH", "PAR_INDIRECT", "PASS_GPU", "PATCH_OUTPUT", "PATCH_SCENE", "PCACHE_GATE", "PERF_OVERLAY", "PERF_SLOW_GPU_MS", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POOL_FINI_WAIT", "POOL_IMPORT_LOG", "POOL_LAZY",
     "PRESENT_HOLD", "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROFILE_REPLAY", "PROFILE_SLOW", "PROFILE_VQ", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REALTIME_MAX_FPS", "REC_BEGIN", "REC_END", "REC_SUBMIT", "REEXEC",
     "RENDER_SCALE", "SCENE_RES", "SCHED_HANDOFF", "REPLAY_ASYNC", "REPLAY_HELPERS", "REPLAY_PAR", "REPLAY_THREADS", "CALL_REF", "RESET_BATCH", "RESET_CPU_LIST",
     "REPLAY_CHECK", "RESOLVE_CHECK", "ROMFS", "ROMFS_DIR", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_HD", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
     "SHADER_MEMO", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SKIP_CS", "SKIP_FS", "SKIP_VS", "SMAA", "SPARSE_MIRROR_COPY", "SPEED_PROBE", "STALL_DUMP", "SPIN", "SPIN_HANDOFF_US", "SPLASH", "SPLASH_SHOTS", "SPLASH_TEST", "SPLASH_WATCH", "SPLIT_DRAWS", "SPLIT_US", "STAGED_BLK_CHECK", "STAGED_FETCH_TEST", "STAGED_INJECT", "STAGED_READ_PROBE", "STAGED_WB", "STAMP_BATCH", "STICK_DEADZONE", "SVC_SLOW", "SWITCH2", "SWKBD_ANSWER",
-    "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_CHECK_SHARE", "TEX_HASH", "TEX_MEMO", "TEX_REPEAT", "CS_BARRIER", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TOUCH_MAP", "REC_BATCH", "TRACE", "UBO_SNAPSHOT", "UPSCALER", "USNAP_DROP_LOCAL", "USNAP_FAST", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
+    "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_CHECK_SHARE", "TEX_HASH", "TEX_MEMO", "TEX_REPEAT", "CS_BARRIER", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TOUCH_MAP", "REC_BATCH", "TRACE", "UBO_SNAPSHOT", "UPSCALER", "USNAP_DROP_LOCAL", "USNAP_FAST", "USNAP_LIST", "USNAP_LIST_CHECK", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VULKAN_DRIVER", "VRAM_HEADROOM", "VRAM_LIMIT", "VS_OUTS",
     "ULTRAWIDE", "HUD_POSITION", "WB_ASYNC", "WB_EARLY", "WB_EXACT", "WB_FENCE_LIMIT", "WB_LAZY", "WB_UNLOCKED", "WINDOW_FILTER", "WINDOW_MODE", "WINDOW_SIZE", "WW_SLOW_MS", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZSTD_CHECK", "ZSTD_NATIVE",
 };
@@ -78,12 +78,12 @@ static const struct { const char *key, *section; } sections[] = {
     {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"REPLAY_THREADS", "performance"}, {"CALL_REF", "performance"}, {"RESET_CPU_LIST", "performance"}, {"FREE_CORES", "performance"},
     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
-    {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"}, {"WB_LAZY", "performance"},
+    {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"}, {"MIRROR_BUDGET", "performance"}, {"WB_LAZY", "performance"},
     {"EXPERIMENTAL_GEOMETRY", "performance"}, {"NATIVE_GS", "performance"},
     {"REC_BATCH", "performance"},
     {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"ASTC_BC", "performance"}, {"ASTC_BC1", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_INDIRECT_RESET", "performance"}, {"FIX_VS_FAULT", "performance"}, {"FIX_LQ_FOLD", "performance"}, {"FIX_ZERO", "performance"}, {"FIX_SCREEN_UV", "performance"}, {"LIST_RESTART", "performance"},
     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_KEEP", "performance"}, {"LOOKAHEAD", "performance"}, {"DESC_TEMPLATE", "performance"},
-    {"DESC_C0_SERIAL", "performance"}, {"DESC_SAMP_GEN", "performance"}, {"DESC_TD_HASH", "performance"}, {"DESC_STAGE_ORIGIN", "performance"}, {"DYN_KEEP", "performance"}, {"TEX_REPEAT", "performance"}, {"CS_BARRIER", "performance"},
+    {"DESC_C0_SERIAL", "performance"}, {"DESC_SAMP_GEN", "performance"}, {"DESC_TD_HASH", "performance"}, {"DESC_STAGE_ORIGIN", "performance"}, {"DYN_KEEP", "performance"}, {"HOLD_TAKEBACK", "performance"}, {"TEX_REPEAT", "performance"}, {"CS_BARRIER", "performance"},
     {"TEX_HASH", "performance"}, {"ZSTD_NATIVE", "performance"}, {"ZSTD_CHECK", "performance"}, {"MVK_UPSCALE_BLIT", "performance"},
     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
@@ -171,6 +171,7 @@ static const CfgMeta metas[] = {
     {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "", "0|1", RESTART},
     // textures and memory
     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
+    {"MIRROR_BUDGET", "", NULL, RESTART},   // unset allows mirrors to use the normal device budget
     {"WB_LAZY", "0", "0|1", RESTART},   // vk_memory.c, the lazy write-back; Linux
     {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_HASH", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"ASTC_BC", "0", "0|1", RESTART}, {"ASTC_BC1", "1", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
     // render fixes
@@ -354,7 +355,7 @@ int vk_driver_env_apply(void) { return 0; }
 // A NULL cell leaves the key at the built-in default. On Bananza OUTPUT_RES is the game's virtual display (built-in
 // 2880x1620); the game draws its 3D smaller and upscales it unless SCENE_RES = full (level 4: DLAA with DLSS). No
 // frame limit here: below or above 60 it needs the experimental real-time step (frame_rate.c frame_limit_live).
-// "dlss|fsr3" is DLSS on an NVIDIA GPU with nvngx_dlss.dll next to dkb.exe, FSR 3.1
+// "dlss|fsr3" is DLSS in the Windows build on an NVIDIA GPU with nvngx_dlss.dll next to dkb.exe, FSR 3.1
 // otherwise (cfg_preset_resolve). Not applied on the Steam Deck profile, which has its own table.
 static const struct { const char *key, *level[5]; } PRESETS[] = {
     {"OUTPUT_RES", {"1280x720", "1920x1080", NULL, "2560x1440", "3840x2160"}},
@@ -385,9 +386,10 @@ void cfg_preset_resolve(void) {
     int recommended = set && !strcasecmp(set, "recommended");
     if (profile_of()) p = 0, recommended = 0;
     unsigned vram = 0;
-    int integrated = 0, ok = 0;
+    int integrated = 0, nvidia = 0, ok = 0;
     if (recommended || p >= 3) vk_driver_env_apply();
-    if (recommended || p >= 3) ok = vk_hw_probe(&vram, &integrated, &preset_nvidia);   // the Vulkan device is not up yet here
+    if (recommended || p >= 3) ok = vk_hw_probe(&vram, &integrated, &nvidia);   // the Vulkan device is not up yet here
+    preset_nvidia = CFG_HAS_DLSS && nvidia;
     if (preset_nvidia) {   // DLSS only with its model next to dkb.exe, where vk_dlss.c init looks for it
         char path[1024] = "";
         char *cut = plat_exe_path(path, sizeof path - 16) ? strrchr(path, '\\') : NULL;

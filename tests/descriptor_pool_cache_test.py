@@ -77,6 +77,7 @@ uint64_t vk_texture_slot_token_stamped(const dpool_ref *pool,int id,VkSlotStamp 
     return vk_texture_slot_token(pool,id);
 }
 uint64_t vk_texture_slot_token_again(const VkSlotStamp *st) { (void)st; return 0; }
+int vk_texture_view_active(void) { return 0; }
 const VkTexImage *vk_texture_by_id_locked(const dpool_ref *pool,int id,view_t *view,int *has_view) {
     if (!locked) abort();
     lookup_count++;

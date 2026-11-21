@@ -31,10 +31,13 @@ from .runner import Context, InstallError, Step, run_steps
 STATE = 'dkb-install.json'
 OWNER = '.dkb-setup-owner.json'
 DEST_OWNER = '.dkb-install-owner.json'
+SAVES_OWNER = '.dkb-saves-owner.json'
+KEPT_SAVES = ('profile', 'dkb.ini', 'mods')
 NESTED = '.dkb-setup'   # the work folder's parent: beside the install folder, or inside it for the AppImage
 GAME = 'dkb100'
 TARGETS = (GAME, 'dkb458752')   # 1.0.0 and 3.2.0 (title version 458752); tools/data/expected-<target>.json
 NUP_SELECT = ('latest', 'base')
+POSIX = os.name != 'nt'
 EXE = '.exe' if os.name == 'nt' else ''
 CHUNK = 8 << 20
 WIDE_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440')
@@ -100,7 +103,8 @@ def plain_tree(root):
 
 def plain_destination(dest, dlls=()):
     # profile/ and caches belong to the player and are never traversed or written by setup.
-    files = (STATE, STATE + '.tmp', DEST_OWNER, '.dkb-setup.lock', 'dkb.ini', 'dkb.ini.tmp', 'totk.ini',
+    files = (STATE, STATE + '.tmp', DEST_OWNER, DEST_OWNER + '.tmp', SAVES_OWNER, '.dkb-setup.lock', 'dkb.ini',
+             'dkb.ini.tmp', 'totk.ini',
              'totk.ini.tmp', 'romfs-index.bin', 'seed-nvn2.bin', 'dkb' + EXE, 'totk_xlate' + EXE, 'totk_xlate.id', *(p.name for p in dlls))
     for name in ('exefs', 'romfs', *WIDE_FOLDERS, *files, *(name + '.setup-part' for name in files)):
         plain_tree(dest / name)
@@ -291,6 +295,14 @@ def unsafe_temp_chars(path):
     return ''.join(sorted({ch for ch in str(path) if ch in "()&;|<>$`'\"!*?[]{}#~"}))
 
 
+def matches_owner(path, expected):
+    ensure_plain(path)
+    try:
+        return json.loads(path.read_text(encoding='utf-8')) == expected
+    except (OSError, ValueError):
+        return False
+
+
 def preflight(layout, options, dest, temp, rep):
     if options.base or options.update or options.keys:
         raise InstallError('dkb.update_unsupported')
@@ -303,39 +315,44 @@ def preflight(layout, options, dest, temp, rep):
     if old is not None and (old.get('game') not in TARGETS or old.get('destination') != str(dest)):
         raise InstallError('dkb.dest_unrelated', path=str(dest))
     nup_arg = getattr(options, 'nup', None)
+    nup_package = getattr(options, 'nup_package', None)
     # A package choice only means something for a .nup, so it counts as asking for one next to folders too.
-    if (nup_arg or getattr(options, 'nup_package', None)) and (options.exefs or options.romfs):
+    if (nup_arg or nup_package) and (options.exefs or options.romfs):
         raise InstallError('dkb.nup_and_folders')
     recorded = old['sources'] if old else {}
-    if not nup_arg and not options.exefs and not options.romfs and recorded.get('nup'):
+    use_recorded_source = not (nup_arg or options.exefs or options.romfs)
+    if use_recorded_source and recorded.get('nup'):
         nup_arg = Path(recorded['nup'])
-    select = getattr(options, 'nup_package', None) or (recorded.get('nup_package') if nup_arg else None) or 'latest'
+    select = nup_package or (recorded.get('nup_package') if nup_arg else None) or 'latest'
     if select not in NUP_SELECT:
         raise InstallError('dkb.nup_invalid', path=str(nup_arg), detail=f'unknown package choice {select}')
-    dest_source = False
     if nup_arg:
         for p in (nup_arg, dest, temp):
             ensure_plain(p.absolute())
-        nup = nup_arg.resolve()
-        if not nup.is_file():
-            raise InstallError('dkb.need_nup')
-        rep.progress('check', 'dkb_base')
-        game, hashes, files = nup_source(layout, nup, select)
-        inputs, sources = (nup,), {'nup': str(nup), 'nup_package': select}
+        nup_arg = nup_arg.resolve()
+        source_missing = not nup_arg.is_file()
     else:
         exefs_arg = options.exefs or (Path(recorded['exefs']) if recorded.get('exefs') else None)
         romfs_arg = options.romfs or (Path(recorded['romfs']) if recorded.get('romfs') else None)
-        # The recorded dump folders were moved or deleted: the verified copy in the install folder (ExeFS files and
-        # the packed RomFS) is the source, used where it is. Only when nothing was given on the command line, the
-        # last run packed the RomFS (not a loose in-place install) and its Data step left a record to verify against.
-        dest_source = bool(
-            old and not options.exefs and not options.romfs and not recorded.get('romfs_in_place') and
-            'sha256' in old.get('steps', {}).get('dkb_data', {}) and
-            not (exefs_arg and romfs_arg and exefs_arg.is_dir() and romfs_arg.is_dir()) and
-            (dest / 'exefs').is_dir() and (dest / 'romfs' / 'romfs.bin').is_file() and
-            (dest / 'romfs' / 'index.json').is_file())
-        if dest_source:
-            exefs_arg, romfs_arg = dest / 'exefs', dest / 'romfs'
+        source_missing = use_recorded_source and not (
+            exefs_arg and romfs_arg and exefs_arg.is_dir() and romfs_arg.is_dir())
+    # An update without explicit sources can use the installed ExeFS and packed RomFS if the recorded dump is gone.
+    # The Data checkpoint identifies the verified copy. A loose in-place RomFS still needs its original folder.
+    dest_source = bool(
+        old and use_recorded_source and not nup_package and source_missing and not recorded.get('romfs_in_place') and
+        'sha256' in old.get('steps', {}).get('dkb_data', {}) and
+        (dest / 'exefs').is_dir() and (dest / 'romfs' / 'romfs.bin').is_file() and
+        (dest / 'romfs' / 'index.json').is_file())
+    if dest_source:
+        nup_arg = None
+        exefs_arg, romfs_arg = dest / 'exefs', dest / 'romfs'
+    if nup_arg:
+        if source_missing:
+            raise InstallError('dkb.need_nup')
+        rep.progress('check', 'dkb_base')
+        game, hashes, files = nup_source(layout, nup_arg, select)
+        inputs, sources = (nup_arg,), {'nup': str(nup_arg), 'nup_package': select}
+    else:
         if not exefs_arg or not romfs_arg:
             raise InstallError('dkb.need_folders')
         for p in (exefs_arg, romfs_arg, dest, temp):
@@ -364,14 +381,16 @@ def preflight(layout, options, dest, temp, rep):
             continue   # the AppImage's default work folder lives in the install folder, and nowhere else may
         if contains(a, b) or contains(b, a):
             raise InstallError('dkb.path_overlap', path=str(a), other=str(b))
-    if dest.exists() and old is None and any(dest.iterdir()):
-        try:
-            ensure_plain(dest / DEST_OWNER)
-            partial = json.loads((dest / DEST_OWNER).read_text(encoding='utf-8'))
-            ours = partial == {'game': game, 'destination': str(dest)}
-            ours &= {p.name for p in dest.iterdir()} <= {DEST_OWNER, '.dkb-setup.lock', NESTED}
-        except (OSError, ValueError):
-            ours = False
+    entries = {p.name for p in dest.iterdir()} if dest.exists() else set()
+    dest_owner = {'game': game, 'destination': str(dest)}
+    from_saved_folder = SAVES_OWNER in entries and matches_owner(dest / SAVES_OWNER, dest_owner)
+    if old is None and entries:
+        resume_files = {'.dkb-setup.lock', NESTED}
+        if from_saved_folder:
+            allowed = {SAVES_OWNER, STATE + '.tmp', *resume_files}
+            ours = all(name in allowed or name.lower() in KEPT_SAVES for name in entries)
+        else:
+            ours = entries <= {DEST_OWNER, *resume_files} and matches_owner(dest / DEST_OWNER, dest_owner)
         if not ours:
             raise InstallError('dkb.dest_unrelated', path=str(dest))
     if nuget_needs_fallback(temp) and any(c.isspace() for c in tempfile.gettempdir()):
@@ -447,10 +466,12 @@ def preflight(layout, options, dest, temp, rep):
     if not dotnet.is_file():
         dotnet = Path(shutil.which('dotnet') or dotnet)
     if not translator:
+        if POSIX and unsafe_temp_chars(temp.parent):
+            raise InstallError('dkb.temp_unsafe_path', path=str(temp.parent))
         proc = subprocess.run([str(dotnet), '--list-sdks'], capture_output=True, text=True) if dotnet.is_file() else None
         if proc is None or proc.returncode or not any(line.startswith('10.') for line in proc.stdout.splitlines()):
             raise InstallError('dkb.dotnet_missing')
-    return dict(old=old, game=game, sources=sources, hashes=hashes, files=files,
+    return dict(old=old, from_saved_folder=from_saved_folder, game=game, sources=sources, hashes=hashes, files=files,
                 romfs_id=romfs_id, romfs_size=romfs_size, owner=owner, translator=translator, identity=identity,
                 dotnet=dotnet, packed=packed, in_place=in_place, dest_source=dest_source,
                 pipeline=digest(*(sha256(Path(__file__).with_name(n)) for n in ('bananza.py', 'runner.py', 'state.py'))))
@@ -463,6 +484,11 @@ class BananzaContext(Context):
         ensure_plain(self.dest / (STATE + '.tmp'))
         self.dest.mkdir(parents=True, exist_ok=True)
         statefile.save(self.dest, self.state, STATE)
+        if self.info['from_saved_folder']:
+            # The install record now establishes ownership. Until it is written, the marker only permits setup.
+            statefile.save(self.dest, {'game': self.info['game'], 'destination': str(self.dest)}, DEST_OWNER)
+            (self.dest / SAVES_OWNER).unlink(missing_ok=True)
+            self.info['from_saved_folder'] = False
 
 
 def owned_dir(ctx, path):
@@ -612,6 +638,9 @@ class Data(Step):
     id = 'dkb_data'
 
     def key(self, ctx):
+        if ctx.info['dest_source']:
+            # Keep the checkpoint for data already in the install folder, so moving the source does not rebuild it.
+            return ctx.state['steps']['dkb_data']['key']
         parts = [ctx.info['hashes'], ctx.info['romfs_id'], ctx.info['pipeline'],
                  sha256(ctx.layout.tools / 'dkb_pack_romfs.py')]
         if ctx.info['in_place']:
@@ -620,10 +649,6 @@ class Data(Step):
             parts += [sha256(ctx.layout.tools / 'extract_nup.py'), ctx.info['sources']['nup_package']]
             if ctx.info['sources']['nup'].lower().endswith('.nx'):
                 parts.append(sha256(ctx.layout.tools / 'extract_nx.py'))
-        if ctx.info['dest_source']:
-            # Sourced from the install folder itself: keep the key the copying run recorded, so the steps after this
-            # one are not rebuilt because the source moved.
-            return ctx.state['steps']['dkb_data']['key']
         return digest(*parts)
 
     def current(self, ctx, record):
@@ -711,16 +736,19 @@ class Data(Step):
 
 
     def verify_in_place(self, ctx):
-        """The ExeFS files against the expected hashes and the packed RomFS against the digest the copying run
-        recorded; nothing is copied, onto itself least of all."""
+        """Check the installed ExeFS and both parts of the packed RomFS before reusing them."""
         expected_exefs(ctx.layout, ctx.dest / 'exefs', ctx.info['game'])
         romfs = ctx.dest / 'romfs'
-        recorded = ctx.state['steps']['dkb_data']['sha256']
-        if pack_manifest(romfs)['romfs_sha256'] != recorded:
+        recorded = ctx.state['steps']['dkb_data']
+        if pack_manifest(romfs)['romfs_sha256'] != recorded['sha256']:
             raise InstallError('dkb.input_changed', path=str(romfs))
+        index = romfs / 'index.json'
+        index_sha256 = sha256(index)
+        if index_sha256 != recorded.get('index_sha256'):
+            raise InstallError('dkb.input_changed', path=str(index))
         image = romfs / 'romfs.bin'
-        return {'sha256': recorded, 'size': image.stat().st_size, 'mtime_ns': image.stat().st_mtime_ns,
-                'index_sha256': sha256(romfs / 'index.json')}
+        return {'sha256': recorded['sha256'], 'size': image.stat().st_size, 'mtime_ns': image.stat().st_mtime_ns,
+                'index_sha256': index_sha256}
 
     def in_place(self, ctx, stage, romfs):
         """index.json of the folder as dkb_pack_romfs.py would pack it (the offsets only size the index), with each
@@ -1212,23 +1240,18 @@ def clean_main(options):
     return 0
 
 
-KEPT_SAVES = ('profile', 'dkb.ini', 'mods')   # the player's own files (saves, settings, loose mods), kept unless asked
-
-
 def uninstall(dest, temp=None, layout_temp=None, keep_saves=True):
     """Remove the install at dest and its work folder; returns (removed paths, bytes freed). Needs our state or owner
-    record for this destination. With keep_saves, profile/ and dkb.ini stay and dest itself stays; links are refused
-    before anything is deleted and never followed."""
+    record for this destination. With keep_saves, the destination and player files stay. Links in paths to be deleted
+    are refused before anything is deleted."""
     ensure_plain(dest.absolute())
     dest = dest.resolve()
     ensure_plain(dest / STATE)
     ensure_plain(dest / DEST_OWNER)
     try:
         old = statefile.load(dest, STATE)
-        ours = old is not None and old.get('game') in TARGETS and old.get('destination') == str(dest)
-        if not ours and old is None:
-            owner = json.loads((dest / DEST_OWNER).read_text(encoding='utf-8'))
-            ours = isinstance(owner, dict) and owner.get('destination') == str(dest) and owner.get('game') in TARGETS
+        owner = old if old is not None else json.loads((dest / DEST_OWNER).read_text(encoding='utf-8'))
+        ours = isinstance(owner, dict) and owner.get('destination') == str(dest) and owner.get('game') in TARGETS
     except (OSError, ValueError, statefile.StateError):
         ours = False
     if not ours:
@@ -1236,7 +1259,9 @@ def uninstall(dest, temp=None, layout_temp=None, keep_saves=True):
     # dkb.busy while a setup runs. Taken before the listing, since it creates the lock file the listing must include;
     # released before the deletes, since Windows cannot delete a file this process holds open.
     lock_temp(dest).close()
-    entries = [p for p in dest.iterdir() if not (keep_saves and p.name.lower() in KEPT_SAVES)]
+    entries = list(dest.iterdir())
+    kept = {p for p in entries if keep_saves and p.name.lower() in KEPT_SAVES}
+    entries = [p for p in entries if p not in kept]
     for p in entries:
         plain_tree(p)
         if linked(p):
@@ -1252,7 +1277,15 @@ def uninstall(dest, temp=None, layout_temp=None, keep_saves=True):
         except InstallError as e:
             if e.id != 'dkb.clean_nothing':
                 raise
-    for p in entries:
+    if kept:
+        # Leave separate proof for a later setup. This marker alone never authorizes deletion.
+        marker, pending_marker = dest / SAVES_OWNER, dest / (SAVES_OWNER + '.tmp')
+        for p in (marker, pending_marker):
+            ensure_plain(p)
+        statefile.save(dest, {'game': owner['game'], 'destination': str(dest)}, SAVES_OWNER)
+        entries = [p for p in entries if p not in (marker, pending_marker)]
+    # Keep the install's authority until the rest is removed so an interrupted uninstall can resume.
+    for p in sorted(entries, key=lambda p: p.name in (STATE, DEST_OWNER)):
         if p.is_dir():
             freed += folder_size(p)
             shutil.rmtree(p)
@@ -1303,15 +1336,14 @@ def main(options):
                     setattr(options, name, Path(value))
         layout = tool_layout(found, options)
         temp = work_folder(dest, options.temp, layout.temp)
-        if os.name != 'nt' and unsafe_temp_chars(temp.parent):
-            raise InstallError('dkb.temp_unsafe_path', path=str(temp.parent))
         info = preflight(layout, options, dest, temp, rep)
         # All read-only validation succeeded. Logs and owned output may now be created.
         temp.mkdir(parents=True, exist_ok=True)
         write_owner(temp / OWNER, info['owner'])
         locks.append(lock_temp(temp))
         dest.mkdir(parents=True, exist_ok=True)
-        write_owner(dest / DEST_OWNER, {'game': info['game'], 'destination': str(dest)})
+        if info['old'] is not None or not info['from_saved_folder']:
+            write_owner(dest / DEST_OWNER, {'game': info['game'], 'destination': str(dest)})
         locks.append(lock_temp(dest))
         plain_tree(temp)
         plain_destination(dest, layout.dlls)

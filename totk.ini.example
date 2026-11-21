@@ -65,6 +65,10 @@
 # imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
 # every copy; slow).
 # memory = auto
+# A ceiling on the video memory all mirrors take together, so that they leave room for textures on a small card:
+# unset (the default) none, auto (a quarter of the card and at most 3 GiB; an eighth on a card of 4.5 GiB or less) or a
+# number of MiB. A pool refused a mirror is read by the GPU from host memory. Read at start.
+# mirror_budget = auto
 # Linux: copy a shader's storage write back to the game's memory only when the game's code touches it (0 or 1;
 # default 0).
 # wb_lazy = 0

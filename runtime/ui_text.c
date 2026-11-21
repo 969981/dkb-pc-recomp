@@ -100,6 +100,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "a frame it cannot make gets the built-in one.",
     [UI_MENU_FRAME_GEN_BUILTIN] = "Built-in", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3.1",
     [UI_MENU_FRAME_GEN_BY_NEEDS] = "needs DLSS, FSR 3.1 or FSR 4 with the 3D below the output size",
+    [UI_MENU_MIRROR_BUDGET] = "Mirror memory limit",
+    [UI_MENU_MIRROR_BUDGET_DESC] = "A ceiling on the video memory the copies of game memory (GPU memory mode: Mirror) take together, so that they leave room for textures on a small card. "
+                                   "Automatic allows a quarter of the card, at most 3 GiB, and an eighth on a card of 4.5 GiB or less. "
+                                   "Memory refused a copy is read by the GPU from system memory instead. Try it when the game slows down after a while on a card with 8 GB or less.",
+    [UI_MENU_MIRROR_BUDGET_NONE] = "No limit", [UI_MENU_FMT_MIB] = "%s MiB",
     [UI_MENU_GPU] = "Graphics card", [UI_MENU_GPU_DESC] = "Choose which graphics card runs the game. Use Automatic unless you need to select a specific card.",
     [UI_MENU_GPU_AUTO] = "Automatic",
     [UI_MENU_PERF_OVERLAY] = "Performance overlay",
@@ -142,11 +147,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "sharper picture at a higher GPU cost, and the upscaler and DLSS are not used. Applies at the next start.",
     [UI_MENU_SCENE_RES_AUTO] = "Auto (game)", [UI_MENU_SCENE_RES_FULL] = "Full",
     [UI_MENU_UPSCALER] = "Upscaling method",
-    [UI_MENU_UPSCALER_DESC] = "What scales the game's 3D scene up. Game's own keeps the game's upscaler. NVIDIA DLSS (RTX GPU, "
+    [UI_MENU_UPSCALER_DESC] = "What scales the game's 3D scene up. Game's own keeps the game's upscaler. NVIDIA DLSS (Windows build, RTX GPU, "
                               "nvngx_dlss.dll next to dkb.exe), AMD FSR 3.1 and AMD FSR 4 replace it; DLSS applies at the next start. "
                               "How the finished picture is then fitted to the window is the Window scaling filter's.",
     [UI_MENU_UPSCALER_GAME] = "Game's own", [UI_MENU_UPSCALER_DLSS] = "NVIDIA DLSS",
     [UI_MENU_UPSCALER_FSR3] = "AMD FSR 3.1", [UI_MENU_UPSCALER_FSR4] = "AMD FSR 4",
+    [UI_MENU_DLSS_WINDOWS_ONLY] = "DLSS requires the Windows build",
     [UI_MENU_PRESET] = "Performance preset",
     [UI_MENU_PRESET_DESC] = "Sets the render resolution, upscaler, texture compression and frame generation "
                             "for a class of PC. Recommended picks the level from your GPU memory, RAM and processor count. "
@@ -154,6 +160,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PRESET_CUSTOM] = "Custom", [UI_MENU_PRESET_RECOMMENDED] = "Recommended", [UI_MENU_PRESET_MINIMUM] = "1 Minimum",
     [UI_MENU_PRESET_LOW] = "2 Low", [UI_MENU_PRESET_MEDIUM] = "3 Medium", [UI_MENU_PRESET_HIGH] = "4 High",
     [UI_MENU_PRESET_ULTRA] = "5 Ultra",
+    [UI_MENU_PRESET_DECK_ACTIVE] = "Steam Deck profile active",
+    [UI_MENU_PRESET_DECK_DESC] = "The Steam Deck profile supplies its own defaults. You can adjust individual settings. "
+                                 "To use performance presets, set device_profile to desktop and restart.",
     [UI_MENU_DLSS_MODE] = "Upscaler quality mode",
     [UI_MENU_DLSS_MODE_DESC] = "How far the 3D scene is scaled up by DLSS, FSR 3.1 or FSR 4: DLAA draws it at the output size, "
                                "Ultra Performance at a third of it. Used while the 3D scene resolution is Auto. Applies at the next start.",
@@ -459,6 +468,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_GAME_GB] = "game %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f per frame",
     [UI_MENU_OV_WINDOW] = "Window", [UI_MENU_OV_OUTPUT] = "Game image", [UI_MENU_OV_SCENE] = "3D scene",
     [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation",
+    [UI_MENU_OV_GAME_TIMING] = "Game timing",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_UPSCALE] = "%ux%u -> %ux%u",
     [UI_MENU_OV_NO_UPSCALER] = "no upscaler",
@@ -525,6 +535,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "кадр, который он не может сделать, получается встроенным способом.",
     [UI_MENU_FRAME_GEN_BUILTIN] = "Встроенный", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3.1",
     [UI_MENU_FRAME_GEN_BY_NEEDS] = "нужен DLSS, FSR 3.1 или FSR 4 и 3D ниже выходного разрешения",
+    [UI_MENU_MIRROR_BUDGET] = "Предел памяти зеркал",
+    [UI_MENU_MIRROR_BUDGET_DESC] = "Ограничивает видеопамять, которую занимают все копии памяти игры (режим памяти GPU «Зеркало»), чтобы на небольшой видеокарте осталось место для текстур. "
+                                   "«Автоматически» — четверть памяти видеокарты, но не больше 3 ГиБ, и восьмая часть на карте с 4,5 ГиБ и меньше. "
+                                   "Память, которой отказано в копии, GPU читает из системной памяти. Попробуйте, если на карте с 8 ГБ и меньше игра со временем замедляется.",
+    [UI_MENU_MIRROR_BUDGET_NONE] = "Без предела", [UI_MENU_FMT_MIB] = "%s МиБ",
     [UI_MENU_GPU] = "Видеокарта", [UI_MENU_GPU_DESC] = "Устройство Vulkan, которое рисует игру.",
     [UI_MENU_GPU_AUTO] = "Автоматически",
     [UI_MENU_PERF_OVERLAY] = "Индикатор производительности",
@@ -567,9 +582,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_RES_AUTO] = "Авто (игра)", [UI_MENU_SCENE_RES_FULL] = "Полное",
     [UI_MENU_UPSCALER] = "Метод апскейла",
     [UI_MENU_UPSCALER_DESC] = "Чем увеличивается 3D-сцена игры. «Апскейлер игры» оставляет встроенный апскейлер игры. NVIDIA DLSS "
-                              "(видеокарта RTX, nvngx_dlss.dll рядом с dkb.exe), AMD FSR 3.1 и AMD FSR 4 заменяют его; DLSS "
+                              "(сборка для Windows, видеокарта RTX, nvngx_dlss.dll рядом с dkb.exe), AMD FSR 3.1 и AMD FSR 4 заменяют его; DLSS "
                               "применяется при следующем запуске. Как готовая картинка потом подгоняется под окно, определяет "
                               "фильтр масштабирования под окно.",
+    [UI_MENU_DLSS_WINDOWS_ONLY] = "DLSS требует сборку для Windows",
     [UI_MENU_PRESET] = "Набор настроек производительности",
     [UI_MENU_PRESET_DESC] = "Задаёт разрешение рендеринга, апскейлер, сжатие текстур и генерацию кадров для "
                             "класса ПК. «Рекомендуемый» выбирает уровень по видеопамяти, ОЗУ и числу процессоров. "
@@ -577,6 +593,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PRESET_CUSTOM] = "Свои настройки", [UI_MENU_PRESET_RECOMMENDED] = "Рекомендуемый",
     [UI_MENU_PRESET_MINIMUM] = "1 Минимальный", [UI_MENU_PRESET_LOW] = "2 Низкий", [UI_MENU_PRESET_MEDIUM] = "3 Средний",
     [UI_MENU_PRESET_HIGH] = "4 Высокий", [UI_MENU_PRESET_ULTRA] = "5 Ультра",
+    [UI_MENU_PRESET_DECK_ACTIVE] = "Активен профиль Steam Deck",
+    [UI_MENU_PRESET_DECK_DESC] = "Профиль Steam Deck задаёт свои значения по умолчанию. Отдельные параметры можно менять вручную. "
+                                 "Чтобы выбирать наборы настроек, задайте для device_profile значение desktop и перезапустите игру.",
     [UI_MENU_DLSS_MODE] = "Режим качества апскейлера",
     [UI_MENU_DLSS_MODE_DESC] = "Во сколько раз DLSS, FSR 3.1 или FSR 4 увеличивают 3D-сцену: DLAA рисует её в размере "
                                "вывода, «Ультра-производительность» втрое меньше. Работает, пока разрешение 3D-сцены «Авто». "
@@ -900,6 +919,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_GAME_GB] = "игра %.1f ГБ", [UI_MENU_OV_FMT_MS] = "%.2f мс", [UI_MENU_OV_PER_FRAME] = "%.1f за кадр",
     [UI_MENU_OV_WINDOW] = "Окно", [UI_MENU_OV_OUTPUT] = "Изображение игры", [UI_MENU_OV_SCENE] = "3D-сцена",
     [UI_MENU_OV_SCALING] = "Масштабирование", [UI_MENU_OV_LIMIT] = "Лимит кадров", [UI_MENU_OV_PRESENT] = "Вывод кадров",
+    [UI_MENU_OV_GAME_TIMING] = "Задаёт игра",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_UPSCALE] = "%ux%u -> %ux%u",
     [UI_MENU_OV_NO_UPSCALER] = "без апскейлера",

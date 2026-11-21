@@ -117,6 +117,7 @@ static int frz_whole = -1;
 // pages of a range before a kernel write into it (a file read), which fails on a sealed page as on a read-only one.
 static volatile uint8_t frz_never[RT_ADDRESS_LIMIT >> FRZ_SHIFT];
 static void (*thaw_hook)(uint64_t a, uint64_t n);
+static void (*decommit_hook)(uint64_t a, uint64_t n);
 
 static int heap_lazy(void);
 
@@ -219,6 +220,10 @@ void mem_freeze_exclude(uint64_t a, uint64_t n) {
 }
 
 void mem_thaw_hook(void (*fn)(uint64_t a, uint64_t n)) { thaw_hook = fn; }
+
+void mem_decommit_hook(void (*fn)(uint64_t a, uint64_t n)) {
+    __atomic_store_n(&decommit_hook, fn, __ATOMIC_RELEASE);
+}
 
 static int prb_mode;
 static int (*volatile own_hook)(uint64_t page, int write, uint64_t rip, int kernel);
@@ -752,6 +757,8 @@ static void decommit(uint64_t a, uint64_t n, const char *what) {
     int ok = !n || plat_mem_decommit(a, n);
     plat_mutex_unlock(&frz_lock);
     if (!ok) rt_fatal("memory: decommit %s %#llx+%#llx failed", what, (unsigned long long)a, (unsigned long long)n);
+    void (*fn)(uint64_t, uint64_t) = __atomic_load_n(&decommit_hook, __ATOMIC_ACQUIRE);
+    if (n && fn) fn(a, n);
 }
 
 static void protect(uint64_t a, uint64_t n, int prot, const char *what) {
@@ -982,9 +989,9 @@ static int touch_range(uint64_t a, uint64_t n, int must);
 
 void mem_touch_keep(uint64_t a, uint64_t n) { touch_range(a, n, 1); }
 
-// mem_touch_keep's work. must 0 is for cl_thread, which holds `lock` (so heap_size cannot change under it) and may
-// fail: it returns 0 at the first commit that fails, with that chunk and the ones after it neither committed nor
-// marked in the commit map.
+// mem_touch_keep's work. must 0 is for cl_thread, which holds `lock` shared (so SetHeapSize cannot change heap_size
+// under it, while QueryMemory and other shared readers stay unblocked) and may fail: it returns 0 at the first commit
+// that fails, with that chunk and the ones after it neither committed nor marked in the commit map.
 static int touch_range(uint64_t a, uint64_t n, int must) {
     if (!n || !heap_lazy()) return 1;
     uint64_t lo = L.heap.base, hi = lo + __atomic_load_n(&heap_size, __ATOMIC_RELAXED);
@@ -1041,13 +1048,14 @@ static int touch_range(uint64_t a, uint64_t n, int must) {
 // the working set until something touches them. The queue keeps the ranges in the order they came, so every due range
 // is at its head; one that finds the queue full is left for the fault handler, as without this.
 // The commit comes long after the request, so the heap may have shrunk in between (mem_set_heap_size decommits the
-// range it gives back and takes it out of the commit map). Each slice is therefore committed under `lock`, the lock
-// that SetHeapSize holds from its check to the new heap_size: touch_range clamps to the heap_size it reads under it, so
-// a slice either ends before the shrink (which then decommits it) or sees the smaller heap and commits nothing beyond
-// it. Without that, a commit could land in the range after the decommit and be marked in the commit map, and a later
-// mem_touch would skip pages the next shrink-and-grow left reserved. The order is `lock`, then frz_lock (touch_query),
-// as in mem_set_heap_size; CL.lock is never held with either. A commit that fails (the commit limit) ends the range:
-// nothing needs these pages committed, and the fault handler or a mem_touch commits them when something does.
+// range it gives back and takes it out of the commit map). Each slice is therefore committed under `lock` shared, the
+// lock that SetHeapSize holds exclusively from its check to the new heap_size: touch_range clamps to the heap_size it
+// reads under it, so a slice either ends before the shrink (which then decommits it) or sees the smaller heap and
+// commits nothing beyond it. Without that, a commit could land in the range after the decommit and be marked in the
+// commit map, and a later mem_touch would skip pages the next shrink-and-grow left reserved. The order is `lock`
+// (shared), then frz_lock (touch_query), as in mem_set_heap_size; CL.lock is never held with either. A commit that
+// fails (the commit limit) ends the range: nothing needs these pages committed, and the fault handler or a mem_touch
+// commits them when something does.
 #define CL_DELAY_MS 2000u
 #define CL_SLICE (2ull << 20)
 #define CL_MAX 4096   // a layer's first frame makes a few hundred staged mirrors, a reload up to about 1,400
@@ -1079,12 +1087,12 @@ static void cl_thread(void *arg) {
         plat_mutex_unlock(&CL.lock);
         uint64_t t0 = plat_now_ns();
         for (uint64_t x = a; x < a + n; x += CL_SLICE) {
-            plat_mutex_lock(&lock);
+            plat_mutex_lock_shared(&lock);
             int ok = touch_range(x, a + n - x < CL_SLICE ? a + n - x : CL_SLICE, 0);
-            plat_mutex_unlock(&lock);
-            // `lock` is not fair, and this loop would take it again at once: a guest thread waiting for it in SetHeapSize,
-            // MapMemory or QueryMemory could be passed over for a whole range (about 225 slices for the terrain pool).
-            // Giving up the time slice lets a waiter in after one slice.
+            plat_mutex_unlock_shared(&lock);
+            // `lock` is not fair, and this loop would take it again at once: a guest thread waiting exclusively for it
+            // in SetHeapSize or MapMemory could be passed over for a whole range (about 225 slices for the terrain
+            // pool). Giving up the time slice lets an exclusive waiter in after one slice.
             plat_yield();
             if (!ok) {
                 if (plat_inc64(&cl_failed) <= 4)
@@ -1129,6 +1137,24 @@ void mem_commit_later_stats(uint64_t out[4]) {
     out[2] = (uint64_t)plat_xchg64(&cl_ns, 0), out[3] = (uint64_t)plat_xchg64(&cl_dropped, 0);
 }
 
+#ifdef _WIN32
+static void heap_lazy_chunk_init(void) {
+    static int done;
+    if (done) return;
+    done = 1;
+    const char *e = cfg_get("TOTK_LAZY_CHUNK_KB");
+    if (!e || !*e) return;
+    uint64_t kb = strtoull(e, NULL, 0);
+    if (!kb) return;
+    if (kb < 64) kb = 64;
+    if (kb > 4096) kb = 4096;
+    uint64_t p = 64;
+    while ((p << 1) <= kb) p <<= 1;
+    plat_mem_lazy_chunk(p << 10);
+    if (p != 64) rt_log("mem: lazy heap fault commit chunk %llu KiB (TOTK_LAZY_CHUNK_KB)", (unsigned long long)p);
+}
+#endif
+
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     int op = plat_op_begin(PLAT_OP_HEAP_SIZE, L.heap.base, size);
     plat_mutex_lock(&lock);
@@ -1148,6 +1174,7 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     // mem_touch before a kernel or driver access. Shrinking decommits (a no-op on pages never committed).
     if (size > heap_size && !heap_lazy()) commit(L.heap.base + heap_size, size - heap_size, "heap");
 #ifdef _WIN32
+    if (heap_lazy()) heap_lazy_chunk_init();
     // On a shrink the handler's range drops first, so no fault recommits what decommit gives back.
     if (heap_lazy() && size < heap_size) plat_mem_lazy(L.heap.base, size);
 #endif

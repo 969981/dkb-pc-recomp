@@ -757,12 +757,23 @@ static void rows_render_options(const MenuTarget &target) {
     }
     // DLSS (runtime/vk_dlss.c) takes effect at the next start: NGX adds its Vulkan extensions when the device is made.
     // fsr and bilinear both mean the game's own upscaler (cfg.c UPSCALER): bilinear shows as the first choice
-    static const char *const up_vals[] = {"fsr", "dlss", "fsr3", "fsr4"};
-    const char *up_names[] = {menu_text(UI_MENU_UPSCALER_GAME), menu_text(UI_MENU_UPSCALER_DLSS),
-                              menu_text(UI_MENU_UPSCALER_FSR3), menu_text(UI_MENU_UPSCALER_FSR4)};
-    int up_cur = 0;
-    for (int i = 1; i < 4; i++)
-        if (!strcmp(cfg_value("TOTK_UPSCALER"), up_vals[i])) up_cur = i;
+    static const struct { const char *value; UiTextId label; } choices[] = {
+        {"fsr", UI_MENU_UPSCALER_GAME},
+#if CFG_HAS_DLSS
+        {"dlss", UI_MENU_UPSCALER_DLSS},
+#endif
+        {"fsr3", UI_MENU_UPSCALER_FSR3}, {"fsr4", UI_MENU_UPSCALER_FSR4}
+    };
+    enum { N = sizeof choices / sizeof *choices };
+    const char *up_vals[N], *up_names[N];
+    const char *requested = cfg_value("TOTK_UPSCALER");
+    bool unavailable = !CFG_HAS_DLSS && !strcmp(requested, "dlss");
+    int up_cur = unavailable ? -1 : 0;   // keep a saved DLSS value visible until the player picks a replacement
+    for (int i = 0; i < N; i++) {
+        up_vals[i] = choices[i].value;
+        up_names[i] = menu_text(choices[i].label);
+        if (!strcmp(requested, up_vals[i])) up_cur = i;
+    }
     int fitted[4];
     gfx_fit_rect(target.image_w, target.image_h, target.width, target.height, fitted);
     bool no_upscale = target.image_w > 0 && target.image_h > 0 &&
@@ -771,7 +782,8 @@ static void rows_render_options(const MenuTarget &target) {
     // whether or not the final image fits the display, so the row stays open there: greyed out at the default
     // 2880x1620 virtual display on a 1440p or 1080p screen, it hid DLSS from the players of issues #152 and #306.
     if (no_upscale && rt_game_version) opt_disable_next(UI_MENU_NO_UPSCALING);
-    opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC, up_cur);
+    opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, N, UI_MENU_UPSCALER_DESC, up_cur,
+                    unavailable ? menu_text(UI_MENU_DLSS_WINDOWS_ONLY) : nullptr);
     if (!rt_game_version && rt_patch_set("dkbscene") >= 0 && up_cur > 0) {   // dkb_wide.c dkb_scene_ratio
         static const UiTextId modes[] = {UI_MENU_AUTO, UI_MENU_DLSS_MODE_DLAA, UI_MENU_DLSS_MODE_QUALITY,
                                          UI_MENU_DLSS_MODE_BALANCED, UI_MENU_DLSS_MODE_PERFORMANCE,
@@ -850,15 +862,22 @@ static bool settings_section(UiTextId title, const char *id, bool first = false)
     return open;
 }
 
+static void row_dkb_preset(void) {
+    if (!strcmp(cfg_device_profile(), "deck")) {
+        opt_disable_next(UI_MENU_PRESET_DECK_ACTIVE);
+        opt_button("TOTK_PRESET", UI_MENU_PRESET, UI_MENU_PRESET_DECK_DESC);
+        return;
+    }
+    static const UiTextId presets[] = {UI_MENU_PRESET_CUSTOM, UI_MENU_PRESET_RECOMMENDED, UI_MENU_PRESET_MINIMUM,
+                                       UI_MENU_PRESET_LOW, UI_MENU_PRESET_MEDIUM, UI_MENU_PRESET_HIGH,
+                                       UI_MENU_PRESET_ULTRA};
+    opt_choice("TOTK_PRESET", UI_MENU_PRESET, presets, 7, UI_MENU_PRESET_DESC);
+}
+
 static void tab_display(float scale) {
     opt_begin("##screen", scale);
     if (settings_section(UI_MENU_RESOLUTION_GROUP, "resolution", true)) {
-        if (!rt_game_version) {   // cfg.c PRESETS: the options below that the player set by hand win over it
-            static const UiTextId presets[] = {UI_MENU_PRESET_CUSTOM, UI_MENU_PRESET_RECOMMENDED, UI_MENU_PRESET_MINIMUM,
-                                               UI_MENU_PRESET_LOW, UI_MENU_PRESET_MEDIUM, UI_MENU_PRESET_HIGH,
-                                               UI_MENU_PRESET_ULTRA};
-            opt_choice("TOTK_PRESET", UI_MENU_PRESET, presets, 7, UI_MENU_PRESET_DESC);
-        }
+        if (!rt_game_version) row_dkb_preset();
         row_window_mode();
         if (!rt_game_version) row_dkb_resolution();
         else row_output_res();
@@ -1054,6 +1073,21 @@ static void row_set_or_not(const char *key, UiTextId label, UiTextId desc, const
     opt_choice_list(key, label, vals, names, 2, desc, *cfg_value(key) ? 1 : 0);
 }
 
+// TOTK_MIRROR_BUDGET (vk_memory.c mirror_ceiling): unset no ceiling, auto a share of the card, or a number of MiB.
+static void row_mirror_budget(void) {
+    static const char *const vals[] = {"", "auto", "512", "1024", "2048", "3072", "4096"};
+    enum { N = sizeof vals / sizeof *vals };
+    static char mib[N][32];
+    const char *names[N];
+    names[0] = menu_text(UI_MENU_MIRROR_BUDGET_NONE);
+    names[1] = menu_text(UI_MENU_AUTO);
+    for (int i = 2; i < N; i++) {
+        snprintf(mib[i], sizeof mib[i], menu_text(UI_MENU_FMT_MIB), vals[i]);
+        names[i] = mib[i];
+    }
+    opt_choice_list("TOTK_MIRROR_BUDGET", UI_MENU_MIRROR_BUDGET, vals, names, N, UI_MENU_MIRROR_BUDGET_DESC);
+}
+
 static bool validation_layer_present(void) {
     static int have = -1;
     if (have < 0) {
@@ -1125,6 +1159,7 @@ static void tab_advanced(float scale) {
     static const UiTextId mem[] = {UI_MENU_MEMORY_AUTO, UI_MENU_MEMORY_IMPORT, UI_MENU_MEMORY_MIRROR,
                                    UI_MENU_MEMORY_VERIFY};
     opt_choice("TOTK_MEMORY", UI_MENU_MEMORY, mem, 4, UI_MENU_MEMORY_DESC);
+    row_mirror_budget();
     opt_toggle("TOTK_TEX_ALIAS", UI_MENU_TEX_ALIAS, UI_MENU_TEX_ALIAS_DESC);
     opt_slider("TOTK_TEX_VRAM_PRESSURE", UI_MENU_TEX_VRAM_PRESSURE, 0, 100, UI_MENU_TEX_VRAM_PRESSURE_DESC, 1, "%.0f%%");
     opt_toggle("TOTK_ASTC_BC", UI_MENU_ASTC_BC, UI_MENU_ASTC_BC_DESC);
@@ -1505,9 +1540,13 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     } else {
         snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
-    double hz = frame_step_limit_hz();
-    snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_NONE));
-    if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
+    if (!rt_game_version && !frame_step_realtime()) {
+        snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_GAME_TIMING));
+    } else {
+        double hz = frame_step_limit_hz();
+        if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
+        else snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_NONE));
+    }
     const char *pm = present_name(gfx_window_present_mode());
     snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
     static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
