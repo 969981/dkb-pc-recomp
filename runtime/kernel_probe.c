@@ -421,15 +421,15 @@ static void test_cores(Cpu *c) {
     int now, held_max;
     kern_core_stats(&now, &held_max);
     uint32_t cpus = plat_cpu_usable();
-    int gate = !cfg_bool("TOTK_FREE_CORES");   // the kernel's own switch
+    int gate = !cfg_bool("DKB_FREE_CORES");   // the kernel's own switch
     int ok = g_run_max <= 3 && held_max <= 3 && !g_core_clash && (cpus < 4 || g_run_max == 3);
     printf("virtual cores: %d threads x %d runs on %u host CPUs: at most %d running guest code at once, at most %d "
            "core holders (kernel count), %d core-number clashes: %s\n", CORE_WORKERS, CORE_RUNS, cpus, g_run_max,
-           held_max, g_core_clash, !gate ? "not checked (TOTK_FREE_CORES is set)" : ok ? "ok" : "FAIL");
+           held_max, g_core_clash, !gate ? "not checked (DKB_FREE_CORES is set)" : ok ? "ok" : "FAIL");
     CHECK(ok || !gate, "virtual cores");
 }
 
-// ---- directed core hand-off (kernel.c, TOTK_SCHED_HANDOFF): threads on core 3 alone. A holder L (priority 50) hands
+// ---- directed core hand-off (kernel.c, DKB_SCHED_HANDOFF): threads on core 3 alone. A holder L (priority 50) hands
 // a mutex to a waiter H (40). Case 1: L releases it with ArbitrateUnlock, then runs host code without an SVC for
 // 40 ms, where nothing stops it (the asynchronous preemption only interrupts lifted code); with the hand-off H gets the
 // core as the SVC returns, without it at L's next SVC, 40 ms later. Case 2: L releases it inside
@@ -512,7 +512,7 @@ static void test_handoff(Cpu *c) {
     int ok = d1 >= 0 && d2 >= 0 && (!on || (d1 < 15 && d2 < 15));
     printf("core hand-off (%s): a better waiter got a released mutex's core after %.3f ms (ArbitrateUnlock, holder "
            "busy 40 ms after it) and %.3f ms (WaitProcessWideKeyAtomic, a worse thread queued for the core): %s\n",
-           on ? "TOTK_SCHED_HANDOFF on, want under 15 ms" : "off, about 40 ms expected", d1, d2,
+           on ? "DKB_SCHED_HANDOFF on, want under 15 ms" : "off, about 40 ms expected", d1, d2,
            !ok ? "FAIL" : on ? "ok" : "ok (not checked)");
     CHECK(ok, "core hand-off");
 }
@@ -859,11 +859,11 @@ static void test_platform(void) {
 
 // ---- a redirect of a thread that faults in a loop (kernel.c ap_try against the lazy heap's first touches), plus the
 // synchronous fault-handler redirect hook (platform/win32.c plat_mem_fault_ret_hook). A host thread writes every 64th
-// byte of a 64 MiB guest heap that SetHeapSize leaves reserved under TOTK_HEAP_LAZY, so each chunk faults into
+// byte of a 64 MiB guest heap that SetHeapSize leaves reserved under DKB_HEAP_LAZY, so each chunk faults into
 // fault_veh, then shrinks the heap to nothing and starts again. Another thread stops it as ap_try does, and when its
 // rip is in the loop sends it to a stub that counts its arrival, clears the pending flag and jumps back. A redirect still
 // pending after RF_LOST_NS is lost (the stub never ran). Two async rounds (redirecting every stop vs refusing stops
-// above 1, TOTK_AP_SAFE), followed by a synchronous pass with plat_mem_fault_ret_hook registered. x86-64 Windows only.
+// above 1, DKB_AP_SAFE), followed by a synchronous pass with plat_mem_fault_ret_hook registered. x86-64 Windows only.
 #if defined(_WIN32) && defined(__x86_64__)
 #define RF_HEAP (64ull << 20)
 #define RF_STOPS 6000
@@ -1015,11 +1015,11 @@ static void test_redirect_fault(void) {
     }
 
     // Mid-chunk first touches (platform/win32.c lazy_commit_mbi): VirtualQuery on a mid-chunk fault reports BaseAddress
-    // at the faulting page, not the chunk start. Verify both 64 KiB and 256 KiB (TOTK_LAZY_CHUNK_KB) chunks commit the
+    // at the faulting page, not the chunk start. Verify both 64 KiB and 256 KiB (DKB_LAZY_CHUNK_KB) chunks commit the
     // lower reserved pages, preserve a pre-committed read-only page inside the chunk, and mark lazy_map across the
     // whole chunk.
     const uint64_t chunks[2] = {0x10000ull, 0x40000ull};
-    const char *orig_kb_s = cfg_get("TOTK_LAZY_CHUNK_KB");
+    const char *orig_kb_s = cfg_get("DKB_LAZY_CHUNK_KB");
     uint64_t orig_chunk = (orig_kb_s && *orig_kb_s && strtoull(orig_kb_s, NULL, 10) >= 64)
                               ? strtoull(orig_kb_s, NULL, 10) << 10
                               : 0x10000ull;
@@ -1077,7 +1077,7 @@ static void test_redirect_fault(void) {
     }
     plat_mem_lazy_chunk(orig_chunk);
     printf("  lazy-mid-chunk (64 KiB, 256 KiB; plain + mixed read-only page): %s\n",
-           mid_skipped ? "skipped (TOTK_HEAP_LAZY=0)" : mid_ok ? "ok" : "FAIL");
+           mid_skipped ? "skipped (DKB_HEAP_LAZY=0)" : mid_ok ? "ok" : "FAIL");
 }
 #else
 static void test_redirect_fault(void) { printf("  redirect-fault: skipped (x86-64 Windows only)\n"); }

@@ -16,17 +16,18 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
                file puts the folder, tools/ and recomp/ on sys.path
     llvm/      LLVM 23 (clang, lld, llvm-ar, the clang resource headers) and llvm/sysroot: the files of the sniper SDK
                sysroot the game's compile and link read, nothing else (recorded while building the runtime library)
-    runtime/   libtotkrt.a (build_game.py --make-runtime-lib --sysroot), the runtime headers, romfs.c, patches.c and
+    runtime/   libdkbrt.a (build_game.py --make-runtime-lib --sysroot), the runtime headers, romfs.c, patches.c and
                ov_zstd.c (compiled per install), totk.png (the window icon), deps/ (Vulkan headers 1.4.363, VMA, zstd
                built static; SDL3, Opus and libvpx come from the sysroot)
-    bin/       totk_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
-    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, VERSION
+    bin/       dkb_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
+    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, dkb.ini.example, VERSION
     AppRun, totk-setup.desktop, totk-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
     setup.sh, play.sh                             the same entry for the unpacked folder (--tarball); play.sh = --play
 
 --appimage packs the folder with appimagetool and the static type-2 runtime (no libfuse2 on the host). --tarball packs
-the same folder as a .tar.gz, for launchers that cannot mount an AppImage (a Flatpak sandbox, #402). --prove compiles
-the generated C and links build/release-linux-check/totk with the folder's tools only, then runs the probes beside it.
+the same folder as a .tar.gz, for a launcher that cannot mount an AppImage (a Flatpak sandbox, #402); the release
+workflow no longer publishes it, only the AppImage. --prove compiles
+the generated C and links build/release-linux-check/dkb with the folder's tools only, then runs the probes beside it.
 Like tools/make_release.py, both need one game version extracted and lifted first (generated/v121, else v143).
 
 The folder contains nothing derived from the game: check_content runs over it before the script finishes, then the
@@ -211,8 +212,8 @@ def build_bin(out, llvm, sysroot):
         shutil.copy2(hac / 'hactool', b / 'hactool')
     xl = WORK / 'xlate-linux'
     run([sys.executable, ROOT / 'tools' / 'build_xlate.py', '--out', xl, '--llvm', llvm, '--sysroot', sysroot])
-    shutil.copy2(xl / 'totk_xlate', b / 'totk_xlate')
-    shutil.copy2(xl / 'totk_xlate.id', b / 'totk_xlate.id')
+    shutil.copy2(xl / 'dkb_xlate', b / 'dkb_xlate')
+    shutil.copy2(xl / 'dkb_xlate.id', b / 'dkb_xlate.id')
     sdl = (sysroot / 'usr' / 'lib' / 'x86_64-linux-gnu' / 'libSDL3.so.0').resolve()
     shutil.copy2(sdl, b / 'libSDL3.so.0')
 
@@ -233,7 +234,7 @@ def runtime_lib(out, llvm, sysroot):
          '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja', '--version', version, *expected,
          '--gen', gen, '--out', build])
     rt = out / 'runtime'
-    shutil.copy2(build / 'libtotkrt.a', rt / 'libtotkrt.a')
+    shutil.copy2(build / 'libdkbrt.a', rt / 'libdkbrt.a')
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
@@ -268,7 +269,7 @@ def used_sysroot_files(out, llvm, sysroot, rtlib_build):
             used.update(re.findall(r'\S+', (probe / f'{i}.d').read_text().replace('\\\n', ' ')))
     trace = subprocess.run([str(c) for c in [
         llvm / 'bin' / 'clang', '--target=x86_64-linux-gnu', f'--sysroot={sysroot}', *build_game.LINK_FLAGS[:3],
-        '-Wl,--trace', '-Wl,--unresolved-symbols=ignore-all', '-Wl,--whole-archive', out / 'runtime' / 'libtotkrt.a',
+        '-Wl,--trace', '-Wl,--unresolved-symbols=ignore-all', '-Wl,--whole-archive', out / 'runtime' / 'libdkbrt.a',
         '-Wl,--no-whole-archive', '-L', out / 'runtime' / 'deps' / 'lib',
         *RELEASE_LIBS, '-o', probe / 'trace.out']],
         capture_output=True, text=True)
@@ -430,7 +431,7 @@ def collect_licenses(out, sysroot):
         pairs += [(WORK / 'hactool-linux' / 'LICENSE', 'hactool-LICENSE.txt'),
                   (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt')]
     else:
-        pairs += [(ROOT / 'tools' / 'xlate' / 'LICENSE', 'totk_xlate-LICENSE.txt'),
+        pairs += [(ROOT / 'tools' / 'xlate' / 'LICENSE', 'dkb_xlate-LICENSE.txt'),
                   (ROOT / 'tools' / 'vendor' / 'macnativegames' / 'LICENSE', 'MacNativeGames-LICENSE.txt')]
     for src, name in pairs:
         shutil.copy2(src, lic / name)
@@ -515,7 +516,7 @@ GAME_DERIVED_NAMES = {'main', 'sdk', 'rtld', 'subsdk0', 'subsdk1', 'romfs.bin', 
 def check_payload(out):
     """Audit the release folder as a shippable artifact: a required payload list and a deny list of game-derived files."""
     required = ['AppRun', 'VERSION', 'python/bin/python3', 'llvm/bin/clang', 'bin/ninja',
-                'runtime/libtotkrt.a', 'bin/totk_xlate', 'bin/totk_xlate.id', 'bin/libSDL3.so.0']
+                'runtime/libdkbrt.a', 'bin/dkb_xlate', 'bin/dkb_xlate.id', 'bin/libSDL3.so.0']
     icon = GAMES[GAME]['icon']
     required += [f'{icon}-setup.desktop', f'{icon}-setup.png', 'runtime/' + icon + '.png']
     missing = [r for r in required if not (out / r).exists()]
@@ -624,12 +625,12 @@ def prove(out):
     gen = MAIN_ROOT / 'generated' / version
     ext = MAIN_ROOT / 'build' / 'extracted' / version
     chk = CHECK / ('game' if GAME == 'totk' else 'game-dkb')
-    exe = chk / ('totk' if GAME == 'totk' else 'dkb')
+    exe = chk / 'dkb'
     env = dict(os.environ, PATH=os.pathsep.join([str(out / 'llvm' / 'bin'), str(out / 'bin'), '/usr/bin', '/bin']))
     t0 = time.time()
     args = [out / 'python' / 'bin' / 'python3', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm',
             '--sysroot', out / 'llvm' / 'sysroot', '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime',
-            '--runtime-lib', out / 'runtime' / 'libtotkrt.a', '--ninja', out / 'bin' / 'ninja', '--version', version,
+            '--runtime-lib', out / 'runtime' / 'libdkbrt.a', '--ninja', out / 'bin' / 'ninja', '--version', version,
             '--gen', gen, '--out', chk, '--exefs', ext / 'exefs', '--romfs', ext / 'romfs', '--profile', chk / 'profile']
     if GAME == 'dkb':
         args += ['--expected', out / 'tools' / 'data' / f'expected-{version}.json', '--modules', 'main,sdk']

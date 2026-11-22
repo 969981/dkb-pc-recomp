@@ -16,7 +16,7 @@
 #define A8(x) (((x) + 7) & ~(size_t)7)
 #define DP_MARK(i) ((void)(i))   // the draw profile's marks time nothing here
 @CONTEXT@
-static DrawCtx ctx;   // the replay thread's draw context; TOTK_REPLAY_PAR=check's digest (DIG) is off
+static DrawCtx ctx;   // the replay thread's draw context; DKB_REPLAY_PAR=check's digest (DIG) is off
 
 static unsigned checks, failures, pushed[2], written[2], allocated[2], bound[2];
 static const char *case_name;
@@ -34,7 +34,7 @@ static struct { VkBufferView zview; } standins;
 void rt_fatal(const char *fmt,...) { (void)fmt; abort(); }
 VkCtx *vk_ctx(void) { return &context; }
 int rt_knob(const char *name,const char *def) { (void)name; (void)def; return 0; } // dynamic uniform buffers off
-VkCaps vk_caps;  // bind_resources reads vk_caps.intel for the TOTK_DYN_UBO default
+VkCaps vk_caps;  // bind_resources reads vk_caps.intel for the DKB_DYN_UBO default
 int rt_ab(void) { return 0; }
 static void bind_stats(DrawCtx *dc,const VkPipeInfo *info) { (void)dc; (void)info; }
 static int bind_skip_on(DrawCtx *dc) { (void)dc; return 0; } // exercise every descriptor build
@@ -65,7 +65,7 @@ static void descriptor_state(VkExec *ex) { (void)ex; }
 uint32_t vk_texture_slots_gen(void) { return 0; }
 uint32_t vk_texture_epoch(void) { return 0; }
 uint32_t vk_sampler_gen(void) { return 0; }
-// TOTK_REPLAY_PAR=check's digest of what a draw bound: off.
+// DKB_REPLAY_PAR=check's digest of what a draw bound: off.
 static void dig_bound(DrawCtx *dc) { (void)dc; abort(); }
 static void dig_desc(DrawCtx *dc,const VkPipeInfo *info,const VkDescSlot *d) { (void)dc; (void)info; (void)d; abort(); }
 static uint32_t twin_pass;

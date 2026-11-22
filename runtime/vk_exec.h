@@ -139,7 +139,7 @@ void vk_exec_pass_end(VkExec *ex);
 // Full memory barrier (all commands, all memory); ends the open pass first. Copies and dispatches order themselves with
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
-// vk_texture.c (TOTK_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
+// vk_texture.c (DKB_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
 // the command buffer being recorded after a full barrier (an open pass is ended; *reopen says so), or VK_NULL_HANDLE
 // when this thread is not recording a replay. vk_exec_inline_end begins the pass again when it was open.
 // vk_exec_inline_buffer: a device buffer for transfers, destroyed when the submission completes.
@@ -160,7 +160,7 @@ void vk_exec_par_hazard(void);
 // that it was compute work.
 void vk_exec_barrier_cs(VkExec *ex);
 void vk_exec_note_dispatch(VkExec *ex);
-// The barrier before a direct dispatch: vk_exec_barrier_cs, or with TOTK_CS_BARRIER=game none at all when only compute
+// The barrier before a direct dispatch: vk_exec_barrier_cs, or with DKB_CS_BARRIER=game none at all when only compute
 // work came since the last barrier and the game asked for none since the last dispatch (1 returned). Counts both kinds
 // for the perf trace.
 int vk_exec_dispatch_barrier(VkExec *ex);
@@ -209,11 +209,11 @@ void vk_dlss_part_begin(int k);
 void vk_dlss_part_taken(int k);
 void vk_dlss_image_gone(VkImage image);
 
-// TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log). The
+// DKB_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log). The
 // struct is the back end's (gfx.h GfxExecFrame), since the flight recorder reads it through GfxBackend.exec_frame.
 typedef GfxExecFrame VkExecFrame;
 extern VkExecFrame vk_exec_frame;
-// TOTK_REPLAY_PAR=check: a digest per draw of what a translator bound and recorded for it, VK_EXEC_DIG_W words: the
+// DKB_REPLAY_PAR=check: a digest per draw of what a translator bound and recorded for it, VK_EXEC_DIG_W words: the
 // image views, their samplers, their layouts, the ranges of the uniform buffers, those buffers and their offsets where
 // both translators resolve to the same one, the bytes of the ones each translator filled itself, the ranges and the
 // buffers of the storage buffers, the pipeline with its layout and dynamic state, the vertex and index buffers, the
@@ -228,12 +228,12 @@ void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu
 uint64_t vk_exec_recording_fence(void);                        // fence of the submission this thread records, else 0
 void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
 // Running totals since the start: draws and dispatches the replay walked, and descriptor pools taken by command buffers
-// (spare or new) and created. Replay thread (TOTK_TRACE=perf, vk_sync.c).
+// (spare or new) and created. Replay thread (DKB_TRACE=perf, vk_sync.c).
 uint64_t vk_exec_draws_total(void);
 void vk_exec_pool_counts(uint64_t *created, uint64_t *taken);
 
-// TOTK_DUMP=<frame> (vk_dump.c): between presents frame-1 and frame, every pass's targets and every dispatch's storage
-// images are copied out and written as PNGs to TOTK_DUMP_DIR (default "dump"), with passes.txt (targets, pipelines,
+// DKB_DUMP=<frame> (vk_dump.c): between presents frame-1 and frame, every pass's targets and every dispatch's storage
+// images are copied out and written as PNGs to DKB_DUMP_DIR (default "dump"), with passes.txt (targets, pipelines,
 // textures, samplers) and images.txt (per image value statistics). The hooks run only when vk_dump_armed is set.
 extern int vk_dump_armed;
 void vk_dump_init(void);                 // reads the environment; vk_exec_record's first call
@@ -243,7 +243,7 @@ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPip
 void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
 void vk_dump_present(uint64_t frame);    // vk_be_present: waits for the dump frame's copies and closes the logs
 
-// c0, the NVN driver constant bank of one stage (vk_exec_draw.c; TOTK_FIX_C0=0 binds zeros instead): bank is
+// c0, the NVN driver constant bank of one stage (vk_exec_draw.c; DKB_FIX_C0=0 binds zeros instead): bank is
 // VK_C0_BYTES, stage an NVN stage (0 vertex, 1 fragment, 5 compute), ssbo and ubo the 16 bound slots of that stage.
 #define VK_C0_BYTES GFX_C0_BYTES
 void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16], const p_bind_buf ubo[16],
@@ -260,10 +260,10 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
 // ex.
 void vk_exec_lookahead(VkExec *ex);
 void vk_exec_draw_prefetch(VkExec *ex, uint32_t op, const void *payload);
-// TOTK_DRAW_MERGE (vk_exec_draw.c): ops[0..n) are the ops from an indexed draw on, in replay order. When they start a
+// DKB_DRAW_MERGE (vk_exec_draw.c): ops[0..n) are the ops from an indexed draw on, in replay order. When they start a
 // run of draws that differ only in uniform block c4, the run is replayed here, as one instanced draw when it can be,
 // and the return is the ops replayed (*draws: the draws among them); 0: the caller replays ops[0]. merge_on: the
-// knob is on for this draw (TOTK_DRAW_MERGE=ab alternates it), so that callers gather the ops only then.
+// knob is on for this draw (DKB_DRAW_MERGE=ab alternates it), so that callers gather the ops only then.
 int vk_exec_draw_merge(VkExec *ex, const op_hdr *const *ops, int n, int *draws);
 int vk_exec_draw_merge_on(void);
 // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.

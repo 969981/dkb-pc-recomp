@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory() as d:
         p.mkdir()
     (rt / 'helper.c').write_text('#include "draw.c"\n')
     (rt / 'draw.c').write_text('int a;\n')
-    lib = Path(d) / 'libtotkrt.a'
+    lib = Path(d) / 'libdkbrt.a'
     lib.write_bytes(b'one')
     build_game.RUNTIME = rt
 

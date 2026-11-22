@@ -2,9 +2,9 @@
 
 The production file is compiled unchanged with the real platform layer, so the helper threads are real threads. The
 fixture stands in for the configuration, the log, the Vulkan context and the three Vulkan calls the file makes. Each
-row of CASES is one process, because vk_spec_on reads its knobs once: the value of TOTK_REPLAY_PAR, the value of
-TOTK_REPLAY_HELPERS ('-': not set) and the helper threads that must run ('cpu': what the logical processors give).
-A last process checks vk_spec_helpers_for, the count without TOTK_REPLAY_HELPERS, for every number of logical
+row of CASES is one process, because vk_spec_on reads its knobs once: the value of DKB_REPLAY_PAR, the value of
+DKB_REPLAY_HELPERS ('-': not set) and the helper threads that must run ('cpu': what the logical processors give).
+A last process checks vk_spec_helpers_for, the count without DKB_REPLAY_HELPERS, for every number of logical
 processors.
 Use --source-root on another checkout to run the same cases against its vk_spec.c.
 """

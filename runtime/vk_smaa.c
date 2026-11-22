@@ -1,4 +1,4 @@
-// SMAA 1x on the present (TOTK_SMAA = low|medium|high; off by default): Jimenez et al.'s morphological anti-aliasing
+// SMAA 1x on the present (DKB_SMAA = low|medium|high; off by default): Jimenez et al.'s morphological anti-aliasing
 // on the finished picture at the swapchain size, after FSR or the bilinear blit has scaled it and before the menu overlay
 // is drawn, so the HUD of the game is smoothed and the overlay is not. vk_present.c present_image calls it with the
 // swapchain image in TRANSFER_DST. The picture's rectangle is copied into an RGBA16F image and runs through the three
@@ -223,7 +223,7 @@ static void run_pass(VkCommandBuffer cb, VkPipeline p, const VkDescriptorImageIn
 }
 
 int vk_smaa_record(VkCommandBuffer cb, VkImage dst, const int to[4]) {
-    const char *q = cfg_value("TOTK_SMAA");
+    const char *q = cfg_value("DKB_SMAA");
     int quality = !strcmp(q, "low") ? LOW : !strcmp(q, "medium") ? MEDIUM : !strcmp(q, "high") ? HIGH : -1;
     VkCtx *c = vk_ctx();
     if (quality < 0) {   // turned off: hand the targets (about 200 MB at 4K) back until it is turned on again

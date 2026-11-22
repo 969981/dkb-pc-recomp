@@ -8,9 +8,9 @@
 // F1, Guide/Home, Esc, B or "Continue" close it. While it is open the game gets no input (input_menu, input.h) and keeps
 // running; the cursor is released from the mouse camera. Tabs Screen, Game, Sound, Controls and Menu (L / R or Q / E
 // switch them) hold option rows (ui/option_rows.h) over the cfg settings; the bottom row has "Continue" and "Quit game".
-// Test hooks (ui/menu.cpp): TOTK_MENU_TEST=<frame>[:<frames per page>] opens the menu at that presented frame and saves
-// one swapchain shot per tab into TOTK_MENU_TEST_DIR; TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,...][;...] sets settings
-// at given frames without input (SAVE=1 writes totk.ini).
+// Test hooks (ui/menu.cpp): DKB_MENU_TEST=<frame>[:<frames per page>] opens the menu at that presented frame and saves
+// one swapchain shot per tab into DKB_MENU_TEST_DIR; DKB_MENU_TEST_SET=<frame>:<key>=<value>[,...][;...] sets settings
+// at given frames without input (SAVE=1 writes dkb.ini).
 //
 // Threads: the event functions are called by the window thread, menu_toggle by whichever thread polls the pad, the
 // overlay functions by the present path under its lock. ImGui itself runs on the present path only.
@@ -59,15 +59,15 @@ void menu_vk_release(void);               // before the device goes away (vk_pre
 int menu_font_check(void);
 
 // ---- what the menu asks of the platform side (gfx_window_win.c, gfx_window_sdl.c)
-void gfx_window_apply_settings(void);     // TOTK_FULLSCREEN or TOTK_WINDOW_SIZE changed: the window follows
+void gfx_window_apply_settings(void);     // DKB_FULLSCREEN or DKB_WINDOW_SIZE changed: the window follows
 void gfx_window_toggle_fullscreen(void); // any thread: post the same window-mode toggle as F11
 void gfx_window_request_close(void);      // as the window's close button: the process ends
 int gfx_cfg_window_mode(void);               // 0 windowed, 1 borderless, 2 fullscreen
 int gfx_cfg_fullscreen(void);                // the window covers the monitor: mode 1 or 2
 int gfx_window_monitor_size(int *w, int *h);   // pixels of the monitor the window is on; 0 when unknown
-double gfx_window_refresh_hz(void);            // its refresh rate (TOTK_FPS_LIMIT=display); 0 when unknown
+double gfx_window_refresh_hz(void);            // its refresh rate (DKB_FPS_LIMIT=display); 0 when unknown
 unsigned gfx_window_dpi(void);                 // the window's DPI (96 at 100% display scale); any thread
-// The present mode the swapchain got, as a TOTK_VK_PRESENT value ("fifo" when mailbox is missing); "" before the first
+// The present mode the swapchain got, as a DKB_VK_PRESENT value ("fifo" when mailbox is missing); "" before the first
 // swapchain. Any thread.
 const char *gfx_window_present_mode(void);
 

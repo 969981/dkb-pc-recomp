@@ -51,8 +51,8 @@ static int geometry_supported = 1;
 GfxStats gfx_counters;
 int vk_geometry_supported(void) { return geometry_supported; }
 int cfg_bool(const char *name) {
-    if(!strcmp(name,"TOTK_NATIVE_GS")){const char *e=getenv("DKB_NATIVE_GS");return e&&*e=='1';}
-    if(strcmp(name,"TOTK_EXPERIMENTAL_GEOMETRY"))abort();
+    if(!strcmp(name,"DKB_NATIVE_GS")){const char *e=getenv("DKB_NATIVE_GS");return e&&*e=='1';}
+    if(strcmp(name,"DKB_EXPERIMENTAL_GEOMETRY"))abort();
     return ordinary_enabled;
 }
 static int c0_on(void) { return fix_c0; }

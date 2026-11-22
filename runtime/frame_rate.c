@@ -12,7 +12,7 @@
 // instead: +0 ratio = seconds * 30, +4 seconds (1.4.3: +8 interval = seconds * 60, the producer's nominal interval
 // before its half-step coefficient), the moving average of the last 5 display intervals, at most 1/15 s
 // (slower frames slow the game down, as on the console), no lower bound, so a higher frame-rate cap only changes the
-// pacer (frame_step_cap_ns, TOTK_FPS_LIMIT). The set cloth gives hair and cloth the same clock and needs realtime.
+// pacer (frame_step_cap_ns, DKB_FPS_LIMIT). The set cloth gives hair and cloth the same clock and needs realtime.
 //
 // The sample is the display time the pacer gives each present (nvnQueuePresentTexture), so the step follows the
 // frames as shown, pacing waits included. With the step on, the pacer ignores the game's interval and holds a frame
@@ -22,7 +22,7 @@
 // One 64-bit and one 32-bit store per present; the guest reads the floats on its own threads, and each stays finite
 // and in range whichever store it sees.
 //
-// Bananza 1.0.0 opts into experimental dynamic timing with TOTK_REALTIME=1.
+// Bananza 1.0.0 opts into experimental dynamic timing with DKB_REALTIME=1.
 // Its controller consumes an integer rate at patch page +12; its game clocks
 // consume the precise 60 Hz ratio at +8. The existing FPS limit sets the host cap.
 //
@@ -32,8 +32,8 @@
 // (input.c) runs on it, so a replay presses at the same game time at any frame rate and after a first load of any
 // length; a later load (fast travel) still shifts what follows by its length.
 //
-// TOTK_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
-// TOTK_SPEED_PROBE=1 the player's position and ground speed (an independent check: Link runs at the same speed at
+// DKB_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
+// DKB_SPEED_PROBE=1 the player's position and ground speed (an independent check: Link runs at the same speed at
 // any frame rate when game time follows wall time).
 #include <math.h>
 #include <stdatomic.h>
@@ -75,7 +75,7 @@ static void step_store(float seconds) {
 
 static void frame_limit_live(void);
 static int no_table;   // this game version has no realtime patch table in this build
-// TOTK_FIXED_STEP=1 (with the real-time step): every present steps the game 1/60 s whatever its display time, so game
+// DKB_FIXED_STEP=1 (with the real-time step): every present steps the game 1/60 s whatever its display time, so game
 // time is presents / 60 and a scripted run (input.c) steps the same game time per frame in every run. The game slows
 // down when frames take longer than 1/60 s and speeds up above 60 fps; meant for A/B and image tests.
 static int fixed_step;
@@ -166,7 +166,7 @@ void frame_step_init(void) {
     }
     if (!rt_patch_enabled(realtime) && rt_patch_enabled(cloth)) {
         rt_patch_disable(cloth);
-        rt_log("frame rate: cloth clock off, it needs the real-time step (TOTK_REALTIME=0)");
+        rt_log("frame rate: cloth clock off, it needs the real-time step (DKB_REALTIME=0)");
     }
     if (rt_patch_enabled(realtime)) {
         step_word = (_Atomic uint64_t *)rt_patch_page();
@@ -178,16 +178,16 @@ void frame_step_init(void) {
         }
         step_store((float)STEP_FIRST_S);
     }
-    const char *fx = cfg_get("TOTK_FIXED_STEP");
+    const char *fx = cfg_get("DKB_FIXED_STEP");
     if (fx && !strcmp(fx, "1")) {
         fixed_step = step_word != NULL;
-        rt_log("frame rate: %s", fixed_step ? "fixed step, 1/60 s of game time per present (TOTK_FIXED_STEP=1)"
-               : "TOTK_FIXED_STEP=1 needs the real-time step (TOTK_REALTIME=1); the game keeps its own timing");
+        rt_log("frame rate: %s", fixed_step ? "fixed step, 1/60 s of game time per present (DKB_FIXED_STEP=1)"
+               : "DKB_FIXED_STEP=1 needs the real-time step (DKB_REALTIME=1); the game keeps its own timing");
     }
-    frame_limit_live();   // TOTK_FPS_LIMIT decides the set fps60 from the start
+    frame_limit_live();   // DKB_FPS_LIMIT decides the set fps60 from the start
     if (!rt_game_version) {
         rt_log("frame rate: Bananza %s", step_word ? "experimental dynamic step; host-paced frames" :
-               "original game timing (TOTK_REALTIME=1 opts into experimental dynamic timing)");
+               "original game timing (DKB_REALTIME=1 opts into experimental dynamic timing)");
         return;
     }
     rt_log("frame rate: present interval %s, %s", rt_patch_enabled(fps60) ? "1..3 (above 30 fps)" : "2..3 (shipping 30 fps)",
@@ -196,9 +196,9 @@ void frame_step_init(void) {
 
 int frame_step_realtime(void) { return step_word != NULL; }
 
-// The frame limit (menu, TOTK_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 360, display (the
+// The frame limit (menu, DKB_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 360, display (the
 // refresh rate of the window's monitor) or unlimited (no pacer wait: nvn_api_obj.c pace() treats the period 0 as
-// "present at once"; with TOTK_VK_PRESENT=fifo the display still caps the rate). Unset, the older TOTK_FPS60=0 still means 30. A limit of 30 switches the set
+// "present at once"; with DKB_VK_PRESENT=fifo the display still caps the rate). Unset, the older DKB_FPS60=0 still means 30. A limit of 30 switches the set
 // fps60 off (the shipping minimum interval 2), every other limit switches it on; the controller reads its minimum
 // interval from the patched sites each frame. With the real-time step the pacer holds frames to the limit; above 60
 // only the pacer changes, as the step has no lower bound. Without it the game steps whole 60 Hz vsyncs and the pacer
@@ -210,7 +210,7 @@ static int fps60_set = -2;
 static unsigned limit_seen;
 static int limit_read;
 static int limit_hz = -1;   // 0: display; LIMIT_NONE: unlimited; -1 before the first read
-// Bananza with the real-time step: the highest frame rate the pacer allows, whatever the limit (TOTK_REALTIME_MAX_FPS,
+// Bananza with the real-time step: the highest frame rate the pacer allows, whatever the limit (DKB_REALTIME_MAX_FPS,
 // default 120, 0 for none). Above 120 fps the step falls under half a 60 Hz frame, and the 3.2.0 Emerald Rush challenge
 // levels then crash in the draw-record merge job (main+0xa68f80, #411: a record block freed while still linked); the
 // same levels play through at 120 fps and with a fixed 1/60 s step. Which game code breaks below 1/120 s is not found
@@ -218,14 +218,14 @@ static int limit_hz = -1;   // 0: display; LIMIT_NONE: unlimited; -1 before the 
 static int rt_max_hz;
 
 static int limit_parse(void) {
-    const char *e = cfg_get("TOTK_FPS_LIMIT"), *old = cfg_get("TOTK_FPS60");
+    const char *e = cfg_get("DKB_FPS_LIMIT"), *old = cfg_get("DKB_FPS60");
     if (!e || !*e) return old && !strcmp(old, "0") ? 30 : 60;
     if (!strcmp(e, "display")) return 0;
     if (!strcmp(e, "unlimited")) return LIMIT_NONE;
     char *end;
     long n = strtol(e, &end, 10);
     if (!*end && n >= LIMIT_MIN_HZ && n <= LIMIT_MAX_HZ) return (int)n;
-    rt_log("frame rate: TOTK_FPS_LIMIT=%s is not 30..360, display or unlimited; 60", e);
+    rt_log("frame rate: DKB_FPS_LIMIT=%s is not 30..360, display or unlimited; 60", e);
     return 60;
 }
 
@@ -234,24 +234,24 @@ static void frame_limit_live(void) {
     if (limit_read && v == limit_seen) return;
     limit_read = 1;
     limit_seen = v;
-    const char *mx = cfg_get("TOTK_REALTIME_MAX_FPS");
+    const char *mx = cfg_get("DKB_REALTIME_MAX_FPS");
     int max_hz = !step_word || rt_game_version ? 0 : mx && *mx ? atoi(mx) : 120;
     if (max_hz && max_hz < LIMIT_MIN_HZ) max_hz = LIMIT_MIN_HZ;
     int hz = limit_parse();
     if (hz == limit_hz && max_hz == rt_max_hz) return;
     if (max_hz != rt_max_hz && step_word && !rt_game_version)
         rt_log("frame rate: real-time step held to %d fps at most%s", max_hz,
-               max_hz ? " (TOTK_REALTIME_MAX_FPS; 0 lifts it, #411)" : ", no ceiling (TOTK_REALTIME_MAX_FPS=0)");
+               max_hz ? " (DKB_REALTIME_MAX_FPS; 0 lifts it, #411)" : ", no ceiling (DKB_REALTIME_MAX_FPS=0)");
     rt_max_hz = max_hz;
     limit_hz = hz;
     if (fps60_set == -2) fps60_set = rt_patch_set("fps60");
     if (fps60_set >= 0) rt_patch_switch(fps60_set, hz != 30);
     if (hz == LIMIT_NONE) {
-        if (!step_word) rt_log("frame rate: unlimited needs the real-time step (TOTK_REALTIME=1); 60 fps");
-        else rt_log("frame rate: no limit (unlimited)%s", strcmp(cfg_value("TOTK_VK_PRESENT"), "fifo") ? "" :
-                    "; TOTK_VK_PRESENT=fifo still caps it at the monitor's rate, use mailbox or immediate");
+        if (!step_word) rt_log("frame rate: unlimited needs the real-time step (DKB_REALTIME=1); 60 fps");
+        else rt_log("frame rate: no limit (unlimited)%s", strcmp(cfg_value("DKB_VK_PRESENT"), "fifo") ? "" :
+                    "; DKB_VK_PRESENT=fifo still caps it at the monitor's rate, use mailbox or immediate");
     } else if ((hz > 60 || hz == 0) && !step_word)
-        rt_log("frame rate: limits above 60 need the real-time step (TOTK_REALTIME=1); 60 fps");
+        rt_log("frame rate: limits above 60 need the real-time step (DKB_REALTIME=1); 60 fps");
     else if (hz && hz < 60 && no_table && !rt_game_version)
         rt_log("frame rate: this game version has no real-time frame-rate support in this build; limit %d fps cannot be held", hz);
     else if (hz && hz < 60 && !step_word && !rt_game_version)
@@ -285,7 +285,7 @@ double frame_step_limit_hz(void) {
     return !step_word && r > 60 ? 60 : r > LIMIT_MAX_HZ ? LIMIT_MAX_HZ : r;
 }
 
-// ---- TOTK_TRACE=perf speed lines
+// ---- DKB_TRACE=perf speed lines
 static uint64_t win_t0, win_frames, win_hist[4];   // win_hist: frames by present interval 1, 2, 3+ ([0] unused)
 static double win_game;
 static int probe = -1;
@@ -306,7 +306,7 @@ static uint64_t main_base(void) {
 }
 // 1.2.1: [main+0x4728538] (1.1.1: [main+0x4630a68], 1.4.3: [main+0x3add238]) +0x1e8 scene, its component 13 lists the
 // resident actors; the one named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h
-// TOTK_GAME_V121/V143). The 1.1.1 slot was measured from its own dereference chain: 181 scene accesses in that build
+// DKB_GAME_V121/V143). The 1.1.1 slot was measured from its own dereference chain: 181 scene accesses in that build
 // read it, and one of them reproduces this walk (the 14-component check, component 13, the 0x70 stride and the name
 // compare) instruction for instruction.
 static int player_pos(float xyz[3]) {
@@ -337,7 +337,7 @@ static void speed_report(uint64_t now, double step, int interval) {
     win_hist[interval < 1 ? 1 : interval > 3 ? 3 : interval]++;
     if (win_frames < 120) return;
     if (probe < 0) {
-        const char *e = cfg_get("TOTK_SPEED_PROBE");
+        const char *e = cfg_get("DKB_SPEED_PROBE");
         probe = e && !strcmp(e, "1");
     }
     double wall = (double)(now - win_t0) * 1e-9;

@@ -68,7 +68,7 @@ static int g_cap_w, g_cap_h, g_cap_valid;
 static int g_flip_on;            // vk_present_blit submitted the blit of swapchain image g_flip_idx; vk_present_flip presents it
 static uint32_t g_flip_idx;
 
-// ---- TOTK_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
+// ---- DKB_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
 // of a host-visible ring. A slot's tag names the frame it holds complete; recording a new frame clears the tag first,
 // and the tag is set once the fence of that present has signalled.
 #define TH_BYTES ((VkDeviceSize)FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4)
@@ -84,16 +84,16 @@ static VmaAllocation g_th_alloc;
 static uint8_t *g_th_ptr;
 
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
-// fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
+// fullscreen; a changed DKB_VK_PRESENT rebuilds the swapchain at this present.
 static void window_settings_live(void) {
     static unsigned seen;
     static int started;
-    static char present[16];   // the TOTK_VK_PRESENT the swapchain was made with
+    static char present[16];   // the DKB_VK_PRESENT the swapchain was made with
     unsigned v = cfg_version();
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = cfg_value("DKB_VK_PRESENT");
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
         if (started) gfx_window_mark_dirty();
@@ -103,10 +103,10 @@ static void window_settings_live(void) {
 }
 
 // ---- swapchain
-static const char *g_present_got = "";   // the TOTK_VK_PRESENT value of the mode the swapchain got; "" before one
+static const char *g_present_got = "";   // the DKB_VK_PRESENT value of the mode the swapchain got; "" before one
 
 static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = cfg_value("DKB_VK_PRESENT");
     VkPresentModeKHR want = !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -121,7 +121,7 @@ static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
     static int logged = -1;   // the mode last logged: a change from the menu shows in the log
     if ((int)got != logged) {
         logged = (int)got;
-        rt_log("gfx: present mode %s (TOTK_VK_PRESENT=%s)", name, e);
+        rt_log("gfx: present mode %s (DKB_VK_PRESENT=%s)", name, e);
     }
     return got;
 }
@@ -630,13 +630,13 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
-    // Colour adjustment (TOTK_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
+    // Colour adjustment (DKB_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
     VkImage graded = general && !native_hdr && !plain ? vk_color_record(cb, slot, src, fmt, rect) : VK_NULL_HANDLE;
     const int grect[4] = {0, 0, cw, ch};
     VkImage psrc = graded ? graded : src;
     VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
     const int *prect = graded ? grect : rect;
-    // The window scaling (TOTK_WINDOW_FILTER, TOTK_SHARPNESS, vk_fsr.c): FSR 1 or the scaling pass when the setting and
+    // The window scaling (DKB_WINDOW_FILTER, DKB_SHARPNESS, vk_fsr.c): FSR 1 or the scaling pass when the setting and
     // the sizes need one (the game's own HDR picture: the pass for PQ codes, never FSR 1); else the plain bilinear blit
     int scaled = general && !plain
                      ? vk_fsr_record(cb, slot, psrc, pfmt, native_hdr, graded ? cw : w, graded ? ch : h, prect, tgt, to)
@@ -656,9 +656,9 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
             sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
     }
-    // SMAA (TOTK_SMAA, vk_smaa.c) on the scaled picture, before the menu overlay; it leaves the image in TRANSFER_DST
+    // SMAA (DKB_SMAA, vk_smaa.c) on the scaled picture, before the menu overlay; it leaves the image in TRANSFER_DST
     if (!native_hdr && !plain) vk_smaa_record(cb, tgt, to);
-    // CRT filters (TOTK_CRT_FILTER, vk_crt.c) after SMAA, on the same picture, also SDR only; same layout contract
+    // CRT filters (DKB_CRT_FILTER, vk_crt.c) after SMAA, on the same picture, also SDR only; same layout contract
     if (!native_hdr && !plain) vk_crt_record(cb, tgt, to);
     else if (!plain) vk_crt_idle();   // the game's own HDR picture skips the SDR filter: no images kept for it meanwhile
     // last: dst's layout, and the stage and access of its last write, as each step leaves it

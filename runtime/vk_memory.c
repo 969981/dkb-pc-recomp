@@ -50,9 +50,9 @@ typedef struct PoolRec {
     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
     uint64_t npages;
     volatile int32_t used;                // resolved at least once: the GPU may still read it at finalize
-    volatile uint8_t lazy;                // POOL_IMPORT whose import is deferred to the first GPU use (TOTK_POOL_LAZY, lazy_import)
+    volatile uint8_t lazy;                // POOL_IMPORT whose import is deferred to the first GPU use (DKB_POOL_LAZY, lazy_import)
     uint64_t init_frame;               // the present count at nvnMemoryPoolInitialize (mem_frame), for the import log
-    // TOTK_TRACE=perf dirty census (vk_mem_dirty_submit), replay thread under the submit lock only:
+    // DKB_TRACE=perf dirty census (vk_mem_dirty_submit), replay thread under the submit lock only:
     uint32_t bound_sub;                // last submit that bound it as a buffer (dirty_sub), 0 never
     uint32_t synced_gen;               // page generation its lazy-mirror count covers; DIRTY_UNSYNCED until scanned
     uint8_t bufbound;                  // ever bound as a vertex, index, uniform, storage or indirect buffer
@@ -77,18 +77,18 @@ typedef struct PoolRec {
     uint8_t *smap;                     // its mapping; offsets as in buf (from import_lo)
     uint32_t sgen;                     // gen_lock: every page write stamped up to this generation is in the shadow
     volatile uint8_t stouched;         // on the touched list: the GPU may use it in the submission being recorded
-    // Staged mirror (TOTK_MIRROR_STAGED, "staged mirror" below). staged is set by vk_pool_init and never changes;
+    // Staged mirror (DKB_MIRROR_STAGED, "staged mirror" below). staged is set by vk_pool_init and never changes;
     // sfeed is set by mirror_create before it stores MS_ON and never changes.
-    uint8_t staged;                    // lazy pool of TOTK_MIRROR_STAGED's size: its first GPU use makes a mirror, no import
+    uint8_t staged;                    // lazy pool of DKB_MIRROR_STAGED's size: its first GPU use makes a mirror, no import
     uint8_t sfeed;                     // its mirror is filled from staging buffers and written back through readbacks
     uint8_t szero;                     // mirror_lock: a small staged mirror the next prologue zeroes and fills (staged_upload)
     uint8_t mrefused;                  // 1 + the MR_ reason of a refused mirror (refuse), for staged_import's count
     volatile int32_t sfell;            // imported after all (staged_import): the line is logged once
-    struct KeptRange *own;             // own_lock, TOTK_STAGED_WB=fault: bytes only the mirror holds (staged_fetch)
+    struct KeptRange *own;             // own_lock, DKB_STAGED_WB=fault: bytes only the mirror holds (staged_fetch)
     int nown, cown;
     int own_ix;                        // own_lock: 1 + its place in st_own while own holds a range, else 0
     uint8_t *cpu_read;                 // per page: the CPU fetched it, so GPU writes to it go back at the fence
-    // TOTK_STAGED_FETCH_TEST, per page: the submission of the last recorded write, that of the reference bytes, and
+    // DKB_STAGED_FETCH_TEST, per page: the submission of the last recorded write, that of the reference bytes, and
     // the reference (ft_check).
     uint32_t *t_rec, *t_ref;
     uint8_t **t_page;
@@ -106,13 +106,13 @@ static void shadow_forget(PoolRec *r);
 static void mirror_retiring(PoolRec *r);  // vk_pool_fini: kept until mirror_retire (or vk_mem_shutdown)
 static void mirror_retire(void *arg);    // completion thread: destroys a finalized mirrored pool's record
 static void grow(void **arr, int *cap, size_t elem);
-static uint64_t staged_min;              // TOTK_MIRROR_STAGED in bytes (mirror_mode): 0 off, 1 every lazy pool
+static uint64_t staged_min;              // DKB_MIRROR_STAGED in bytes (mirror_mode): 0 off, 1 every lazy pool
 #define STG_SMALL (16ull << 20)          // a staged mirror up to this size is first filled in a prologue (staged_upload)
-static int staged_fault = 1;             // TOTK_STAGED_WB (mirror_mode): 1 fault (GPU-owned pages), 0 fence (copy-back)
+static int staged_fault = 1;             // DKB_STAGED_WB (mirror_mode): 1 fault (GPU-owned pages), 0 fence (copy-back)
 static int staged_fetch(uint64_t page, int write, uint64_t rip, int kernel);
 static void staged_forget(PoolRec *r);   // vk_pool_fini: a staged pool's owned pages open without a fetch
-static int fetch_test;                   // TOTK_STAGED_FETCH_TEST (fetch exerciser below)
-static int blk_check;                    // TOTK_STAGED_BLK_CHECK (st_chk_union below)
+static int fetch_test;                   // DKB_STAGED_FETCH_TEST (fetch exerciser below)
+static int blk_check;                    // DKB_STAGED_BLK_CHECK (st_chk_union below)
 static void ft_frame(uint64_t frame);
 static void staged_frame_log(uint64_t frame);   // vk_mem_census: what the staged pools did in the frame
 // A staged pool that has not been imported: lazy stays 1 until staged_import imports it after all, and lazy_import
@@ -120,7 +120,7 @@ static void staged_frame_log(uint64_t frame);   // vk_mem_census: what the stage
 static inline int staged_pending(const PoolRec *r) { return r->staged && __atomic_load_n(&r->lazy, __ATOMIC_ACQUIRE); }
 
 static PlatMutex pool_lock = PLAT_MUTEX_INIT;
-// Shared acquires try first and time a contended wait (TOTK_TRACE=perf, perf_lock_wait): a pool imported or mapped on
+// Shared acquires try first and time a contended wait (DKB_TRACE=perf, perf_lock_wait): a pool imported or mapped on
 // another thread holds the lock exclusively across driver calls, and every draw resolves its buffers under it.
 static void pool_lock_shared(void) {
     if (plat_mutex_trylock_shared(&pool_lock)) return;
@@ -187,7 +187,7 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size, const
     uint64_t t0 = qpc();
     mem_thaw(addr, size);    // the import may need write access to the pages
     uint64_t t1 = qpc();
-    mem_touch(addr, size);   // the driver pins the pages: reserved ones of a lazy heap (TOTK_HEAP_LAZY) would fail
+    mem_touch(addr, size);   // the driver pins the pages: reserved ones of a lazy heap (DKB_HEAP_LAZY) would fail
     uint64_t t2 = qpc();
     int ok = import_pool_timed(c, r, addr, size, &t);
     uint64_t total = qpc() - t0;
@@ -224,14 +224,14 @@ static int import_pool_timed(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size,
     VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
     // The Vulkan spec ties the memory types to the pointer given, but every guest pool here is plain committed
     // read/write memory (platform/win32.c plat_mem_reserve/plat_mem_commit: no write-combined, uncached or file-view
-    // pages), so the answer is assumed to be the same for all of them. NVIDIA's driver took long in this query for the big guest pools of a level change (five guest threads in turn, 1.8 s in a TOTK_PROFILE_SLOW dump:
+    // pages), so the answer is assumed to be the same for all of them. NVIDIA's driver took long in this query for the big guest pools of a level change (five guest threads in turn, 1.8 s in a DKB_PROFILE_SLOW dump:
     // the callq before dkb.exe+9331ce7 is this call, handle type 0x80). The first answer is kept for the other pools;
-    // TOTK_HOST_PROPS_CACHE=0 asks every time. A type that would not do fails in vkAllocateMemory below, like before.
+    // DKB_HOST_PROPS_CACHE=0 asks every time. A type that would not do fails in vkAllocateMemory below, like before.
     static volatile uint32_t host_bits;
     static int cache_on = -1;
     static int32_t n_slow_props;
     if (cache_on < 0) {
-        const char *e = cfg_get("TOTK_HOST_PROPS_CACHE");
+        const char *e = cfg_get("DKB_HOST_PROPS_CACHE");
         cache_on = !(e && !strcmp(e, "0"));
     }
     VkResult res;
@@ -317,7 +317,7 @@ static int import_pool_timed(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size,
 }
 
 // nvnMemoryPoolInitialize only records an imported pool, and the import waits for the first time the GPU resolves an
-// address in it (TOTK_POOL_LAZY=0 imports at once, as before). A profile of a level change showed hundreds of guest-memory
+// address in it (DKB_POOL_LAZY=0 imports at once, as before). A profile of a level change showed hundreds of guest-memory
 // imports, each about 20 ms of NVIDIA driver time whatever its size, one at a time, with the guest threads blocked in
 // them; the memory census of the same runs had the GPU resolve only 6% of the imported pools at frame 600 and 27% at
 // frame 5400. On a scripted 72 s route (RTX 5060 Ti) it cut the imports from 3219 to 901 and their total from 27 s to
@@ -326,9 +326,9 @@ static int import_pool_timed(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size,
 static int lazy_enabled(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = cfg_get("TOTK_POOL_LAZY");
+        const char *e = cfg_get("DKB_POOL_LAZY");
         on = !(e && !strcmp(e, "0")) && !shadow_on;
-        if (on) rt_log("vk: imported pools are imported on their first GPU use (TOTK_POOL_LAZY)");
+        if (on) rt_log("vk: imported pools are imported on their first GPU use (DKB_POOL_LAZY)");
     }
     return on;
 }
@@ -338,7 +338,7 @@ static int lazy_enabled(void) {
 // vkAllocateMemory, vkBindBufferMemory, the wait for lazy_lock). The first frame of a layer imports hundreds of pools on
 // the replay thread. The imports of pools under 1 MiB are counted apart (count, bytes, vkAllocateMemory time), so the
 // line tells a fixed cost per import from one per byte: the large imports pinned about 0.16 ms per MiB on NVIDIA
-// (72 to 693 MiB, 11 to 122 ms, the TOTK_POOL_EAGER runs of build/bench/pe4-on-*.log).
+// (72 to 693 MiB, 11 to 122 ms, the DKB_POOL_EAGER runs of build/bench/pe4-on-*.log).
 static volatile int64_t lz_n, lz_bytes, lz_ns, lz_max_bytes, lz_max_ns, lz_phase[7], lz_small[3];
 
 static void lz_note(const ImportTimes *t, uint64_t size, uint64_t ns) {
@@ -351,7 +351,7 @@ static void lz_note(const ImportTimes *t, uint64_t size, uint64_t ns) {
     if ((int64_t)size > lz_max_bytes) lz_max_bytes = (int64_t)size, lz_max_ns = (int64_t)ns;   // lazy_lock
 }
 
-// TOTK_POOL_IMPORT_LOG=N: the first N imports made on a pool's first GPU use get a line each
+// DKB_POOL_IMPORT_LOG=N: the first N imports made on a pool's first GPU use get a line each
 // with the pool's address, size and flags, the frame of its initialize, the caller of vk_mem_resolve that needed it (an
 // exe offset for the link map), the time of each phase, and its neighbours in the pool index (the gap to each, and
 // whether that pool is imported, waiting for its first use or used). For deciding what an import ahead of the first use
@@ -360,7 +360,7 @@ static int import_log_on(void) {
     static int max = -1;
     static volatile int32_t n;
     if (max < 0) {
-        const char *e = cfg_get("TOTK_POOL_IMPORT_LOG");
+        const char *e = cfg_get("DKB_POOL_IMPORT_LOG");
         max = e && *e ? atoi(e) : 0;
         if (max < 0) max = 0;
     }
@@ -402,7 +402,7 @@ static void import_log(const char *how, const PoolRec *r, int at, const ImportTi
 // where: for import_pool's line and the import log.
 static int lazy_import(PoolRec *r, int at, const char *where) {
     if (!__atomic_load_n(&r->lazy, __ATOMIC_ACQUIRE)) return r->buf != VK_NULL_HANDLE;
-    uint64_t ph = perf_ph_begin_cpu();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+    uint64_t ph = perf_ph_begin_cpu();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
     uint64_t t0 = qpc();
     plat_mutex_lock(&lazy_lock);
     if (r->lazy) {
@@ -504,7 +504,7 @@ static int alloc_physical(VkCtx *c, PoolRec *r) {
 int vk_fix_zero(void) {
     static int on = -1;
     if (on < 0) {
-        on = cfg_bool("TOTK_FIX_ZERO");
+        on = cfg_bool("DKB_FIX_ZERO");
     }
     return on;
 }
@@ -625,9 +625,9 @@ int vk_pool_init(pool_t *p) {
     return ok;
 }
 
-// What the release of a used pool waits for before the guest gets its storage back. TOTK_POOL_FINI_WAIT=idle (the
+// What the release of a used pool waits for before the guest gets its storage back. DKB_POOL_FINI_WAIT=idle (the
 // default) is the whole graphics queue idle, with the queue lock held, which costs a driver round trip per pool even when
-// the GPU has nothing left: a level change frees many pools one after another (a 1.6 s frame in a TOTK_PROFILE_SLOW dump,
+// the GPU has nothing left: a level change frees many pools one after another (a 1.6 s frame in a DKB_PROFILE_SLOW dump,
 // five guest threads in turn inside this wait). fence waits for the timeline value of the newest finished submission
 // instead and does not enter the driver when that value is already done. It covers the work the game has synchronized
 // on, which is what a release is allowed to follow; it does not cover the parts that vk_sync_split already submitted
@@ -635,10 +635,10 @@ int vk_pool_init(pool_t *p) {
 static void pool_fini_wait_(VkCtx *c) {
     static int mode = -1;
     if (mode < 0) {
-        const char *e = cfg_get("TOTK_POOL_FINI_WAIT");
+        const char *e = cfg_get("DKB_POOL_FINI_WAIT");
         mode = e && !strcmp(e, "fence");
-        if (mode) rt_log("vk: a pool release waits for the newest submission on the timeline (TOTK_POOL_FINI_WAIT=fence)");
-        else if (e && *e && strcmp(e, "idle")) rt_log("vk: TOTK_POOL_FINI_WAIT=%s is not idle or fence: waiting for the queue to idle", e);
+        if (mode) rt_log("vk: a pool release waits for the newest submission on the timeline (DKB_POOL_FINI_WAIT=fence)");
+        else if (e && *e && strcmp(e, "idle")) rt_log("vk: DKB_POOL_FINI_WAIT=%s is not idle or fence: waiting for the queue to idle", e);
     }
     if (mode) {
         uint64_t v = vk_sync_issued();
@@ -700,7 +700,7 @@ static void pool_fini(pool_t *p) {
     if (r->smap) shadow_forget(r);
     if (r->sfeed && staged_fault) staged_forget(r);   // its owned pages open without a fetch: the storage goes away
     if (r->kind == POOL_IMPORT) mem_thaw(r->lo, r->size);   // the storage goes back to the guest writable
-    // A pool never imported (a staged pool, TOTK_MIRROR_STAGED, the only lazy pool a resolve marks used): the GPU never
+    // A pool never imported (a staged pool, DKB_MIRROR_STAGED, the only lazy pool a resolve marks used): the GPU never
     // read or wrote its storage, only the VRAM mirror and staging buffers that the CPU filled at record time, and its
     // write-backs into guest memory check at the fence that the pool is still live (staged_wb_done). So its release
     // waits for nothing: with hundreds of small pools staged, a layer's exit released about 215 pools in a row, and
@@ -766,7 +766,7 @@ int vk_pool_map_virtual(pool_t *v, int n, const void *requests) {
 // of the resolves in Bananza's Lake Level (3.2.0) missed: a pool filled one slot per page it was read at, the vertex
 // data of a frame is spread over more pages than the table held, and each miss took pool_lock shared, an atomic write
 // to one cache line for every thread of a sliced pass. Now 2.4% miss, from 20 KiB per thread (the old table took 36).
-// TOTK_RESOLVE_CHECK=1 compares every hit with the locked lookup and stops on a difference.
+// DKB_RESOLVE_CHECK=1 compares every hit with the locked lookup and stops on a difference.
 static int rec_class(const PoolRec *r) {
     if (r->kind != POOL_IMPORT) return VK_MCLS_DEVICE;
     return r->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS ? VK_MCLS_HOST_NOACC
@@ -816,7 +816,7 @@ static ResolveHit *rhit_add(uint64_t g, uint64_t lo, uint64_t hi) {
 static int resolve_check_on(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = cfg_get("TOTK_RESOLVE_CHECK");
+        const char *e = cfg_get("DKB_RESOLVE_CHECK");
         on = e && *e && strcmp(e, "0");
     }
     return on;
@@ -1047,7 +1047,7 @@ static void flag_names(uint32_t f, char *buf, size_t n) {
 
 // One line per (kind, flags) group of the live pools, then the bytes the replay bound or copied per frame by pool
 // class since the previous census (the first one: since frame 1200). Logged at frame 1800 (in the world from the
-// run-game saves), at frame 600, and with TOTK_TRACE=perf every 1800 frames.
+// run-game saves), at frame 600, and with DKB_TRACE=perf every 1800 frames.
 static void dirty_frame(uint64_t frame);
 
 static void mirror_log(uint64_t frame);
@@ -1058,11 +1058,11 @@ static void vram_log(uint64_t frame);
 
 void vk_mem_census(uint64_t frame) {
     static uint64_t window_start;
-    static int report_every = -1;   // TOTK_MEM_REPORT, read on the first present
-    if (report_every < 0) report_every = cfg_int("TOTK_MEM_REPORT");
+    static int report_every = -1;   // DKB_MEM_REPORT, read on the first present
+    if (report_every < 0) report_every = cfg_int("DKB_MEM_REPORT");
     __atomic_store_n(&mem_frame, frame, __ATOMIC_RELAXED);
     __atomic_store_n(&mem_probe_frame, frame, __ATOMIC_RELAXED);
-    if (fetch_test) ft_frame(frame);   // TOTK_STAGED_FETCH_TEST
+    if (fetch_test) ft_frame(frame);   // DKB_STAGED_FETCH_TEST
     lazy_frame_log(frame);
     staged_frame_log(frame);
     if (report_every > 0 && frame % (uint64_t)report_every == 0) {
@@ -1122,7 +1122,7 @@ void vk_mem_census(uint64_t frame) {
     uint64_t touch[4];
     mem_touch_stats(touch);
     rt_log("mem: mem_touch: %llu calls, %llu chunks of 64 KiB known committed, %llu queried, %llu found reserved by "
-           "TOTK_TOUCH_MAP=verify; imported memory released %lld times in %.0f ms",
+           "DKB_TOUCH_MAP=verify; imported memory released %lld times in %.0f ms",
            (unsigned long long)touch[0], (unsigned long long)touch[1], (unsigned long long)touch[2],
            (unsigned long long)touch[3], (long long)__atomic_load_n(&rel_n, __ATOMIC_RELAXED),
            __atomic_load_n(&rel_ns, __ATOMIC_RELAXED) / 1e6);
@@ -1145,12 +1145,12 @@ void vk_mem_census(uint64_t frame) {
     window_start = frame;
 }
 
-// TOTK_VRAM_LIMIT=<MiB> (test knob, unset = off): caps the device-local budget every VRAM consumer reads here (texture
+// DKB_VRAM_LIMIT=<MiB> (test knob, unset = off): caps the device-local budget every VRAM consumer reads here (texture
 // pressure, headroom, the perf line), to see how the runtime behaves on a card with less video memory. The driver still
 // lets allocations go past it, so it shows the runtime's reaction, not the driver paging a real small card does.
 static void vram_limit(uint64_t *budget) {
     static int64_t lim = -1;
-    if (lim < 0) { const char *s = cfg_get("TOTK_VRAM_LIMIT"); lim = s ? (int64_t)strtoull(s, NULL, 10) << 20 : 0; }
+    if (lim < 0) { const char *s = cfg_get("DKB_VRAM_LIMIT"); lim = s ? (int64_t)strtoull(s, NULL, 10) << 20 : 0; }
     if (lim && *budget > (uint64_t)lim) *budget = (uint64_t)lim;
 }
 
@@ -1162,7 +1162,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     if (c->has_memory_budget) {
         VkPhysicalDeviceMemoryBudgetPropertiesEXT b = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
         VkPhysicalDeviceMemoryProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &b};
-        uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame); NVIDIA asks the kernel
+        uint64_t ph = perf_ph_begin();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame); NVIDIA asks the kernel
         vkGetPhysicalDeviceMemoryProperties2(c->phys, &p2);
         perf_ph_end(PERF_PH_BUDGET, ph);
         for (uint32_t h = 0; h < p2.memoryProperties.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
@@ -1191,7 +1191,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
 static uint32_t *gen_chunk[GEN_CHUNKS];
 static uint32_t gen_now;                 // last generation handed out
 static PlatMutex gen_lock = PLAT_MUTEX_INIT;
-// The exclusive takes that run write-watch queries: TOTK_TRACE=perf counts the waits over 100 us (perf_lock_wait), to see
+// The exclusive takes that run write-watch queries: DKB_TRACE=perf counts the waits over 100 us (perf_lock_wait), to see
 // whether a query held under another lock moved its wait here (#317).
 static void gen_lock_x(void) {
     if (plat_mutex_trylock(&gen_lock)) return;
@@ -1292,7 +1292,7 @@ static void mem_decommit_cb(uint64_t a, uint64_t n) {
 // Every write-watch query of the generation table (gen_lock held exclusively): calls, bytes and time since the last
 // mirror summary, all consumers together; the queries that found written pages (they also flush TLBs) apart.
 static uint64_t ww_calls, ww_bytes, ww_ticks, ww_dirty_calls, ww_dirty_ticks, ww_pages;
-// TOTK_TRACE=perf (#317): the same queries' time on the CPU (plat_self_cpu_ns), so that a query that waits (in the
+// DKB_TRACE=perf (#317): the same queries' time on the CPU (plat_self_cpu_ns), so that a query that waits (in the
 // kernel, for another thread's VirtualQuery or VirtualProtect over the same reservation) shows apart from one that
 // works; the time by consumer; and the slowest query of the window with its range and answer.
 enum { WW_CHECK, WW_SNAP, WW_SHADOW, WW_DIRTY, WW_FREEZE, WW_WHO_N };
@@ -1300,7 +1300,7 @@ static const char *const ww_who_name[WW_WHO_N] = {"texture check", "snapshot", "
 static uint64_t ww_cpu_ns, ww_who_ns[WW_WHO_N], ww_slow_ns, ww_slow_cpu, ww_slow_addr, ww_slow_size, ww_slow_pages;
 static int ww_slow_who;
 
-// TOTK_TRACE=perf: a query that took TOTK_WW_SLOW_MS (5 by default) or more gets a line with the operations other
+// DKB_TRACE=perf: a query that took DKB_WW_SLOW_MS (5 by default) or more gets a line with the operations other
 // threads were inside meanwhile (platform.h plat_op_overlap), the first 64 such queries. They are grouped by thread
 // and kind: count, the time of theirs inside the query's interval, the longest, the longest run a VirtualQuery
 // reported, and the range they covered; those still running are listed one by one with their nesting. gen_lock is held
@@ -1318,7 +1318,7 @@ static void ww_slow_report(uint64_t addr, uint64_t size, int who, uint64_t t0, u
     static uint64_t min_ns;
     static int lines;
     if (!min_ns) {
-        const char *e = cfg_get("TOTK_WW_SLOW_MS");
+        const char *e = cfg_get("DKB_WW_SLOW_MS");
         min_ns = (uint64_t)(e && atof(e) > 0 ? atof(e) * 1e6 : 5e6);
     }
     if (t1 - t0 < min_ns || lines >= 64) return;
@@ -1401,7 +1401,7 @@ static void stamp_page(uint64_t a, uint32_t g);
 // mirror snapshot at the first use of the 450 MiB terrain arena of a layer (115,000 written pages, 113 queries) took
 // 14 to 21 ms of the replay (#397); resumed, it takes 3 to 8 ms. who is the consumer (WW_CHECK and the others) that
 // ww_query books each query's time under; each resumed query is a ww_query of its own, so the slowest query of a
-// TOTK_TRACE=perf window is one of them, with the range from where it started to hi.
+// DKB_TRACE=perf window is one of them, with the range from where it started to hi.
 static int ww_stamp(uint64_t lo, uint64_t hi, uint32_t g, int who) {
     const uint64_t max = sizeof gen_pages / sizeof *gen_pages;
     for (uint64_t a = lo; a < hi;) {
@@ -1572,7 +1572,7 @@ void vk_mem_snap_stats(uint64_t *checks, uint64_t *calls, uint64_t *untracked) {
     *untracked = __atomic_exchange_n(&n_snap_untracked, 0, __ATOMIC_RELAXED);
 }
 
-// ---------------------------------------------------------------- dirty census (TOTK_TRACE=perf)
+// ---------------------------------------------------------------- dirty census (DKB_TRACE=perf)
 // What a device-local mirror of the buffer-bound pools would upload. The replay notes every
 // imported pool it binds as a vertex, index, uniform, storage or indirect buffer (vk_mem_bound_note). At the start of
 // each submit one write-watch query per run of such pools stamps the pages written since with a new generation, in the
@@ -1604,7 +1604,7 @@ static int dc_class(const PoolRec *r) {
     return c == VK_MCLS_HOST_CACHED ? DC_CACHED : c == VK_MCLS_HOST_UNC ? DC_UNC : DC_OTHER;
 }
 
-void vk_mem_bound_note(void *pool) {   // TOTK_TRACE=perf; parallel slices call it too (dirty_lock)
+void vk_mem_bound_note(void *pool) {   // DKB_TRACE=perf; parallel slices call it too (dirty_lock)
     PoolRec *r = pool;
     if (__atomic_load_n(&r->bound_sub, __ATOMIC_RELAXED) == dirty_sub) return;
     plat_mutex_lock(&dirty_lock);
@@ -1631,7 +1631,7 @@ static uint64_t page_hi(const PoolRec *r) { return (r->lo + r->size + 0xfff) & ~
 // - GPU -> guest: the replay notes each GPU write into CPU-visible memory at record time (vk_mem_gpu_pending) and
 //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
 //   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
-// TOTK_SHADOW=1/0 forces the mode on or off; the default is on for Linux, off where importing is cheap (Windows, and
+// DKB_SHADOW=1/0 forces the mode on or off; the default is on for Linux, off where importing is cheap (Windows, and
 // MoltenVK, which imports host memory without Linux's write-watch and page re-protection).
 typedef struct { uint64_t lo, hi; } SRange;
 static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
@@ -1905,7 +1905,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
 // the first made and keeps 0 after a 0), and nothing reads the pages between them while gen_lock is held. Any other
 // stamp (vk_guest_written's) takes a generation of its own and ends the shared one, so an own_chunk note never survives
 // a newer write the mirror does not hold. A page the previous range of the same pool stamped with the same generation
-// is not stamped again. TOTK_STAMP_BATCH=0 stamps one by one as before; "ab" for an in-run A/B. Each size is read
+// is not stamped again. DKB_STAMP_BATCH=0 stamps one by one as before; "ab" for an in-run A/B. Each size is read
 // without VK_WB_LAZY (vk.h): with that bit set the end of the range wraps past the top of the address space, so
 // pidx_find finds no pool and the stamp's walk covers no page at all.
 static void written_batch(const VkGpuWrite *w, int n) {
@@ -1962,7 +1962,7 @@ static void written_batch(const VkGpuWrite *w, int n) {
     }
 }
 
-// ---- lazy write-back (TOTK_WB_LAZY=1, off by default; Linux)
+// ---- lazy write-back (DKB_WB_LAZY=1, off by default; Linux)
 // Most of what a frame's fences copy back to guest memory is never read there: of the 15 MiB a frame in the cave after
 // Bananza's tutorial, 14 are a thousand storage buffers that compute shaders write and later GPU work reads. With the
 // lazy write-back on, a range the replay marked VK_WB_LAZY is not copied at its fence. Its pages are sealed instead
@@ -2086,10 +2086,10 @@ static void wb_open(uint64_t a, uint64_t n) {
 
 static int wb_lazy_on(void) {
     if (wb_on < 0) {
-        wb_on = shadow_on && cfg_bool("TOTK_WB_LAZY") && plat_mem_access_hook(wb_fault);
+        wb_on = shadow_on && cfg_bool("DKB_WB_LAZY") && plat_mem_access_hook(wb_fault);
         if (wb_on) mem_thaw_hook(wb_open);
-        if (cfg_bool("TOTK_WB_LAZY"))
-            rt_log("mem: lazy write-back %s (TOTK_WB_LAZY=1)",
+        if (cfg_bool("DKB_WB_LAZY"))
+            rt_log("mem: lazy write-back %s (DKB_WB_LAZY=1)",
                    wb_on ? "on: a storage buffer a shader wrote is copied back to guest memory at the first CPU access "
                            "to its pages"
                          : "not available here: every GPU write is copied back at its fence");
@@ -2481,7 +2481,7 @@ static void dirty_frame(uint64_t frame) {
 // ---------------------------------------------------------------- VRAM mirror of buffer-bound pools
 // An imported pool keeps vertices, indices, constants
 // and storage buffers in system memory, so a discrete GPU reads them over PCIe on every draw (GTX 1050 Ti and RTX
-// 3090 Ti: about 110 ms of GPU time per frame in the field). In mirror mode (device class discrete, TOTK_MEMORY) an
+// 3090 Ti: about 110 ms of GPU time per frame in the field). In mirror mode (device class discrete, DKB_MEMORY) an
 // imported pool gets a device-local buffer over its imported range the first time the replay uses it as a vertex,
 // index, uniform, storage or indirect buffer (vk_mem_use). From then on those bindings, and the buffer copies, fills
 // and uniform updates that touch the pool (vk_mem_pick), use the mirror at the same offsets. Guest memory stays what
@@ -2493,11 +2493,11 @@ static void dirty_frame(uint64_t frame) {
 //   nvnMemoryPoolFlushMappedRange ranges. The first use copies the whole range. The copies run in a prologue command
 //   buffer that vk_sync.c submits right before the part that accessed the mirror first, between full barriers.
 //   vk_mem_mirror_begin snaps, in a few merged queries, the regions of the pools the next submission is likely to
-//   access (presnap_wanted): those accessed every P submissions, for P up to TOTK_MIRROR_PRESNAP.
+//   access (presnap_wanted): those accessed every P submissions, for P up to DKB_MIRROR_PRESNAP.
 // - GPU -> guest: what the replay writes into a mirror (storage buffers its shaders write, buffer copies, fills,
 //   uniform updates, texture-to-buffer copies: vk_mem_gpu_wrote) goes back into the imported buffer at the end of the
 //   submission, exact byte ranges, before the fence signals (vk_mem_mirror_end).
-// - TOTK_MEMORY=verify: every submission also copies up to VERIFY_BYTES of mirror pages, round robin, into host memory;
+// - DKB_MEMORY=verify: every submission also copies up to VERIFY_BYTES of mirror pages, round robin, into host memory;
 //   at its fence the pages the CPU has not written since their sync are compared with guest memory.
 // A pool stays imported when its mirror would not fit the VRAM budget, its range is not write-watched, it overlaps
 // another pool or the allocation fails.
@@ -2510,8 +2510,8 @@ int vk_mirror_on;
 static int mirror_verify;
 static int mirror_sparse;
 static int mirror_gap = 2;             // pre-snap: hot pools at most this many 2 MiB regions apart share one query
-static int mirror_presnap = 8;         // pre-snap: longest submission period predicted (TOTK_MIRROR_PRESNAP, presnap_wanted)
-static int mirror_own = 1;             // TOTK_MIRROR_OWN: mirror_sync skips the pages own_chunk notes (rt_knob mode)
+static int mirror_presnap = 8;         // pre-snap: longest submission period predicted (DKB_MIRROR_PRESNAP, presnap_wanted)
+static int mirror_own = 1;             // DKB_MIRROR_OWN: mirror_sync skips the pages own_chunk notes (rt_knob mode)
 static PoolRec **mlist;                // pool_lock: mirrored pools by import_lo
 static int nm, mcap;
 static uint32_t msub;                  // replay: number of the submission being recorded
@@ -2535,18 +2535,18 @@ static PlatMutex flush_lock = PLAT_MUTEX_INIT;
 // the list of pending copies are theirs one at a time. A pool's acc_sub is stored last, so the thread that reads it
 // without the lock (vk_mem_use) sees a pool as synced only once its copies are queued.
 static PlatMutex mirror_lock = PLAT_MUTEX_INIT;
-// Takes mirror_lock only while helper threads exist, so with TOTK_REPLAY_PAR=0 (the default) the replay thread works
+// Takes mirror_lock only while helper threads exist, so with DKB_REPLAY_PAR=0 (the default) the replay thread works
 // the mirrors alone and takes no lock, as before the helpers. Returns whether it took the lock, for mirror_unlock:
 // vk_spec_count is set once, by the replay thread, so a caller reads it once and pairs the two on that reading.
 static int mem_workers;   // vk_mem_threads: the workers of sliced passes (vk_exec.c) bind mirrors too
-// TOTK_MEMORY=verify reads r->kept on the completion thread (kept_page), so it always takes the lock.
+// DKB_MEMORY=verify reads r->kept on the completion thread (kept_page), so it always takes the lock.
 static int mirror_shared(void) {
     return mirror_verify || vk_spec_count() || __atomic_load_n(&mem_workers, __ATOMIC_ACQUIRE);
 }
 static int mirror_lock_if_shared(void) {
     if (!mirror_shared()) return 0;
     if (plat_mutex_trylock(&mirror_lock)) return 1;
-    uint64_t t0 = kern_now_ns();   // contended: TOTK_TRACE=perf counts the long waits (perf_lock_wait)
+    uint64_t t0 = kern_now_ns();   // contended: DKB_TRACE=perf counts the long waits (perf_lock_wait)
     plat_mutex_lock(&mirror_lock);
     if (rt_trace & RT_TRACE_PERF) perf_lock_wait(PERF_LOCK_MIRROR, kern_now_ns() - t0);
     return 1;
@@ -2563,11 +2563,11 @@ typedef struct {
     // Staged mirrors (staged_upload, staged_wb_record): bytes and ranges copied in through staging, write-back bytes
     // in flight left out, CPU time of the prologue's part; write-back bytes and ranges, their recording time.
     uint64_t st_up_bytes, st_up_ranges, st_skip_bytes, st_up_t, st_wb_bytes, st_wb_ranges, st_wb_t;
-    // TOTK_TRACE=perf: the CPU time of every prologue (vk_mem_mirror_prologue, both kinds of mirror), and staged_upload's
+    // DKB_TRACE=perf: the CPU time of every prologue (vk_mem_mirror_prologue, both kinds of mirror), and staged_upload's
     // by part: the lookups of the blocked bytes (st_blocked: the upload ranges looked up, the pieces found, their time),
     // the staging buffers it took and their time, the copies out of guest memory.
     uint64_t pro_t, st_blk_t, st_blk_n, st_blk_ranges, st_stg_n, st_stg_t, st_cpy_t;
-    // TOTK_TRACE=perf: staged_split_own's page split (its time), the ranges it took and the pieces it made.
+    // DKB_TRACE=perf: staged_split_own's page split (its time), the ranges it took and the pieces it made.
     uint64_t st_sp_loop_t, st_sp_in, st_sp_pieces;
 } MirrorAcc;
 static MirrorAcc mrep;                 // replay: this submission
@@ -2579,60 +2579,60 @@ static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mism
 static void sparse_cache_open(void);
 
 static void mirror_mode(int discrete, uint32_t vendor) {
-    const char *e = cfg_value("TOTK_MEMORY");
+    const char *e = cfg_value("DKB_MEMORY");
     int mode = discrete ? 1 : 0;   // 0 import, 1 mirror, 2 verify
     const char *why = discrete ? "auto, discrete gpu" : "auto, uma";
     if (strcmp(e, "auto")) {
-        if (!strcmp(e, "import")) mode = 0, why = "TOTK_MEMORY=import";
-        else if (!strcmp(e, "mirror")) mode = 1, why = "TOTK_MEMORY=mirror";
-        else if (!strcmp(e, "verify")) mode = 2, why = "TOTK_MEMORY=verify";
-        else rt_log("mem: TOTK_MEMORY=%s is not import, mirror, verify or auto: auto", e);
+        if (!strcmp(e, "import")) mode = 0, why = "DKB_MEMORY=import";
+        else if (!strcmp(e, "mirror")) mode = 1, why = "DKB_MEMORY=mirror";
+        else if (!strcmp(e, "verify")) mode = 2, why = "DKB_MEMORY=verify";
+        else rt_log("mem: DKB_MEMORY=%s is not import, mirror, verify or auto: auto", e);
     }
     vk_mirror_on = mode > 0;
     mirror_verify = mode == 2;
     // The sparse write-back dispatch (sparse_ranges): by default on NVIDIA, the one vendor it was measured on;
-    // TOTK_SPARSE_MIRROR_COPY=1 turns it on elsewhere, 0 off.
-    const char *sparse = cfg_get("TOTK_SPARSE_MIRROR_COPY");
+    // DKB_SPARSE_MIRROR_COPY=1 turns it on elsewhere, 0 off.
+    const char *sparse = cfg_get("DKB_SPARSE_MIRROR_COPY");
     mirror_sparse = vk_mirror_on && (sparse && *sparse ? strcmp(sparse, "0") != 0 : vendor == 0x10de);
     if (vk_mirror_on)
-        rt_log("mem: small write-back ranges are copied by %s (TOTK_SPARSE_MIRROR_COPY=%s)",
+        rt_log("mem: small write-back ranges are copied by %s (DKB_SPARSE_MIRROR_COPY=%s)",
                mirror_sparse ? "one compute dispatch a pool" : "copy regions", sparse && *sparse ? sparse : "auto");
     if (mirror_sparse) sparse_cache_open();
     if (vk_mirror_on) {
         mirror_own = rt_knob("MIRROR_OWN", "1");
         if (mirror_own != 1)
-            rt_log("mem: pages the mirrors' own GPU writes stamped are copied in again%s (TOTK_MIRROR_OWN=%s)",
+            rt_log("mem: pages the mirrors' own GPU writes stamped are copied in again%s (DKB_MIRROR_OWN=%s)",
                    mirror_own == 2 ? " in the A blocks" : "", mirror_own == 2 ? "ab" : "0");
     }
-    const char *g = cfg_get("TOTK_MIRROR_GAP");
+    const char *g = cfg_get("DKB_MIRROR_GAP");
     mirror_gap = g && *g ? atoi(g) : 2;
     if (mirror_gap < 0) mirror_gap = 0;
-    const char *ps = cfg_get("TOTK_MIRROR_PRESNAP");
+    const char *ps = cfg_get("DKB_MIRROR_PRESNAP");
     mirror_presnap = ps && *ps ? atoi(ps) : 8;
     if (mirror_presnap < 0) mirror_presnap = 0;
     // Submissions a region stays unwritten before it is frozen. 60 rather than 300: in a fight 100 of the 257 MiB
     // queried a frame lay in regions idle for 30-299 submissions, and a thaw by a write costs about 60 us.
-    const char *fi = cfg_get("TOTK_FREEZE_IDLE");
+    const char *fi = cfg_get("DKB_FREEZE_IDLE");
     freeze_idle = fi && *fi ? atoi(fi) : 60;
     if (freeze_idle < 0) freeze_idle = 0;
-    const char *sh = cfg_get("TOTK_SHADOW");
+    const char *sh = cfg_get("DKB_SHADOW");
 #if defined(_WIN32) || defined(__APPLE__)
     shadow_on = sh && *sh && strcmp(sh, "0");
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
-                          sh && *sh ? " (TOTK_SHADOW)" : "");
-    // TOTK_MIRROR_STAGED=<MiB>, <KiB>k, all or auto ("staged mirror" below). It needs the mirror, the deferred imports
+                          sh && *sh ? " (DKB_SHADOW)" : "");
+    // DKB_MIRROR_STAGED=<MiB>, <KiB>k, all or auto ("staged mirror" below). It needs the mirror, the deferred imports
     // (a pool imported at nvnMemoryPoolInitialize has paid the import already) and no shadow storage. all stages every
     // lazily imported pool (staged_min 1 byte), the small ones included; 0 is off. auto (unset) is all on Windows with
     // an NVIDIA GPU and the fault write-back, the only combination measured: elsewhere the GPU's bytes would go back
-    // at every fence (TOTK_STAGED_WB=fence, about half the frame rate on the Hilltop Layer of Surf Hills), and no
+    // at every fence (DKB_STAGED_WB=fence, about half the frame rate on the Hilltop Layer of Surf Hills), and no
     // AMD or Intel GPU has run it. auto stays quiet when the mirror is off (an integrated GPU, shadow storage).
-    const char *ms = cfg_get("TOTK_MIRROR_STAGED");
+    const char *ms = cfg_get("DKB_MIRROR_STAGED");
     int def = !ms || !*ms || !strcmp(ms, "auto");
 #ifdef _WIN32
-    const char *wbv = cfg_get("TOTK_STAGED_WB");
+    const char *wbv = cfg_get("DKB_STAGED_WB");
     int def_on = vendor == 0x10de && !(wbv && !strcmp(wbv, "fence"));
 #else
     int def_on = 0;
@@ -2646,42 +2646,42 @@ static void mirror_mode(int discrete, uint32_t vendor) {
         want = !strcmp(ms, "all") ? 1 : end && (*end == 'k' || *end == 'K') ? v << 10 : v << 20;
     }
     if (want) {
-        const char *lz = cfg_get("TOTK_POOL_LAZY");
+        const char *lz = cfg_get("DKB_POOL_LAZY");
         const char *off = !vk_mirror_on ? "the VRAM mirror is off" : shadow_on ? "shadow storage is on"
-                        : lz && !strcmp(lz, "0") ? "TOTK_POOL_LAZY=0 imports every pool at once" : NULL;
-        if (off) rt_log("mem: TOTK_MIRROR_STAGED=%s ignored: %s", def ? "auto" : ms, off);
+                        : lz && !strcmp(lz, "0") ? "DKB_POOL_LAZY=0 imports every pool at once" : NULL;
+        if (off) rt_log("mem: DKB_MIRROR_STAGED=%s ignored: %s", def ? "auto" : ms, off);
         else {
             staged_min = want;
-            const char *wb = cfg_get("TOTK_STAGED_WB");
+            const char *wb = cfg_get("DKB_STAGED_WB");
             staged_fault = !(wb && !strcmp(wb, "fence"));
             if (wb && *wb && strcmp(wb, "fence") && strcmp(wb, "fault"))
-                rt_log("mem: TOTK_STAGED_WB=%s is not fence or fault: fault", wb);
+                rt_log("mem: DKB_STAGED_WB=%s is not fence or fault: fault", wb);
             char which[64];
             if (want == 1) snprintf(which, sizeof which, "of every size");
             else if (want % (1ull << 20)) snprintf(which, sizeof which, "of %llu KiB or more", (unsigned long long)(want >> 10));
             else snprintf(which, sizeof which, "of %llu MiB or more", (unsigned long long)(want >> 20));
             rt_log("mem: imported pools %s are not imported: their VRAM mirror is filled from staging buffers (pools up "
                    "to %llu MiB in the prologue of the part that first uses them), and the bytes the GPU writes %s "
-                   "(TOTK_MIRROR_STAGED=%s, TOTK_STAGED_WB=%s)", which, (unsigned long long)(STG_SMALL >> 20),
+                   "(DKB_MIRROR_STAGED=%s, DKB_STAGED_WB=%s)", which, (unsigned long long)(STG_SMALL >> 20),
                    staged_fault ? "stay in it until a CPU access fetches them" : "go back to guest memory at each fence",
                    def ? "auto: all on Windows with NVIDIA, 0 turns it off" : ms, staged_fault ? "fault" : "fence");
 #ifdef _WIN32
             if (staged_fault) mem_guard_hook(staged_fetch);
-            else mem_probe_on();   // TOTK_STAGED_READ_PROBE: staged_wb_done protects the pages it wrote (memory.c read probe)
+            else mem_probe_on();   // DKB_STAGED_READ_PROBE: staged_wb_done protects the pages it wrote (memory.c read probe)
 #else
-            if (staged_fault) rt_log("mem: TOTK_STAGED_WB=fault needs page faults this platform does not route: fence"), staged_fault = 0;
+            if (staged_fault) rt_log("mem: DKB_STAGED_WB=fault needs page faults this platform does not route: fence"), staged_fault = 0;
 #endif
-            const char *ftv = cfg_get("TOTK_STAGED_FETCH_TEST");
+            const char *ftv = cfg_get("DKB_STAGED_FETCH_TEST");
             fetch_test = staged_fault && ftv && *ftv ? atoi(ftv) : 0;
             if (fetch_test < 0) fetch_test = 0;
             if (fetch_test)
                 rt_log("mem: staged fetch test: %d GPU-owned pages a frame are touched and their fetches checked against "
-                       "a reference copy (TOTK_STAGED_FETCH_TEST)", fetch_test);
-            const char *bc = cfg_get("TOTK_STAGED_BLK_CHECK");
+                       "a reference copy (DKB_STAGED_FETCH_TEST)", fetch_test);
+            const char *bc = cfg_get("DKB_STAGED_BLK_CHECK");
             blk_check = bc && *bc && strcmp(bc, "0");
             if (blk_check)
                 rt_log("mem: staged blocked check: every staged upload range is also cut against the union of the "
-                       "blocked lists, as before ce4178e, and the two answers compared (TOTK_STAGED_BLK_CHECK)");
+                       "blocked lists, as before ce4178e, and the two answers compared (DKB_STAGED_BLK_CHECK)");
         }
     }
     mem_decommit_hook(mem_decommit_cb);
@@ -2700,11 +2700,11 @@ static void wb_range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off,
 // (k), which vk_mem_mirror_end merges into the pools' kept lists (kept_take).
 // lock: the owner adds to a and the write-back thread takes a held part's ranges out of it (wb_job_run) while the owner
 // records slices of a later pass; uncontended otherwise.
-// The GPU writes into staged mirrors (TOTK_MIRROR_STAGED, sfeed) go into a third list (s), without the lock: no held
+// The GPU writes into staged mirrors (DKB_MIRROR_STAGED, sfeed) go into a third list (s), without the lock: no held
 // part's write-back takes them (wb_early_takes), so only vk_mem_mirror_end reads it, when no slice is being recorded,
 // and it moves them into stw. In a with the others, they were scanned again at every held part's end
 // (vk_mem_mirror_wb_held) and moved twice at the submission's end, though nothing before the end takes them: with
-// TOTK_MIRROR_STAGED=all on the Hilltop Layer of Surf Hills (3.2.0) the lists grew to about 19,000 such ranges through
+// DKB_MIRROR_STAGED=all on the Hilltop Layer of Surf Hills (3.2.0) the lists grew to about 19,000 such ranges through
 // each submission, for 12 checks a frame.
 typedef struct WbLocal {
     MRange *a;
@@ -2787,7 +2787,7 @@ static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, ui
 #define MRANGE_LESS(x, y) ((x)->r != (y)->r ? (uintptr_t)(x)->r < (uintptr_t)(y)->r : (x)->off < (y)->off)
 MSORT_DEFINE(sort_ranges, MRange, MRANGE_LESS)   // by pool, then offset, without a call per comparison (msort.h)
 
-// One dispatch for a pool's many small write-back ranges (TOTK_SPARSE_MIRROR_COPY, on by default on NVIDIA; 0 copies
+// One dispatch for a pool's many small write-back ranges (DKB_SPARSE_MIRROR_COPY, on by default on NVIDIA; 0 copies
 // every range with vkCmdCopyBuffer). A copy region costs the GPU about 0.7 us whatever its size: in the Hilltop Layer of Surf Hills
 // (3.2.0) 5,500 write-back ranges a frame of 870 bytes on average took 4.2 ms of an RTX 5090's GPU time as copy
 // regions and 0.4 ms as one workgroup each. The transfer path keeps bulk copies, where it is faster (the mirror
@@ -3049,7 +3049,7 @@ static void refuse(PoolRec *r, int why, const char *what) {
     plat_add64(&m_refused_bytes[why], (int64_t)n);
 }
 
-// TOTK_MIRROR_BUDGET: a ceiling on the VRAM all mirrors take together, so that they leave room for the textures on a
+// DKB_MIRROR_BUDGET: a ceiling on the VRAM all mirrors take together, so that they leave room for the textures on a
 // small card. Unset: none, mirrors are made first come, first served until the device is nearly full (the check in
 // mirror_create). "auto": the rule of mirror_budget.h, a quarter of the card and at most 3 GiB, or an eighth on a card
 // of 4.5 GiB or less. A number sets the ceiling in MiB. A pool refused here is read by the GPU from host memory. The
@@ -3057,10 +3057,10 @@ static void refuse(PoolRec *r, int why, const char *what) {
 static uint64_t mirror_ceiling(uint64_t vram) {
     static int64_t mib = -2;   // -2 unread, -1 auto, 0 none
     if (mib == -2) {
-        const char *e = cfg_get("TOTK_MIRROR_BUDGET");
+        const char *e = cfg_get("DKB_MIRROR_BUDGET");
         const long long amount = e ? strtoll(e, NULL, 10) : 0;
         mib = e && !strcmp(e, "auto") ? -1 : amount > 0 ? amount : 0;
-        if (mib) rt_log("vk: mirrors are limited to %s%s of VRAM in all (TOTK_MIRROR_BUDGET)", mib < 0 ? "a share" : e,
+        if (mib) rt_log("vk: mirrors are limited to %s%s of VRAM in all (DKB_MIRROR_BUDGET)", mib < 0 ? "a share" : e,
                         mib < 0 ? "" : " MiB");
     }
     if (!mib) return UINT64_MAX;
@@ -3083,7 +3083,7 @@ typedef struct {
 } BigMirror;
 static BigMirror big_mirror;
 
-// ---- staged mirror (TOTK_MIRROR_STAGED=<MiB>, <KiB>k or all; auto by default: all on Windows with an NVIDIA GPU, see mirror_mode)
+// ---- staged mirror (DKB_MIRROR_STAGED=<MiB>, <KiB>k or all; auto by default: all on Windows with an NVIDIA GPU, see mirror_mode)
 // An imported pool of at least that size is never imported for the mirror's sake: the terrain arena of each layer of
 // Surf Hills is a 450 MiB CPU_CACHED pool, and its import at the first GPU use (65-85 ms in vkAllocateMemory on NVIDIA)
 // plus the full copy import -> mirror stalled one frame (#397). Importing it earlier only moved the cost: the driver
@@ -3094,7 +3094,7 @@ static BigMirror big_mirror;
 // - Resolve: resolve_locked does not import the pool; its spans carry no buffer until VK_MEM_USE or VK_MEM_PICK gives
 //   them the mirror (vk_mem_use makes it on the first use, as for other pools). A path that needs the pool's own buffer
 //   imports it then (staged_import, logged once per pool with the reason and counted by reason in the staged line): a
-//   mirror refused (budget, overlap, no write watch, allocation) or the first use on a TOTK_REPLAY_PAR helper thread,
+//   mirror refused (budget, overlap, no write watch, allocation) or the first use on a DKB_REPLAY_PAR helper thread,
 //   which may not make a mirror. Every buffer user of a resolved span calls VK_MEM_USE or VK_MEM_PICK first
 //   (vk_exec*.c, vk_dump.c): binds, draws, indirect-reset targets and aligned bind_range descriptors use, copies, fills,
 //   updates and vk_exec_read_buffer pick, and a pick of a staged pool makes its mirror as a use does. The rest only read
@@ -3122,9 +3122,9 @@ static BigMirror big_mirror;
 //   (staged_wb_record), and at the fence, before the submission's other callbacks report the writes (the job is queued
 //   at vk_mem_mirror_begin), the completion thread copies the bytes into guest memory (staged_wb_done). That copy is a
 //   CPU write: the next write-watch query stamps those pages, and the mirror takes them in again (counted in the
-//   staged line as upload). A held part's early write-back (TOTK_WB_EARLY, vk_mem_mirror_wb_held) leaves these
+//   staged line as upload). A held part's early write-back (DKB_WB_EARLY, vk_mem_mirror_wb_held) leaves these
 //   ranges to vk_mem_mirror_end (wb_early_takes): it copies into a pool's import, which a staged pool lacks.
-// - TOTK_MEMORY=verify works unchanged: it compares the mirror with guest memory. Pages a staged write-back just
+// - DKB_MEMORY=verify works unchanged: it compares the mirror with guest memory. Pages a staged write-back just
 //   wrote count as written since their sync and are skipped. It also checks the zero fills: a page with no stamp
 //   whose guest bytes are not zero would show as a mismatch.
 // Eglantine (Eden) never imports guest memory for its buffers either: video_core/buffer_cache/buffer_cache.h
@@ -3139,7 +3139,7 @@ static BigMirror big_mirror;
 #define STG_CHUNK (16ull << 20)   // a piece of the first fill: STG_SLOTS of them fit the staging pool's kept blocks
 #define STG_SLOTS 4
 
-// TOTK_STAGED_INJECT (a test of the failure paths, off by default; logged when on):
+// DKB_STAGED_INJECT (a test of the failure paths, off by default; logged when on):
 // - import: every staged pool's mirror is refused (as a failed device-local allocation) and its import after all
 //   fails (staged_import): the uses of its spans must skip them, as those of a pool whose first-use import failed;
 // - fence: from the batch of the first piece of the first staged_fill that will reuse a staging buffer, every upload
@@ -3151,11 +3151,11 @@ enum { INJECT_NONE, INJECT_IMPORT, INJECT_FENCE, INJECT_SORT };
 static int staged_inject(void) {
     static int mode = -1;
     if (mode < 0) {
-        const char *e = cfg_get("TOTK_STAGED_INJECT");
+        const char *e = cfg_get("DKB_STAGED_INJECT");
         int m = !e || !*e ? INJECT_NONE : !strcmp(e, "import") ? INJECT_IMPORT : !strcmp(e, "fence") ? INJECT_FENCE
               : !strcmp(e, "sort") ? INJECT_SORT : -1;
-        if (m < 0) rt_log("mem: TOTK_STAGED_INJECT=%s is not import, fence or sort: ignored", e), m = INJECT_NONE;
-        if (m) rt_log("mem: TOTK_STAGED_INJECT=%s: %s", e, m == INJECT_IMPORT ? "staged pools get neither a mirror nor an import"
+        if (m < 0) rt_log("mem: DKB_STAGED_INJECT=%s is not import, fence or sort: ignored", e), m = INJECT_NONE;
+        if (m) rt_log("mem: DKB_STAGED_INJECT=%s: %s", e, m == INJECT_IMPORT ? "staged pools get neither a mirror nor an import"
                       : m == INJECT_FENCE ? "upload batches from a staged first fill's on read as on a lost device"
                       : "the staged sort thread is not started, as if it could not be");
         mode = m;
@@ -3172,11 +3172,11 @@ typedef struct StJob {
     int ended;                          // st_lock: recorded (vk_mem_mirror_end): its ranges block the later uploads
     StRange *w;
     int n, cap;
-    StRange *o;                         // TOTK_STAGED_WB=fault: the GPU writes that stay in the mirror (own_take)
+    StRange *o;                         // DKB_STAGED_WB=fault: the GPU writes that stay in the mirror (own_take)
     int no, co;
     int sorted;                         // 0 while the sort thread has o (st_sort_queue); readers st_sorted_wait first
     uint32_t sub;                       // msub of the submission
-    VkBuffer tbuf;                      // TOTK_STAGED_FETCH_TEST: the reference copy of the o ranges (staged_ref_record)
+    VkBuffer tbuf;                      // DKB_STAGED_FETCH_TEST: the reference copy of the o ranges (staged_ref_record)
     VmaAllocation talloc;
     const uint8_t *tmap;
     uint64_t bytes;
@@ -3257,7 +3257,7 @@ static void staged_free_buffer(void *arg) {   // completion thread: a prologue's
     free(s);
 }
 
-// ---- GPU-owned pages (TOTK_STAGED_WB=fault, the default with TOTK_MIRROR_STAGED)
+// ---- GPU-owned pages (DKB_STAGED_WB=fault, the default with DKB_MIRROR_STAGED)
 // A staged mirror's write-backs are not copied into guest memory: the mirror alone holds the bytes the GPU wrote, and
 // the pool keeps them as a list of byte ranges (r->own, offsets from import_lo, sorted and disjoint). At the fence of
 // the submission that wrote them (staged_wb_done, ahead of the submission's other callbacks, so before the game sees
@@ -3271,7 +3271,7 @@ static void staged_free_buffer(void *arg) {   // completion thread: a prologue's
 // that goes away drops its pages unfetched (staged_forget). plat_mem_readable counts owned pages as readable.
 // Uploads into the mirror leave the owned bytes out (st_blocked), and copy the other bytes of an owned page without
 // opening it (memory.c mem_probe_copy). A page a fetch brought owned bytes in for is marked CPU-read (r->cpu_read): the
-// GPU's later writes to it go back at the fence as with TOTK_STAGED_WB=fence (vk_mem_mirror_end), so a page the CPU
+// GPU's later writes to it go back at the fence as with DKB_STAGED_WB=fence (vk_mem_mirror_end), so a page the CPU
 // keeps reading does not fault every frame.
 // Why at the fence and not when the write is recorded: at the fence every owned range is complete in the mirror, so a
 // fetch only waits for its own copy (queued after everything submitted) and never for a submission still being
@@ -3292,13 +3292,13 @@ static void staged_free_buffer(void *arg) {   // completion thread: a prologue's
 // - memory the GPU writes, polled by the game. A staged pool's GPU writes reach guest memory only through
 //   staged_wb_done's copy-back or a fetch, never early, and staged_wb_done protects a submission's owned ranges before
 //   its copy-back bytes go in, so a flag the copy-back carries is not seen ahead of data the same submission left
-//   owned. GPU writes into an imported pool (below the TOTK_MIRROR_STAGED size, imported after all, or never given a
+//   owned. GPU writes into an imported pool (below the DKB_MIRROR_STAGED size, imported after all, or never given a
 //   mirror) land in guest memory before the timeline value is signalled: at the GPU's own pace without a mirror, in
 //   the end-of-submission write-back copy with one. A game that polls such a flag, written by the GPU after data in a
 //   staged pool, could see the flag and then the stale data. Ordering that would take protecting the pages when the
 //   write is recorded and a fetch that waits for an unfinished submission without own_lock (see above); with
-//   TOTK_MIRROR_STAGED=all only the pools imported after all are such writers, and the staged line counts them. With
-//   an import (TOTK_MEMORY=import) there is no window.
+//   DKB_MIRROR_STAGED=all only the pools imported after all are such writers, and the staged line counts them. With
+//   an import (DKB_MEMORY=import) there is no window.
 // Eglantine (Eden) does the same on a guest CPU read of GPU-written buffer memory: video_core/gpu.cpp OnCPURead
 // downloads the page-aligned area at once and waits for it (RasterizerVulkan::GetFlushArea, FlushRegion,
 // BufferCache::DownloadMemory), and BufferCache::NoteCpuRead remembers those pages so that later GPU writes to them
@@ -3333,7 +3333,7 @@ static volatile int64_t own_take_part[5];
 static volatile int64_t st_wbdone_max;   // since the last staged line: the longest staged_wb_done (ns), a fence's delay
 static _Thread_local int st_in_wb;   // staged_wb_done runs on this thread now: staged_fetch counts a fetch it causes
 static volatile int64_t ft_touch[4], ft_cmp_bytes, ft_cmp_pieces, ft_bad, ft_skip;
-static PlatMutex ft_lock = PLAT_MUTEX_INIT;   // TOTK_STAGED_FETCH_TEST: a touch from its pick to its access (staged_forget)
+static PlatMutex ft_lock = PLAT_MUTEX_INIT;   // DKB_STAGED_FETCH_TEST: a touch from its pick to its access (staged_forget)
 static void ft_ref_take(PoolRec *r, const StRange *add, int n, const uint8_t *tmap, uint32_t sub);
 static void ft_check(PoolRec *r, const struct KeptRange *cut, const VkBufferCopy *reg, int n, const uint8_t *map,
                      const uint32_t *rec0, uint64_t w0off);
@@ -3342,7 +3342,7 @@ typedef struct { uint64_t frame, addr, rip, ns; int write, guest, kernel, pages;
 static OwnRec own_rec[OWN_LOG];
 static volatile int32_t own_nrec, own_logged;
 
-// With TOTK_MIRROR_STAGED=all there are hundreds to thousands of staged mirrors, and few of them own any byte: the
+// With DKB_MIRROR_STAGED=all there are hundreds to thousands of staged mirrors, and few of them own any byte: the
 // lookups below are binary searches of st_pools, and the loops that want every pool's owned bytes (the fetch exerciser,
 // own_log) walk st_own, not every staged pool.
 // own_lock held: the index of the first staged pool whose import_lo is above a.
@@ -3429,7 +3429,7 @@ static void own_cut(PoolRec *r, const struct KeptRange *cut, int n) {
 // joined: st_blocked's binary search, staged_wb_done's runs per pool and own_take's merge. staged_split_own builds the
 // list in the order the submission noted its GPU writes, and this thread sorts it. Sorted on the replay thread at the
 // end of every submission, the 11,000 to 19,000 staged write-back ranges a frame of the Hilltop Layer of Surf Hills
-// (3.2.0) with TOTK_MIRROR_STAGED=all took 0.15 to 0.27 ms of it; without staged mirrors the write-back thread sorts the
+// (3.2.0) with DKB_MIRROR_STAGED=all took 0.15 to 0.27 ms of it; without staged mirrors the write-back thread sorts the
 // same ranges for the held parts' write-backs (wb_job_run), beside the replay. The first reader, the next submission's
 // first staged upload, comes about a millisecond later, and a reader that comes before the sort is done waits for it
 // (st_sorted_wait). The thread only sorts memory the replay thread handed it (no lock, no Vulkan call, no pool record
@@ -3445,11 +3445,11 @@ static struct {
     StJob *q[ST_SORT_Q];
     int head, n;
 } SS = {.lock = PLAT_MUTEX_INIT, .cv = PLAT_COND_INIT, .done = PLAT_COND_INIT};
-// TOTK_TRACE=perf, since the last staged line: the sorts' time; the readers' waits for a sort and their time, [0] by
+// DKB_TRACE=perf, since the last staged line: the sorts' time; the readers' waits for a sort and their time, [0] by
 // staged_upload (the replay thread), [1] by staged_wb_done (the completion thread).
 static volatile int64_t st_sort_ns, st_sort_waits[2], st_sort_wait_ns[2];
 
-// The sort thread, or the replay thread (TOTK_STAGED_FETCH_TEST, whose staged_ref_record reads the list next, or when
+// The sort thread, or the replay thread (DKB_STAGED_FETCH_TEST, whose staged_ref_record reads the list next, or when
 // the thread could not be started). j->sorted is the last write to the job: a reader may free it right after.
 static void st_sort_job(StJob *j) {
     static _Thread_local StRange *sbuf;
@@ -3497,7 +3497,7 @@ static void st_sorted_wait(const StJob *j, int who) {
 // staged_split_own, the job's list complete: the sort thread takes it (or this thread sorts it, see above).
 static void st_sort_queue(StJob *j) {
     plat_mutex_lock(&SS.lock);
-    // TOTK_STAGED_INJECT=sort: the thread is never asked for, as if plat_thread_new had failed.
+    // DKB_STAGED_INJECT=sort: the thread is never asked for, as if plat_thread_new had failed.
     if (!SS.t && !SS.failed &&
         (staged_inject() == INJECT_SORT || !(SS.t = plat_thread_new(st_sorter, NULL, "vk staged sort")))) {
         SS.failed = 1;
@@ -3530,7 +3530,7 @@ static void st_sort_drain(void) {   // staged_shutdown: no job is being sorted w
 // the lists are the same.
 // st_lock: the owned-range lists of jobs whose fence has come (staged_wb_done), kept for the next jobs' lists. In the
 // order the writes came few ranges join, so a job's list held thousands of ranges of 48 bytes on the Hilltop Layer of
-// Surf Hills (3.2.0) with TOTK_MIRROR_STAGED=all; grown from nothing at every submission, it was reallocated a dozen
+// Surf Hills (3.2.0) with DKB_MIRROR_STAGED=all; grown from nothing at every submission, it was reallocated a dozen
 // times and its new pages faulted in: the split took 0.16 ms a frame there, 0.04 ms with the lists kept.
 #define ST_OBUF 4
 static StRange *st_obuf[ST_OBUF];
@@ -3613,7 +3613,7 @@ static void own_take(PoolRec *r, const StRange *add, int n, const uint8_t *tmap,
         plat_mutex_unlock(&own_lock);
         return;
     }
-    if (tmap && r->t_page) ft_ref_take(r, add, n, tmap, sub);   // TOTK_STAGED_FETCH_TEST
+    if (tmap && r->t_page) ft_ref_take(r, add, n, tmap, sub);   // DKB_STAGED_FETCH_TEST
     own_merge(r, add, n);
     for (int i = 0; i < n; i++)
         for (uint64_t p = (r->import_lo + add[i].off) & ~0xfffull; p < r->import_lo + add[i].off + add[i].size; p += 0x1000) {
@@ -3828,7 +3828,7 @@ static int staged_fetch(uint64_t page, int write, uint64_t rip, int kernel) {
         }
     }
     if (total) {
-        uint32_t rec0[OWN_BLOCK >> 12];   // TOTK_STAGED_FETCH_TEST: the pages' last recorded writes before the copy
+        uint32_t rec0[OWN_BLOCK >> 12];   // DKB_STAGED_FETCH_TEST: the pages' last recorded writes before the copy
         if (r->t_rec)
             for (uint64_t p = w0; p < w1; p += 0x1000)
                 rec0[(p - w0) >> 12] = __atomic_load_n(&r->t_rec[(p - r->import_lo) >> 12], __ATOMIC_RELAXED);
@@ -3969,7 +3969,7 @@ static void own_log(uint64_t frame, double f) {
         for (int k = 0; k < r->nown; k++) bytes += r->own[k].hi - r->own[k].lo;
     }
     // Every staged pool's marks: a byte a page, about 0.3 MB for the arena and all the small pools of a layer, once a
-    // summary line (every 60 frames with TOTK_TRACE=perf).
+    // summary line (every 60 frames with DKB_TRACE=perf).
     for (int i = 0; i < nst_pools; i++) {
         const PoolRec *r = st_pools[i];
         if (!r->cpu_read) continue;
@@ -4021,7 +4021,7 @@ static void own_log(uint64_t frame, double f) {
     own_logged = nr;
 }
 
-// ---- fetch exerciser (TOTK_STAGED_FETCH_TEST=<pages per frame>, off by default; a test of TOTK_STAGED_WB=fault)
+// ---- fetch exerciser (DKB_STAGED_FETCH_TEST=<pages per frame>, off by default; a test of DKB_STAGED_WB=fault)
 // On Hilltop nothing reads a staged pool's GPU-owned pages, so staged_fetch never runs on its own. This mode touches
 // that many randomly chosen owned pages a frame through the real fault path: half from a thread of its own (a runtime
 // thread) and half from the present path (vk_mem_census, on the thread that presented, which is the game's own thread
@@ -4213,13 +4213,13 @@ static void ft_log(uint64_t frame) {
            (long long)plat_xchg64(&ft_bad, 0), (long long)plat_xchg64(&ft_skip, 0));
 }
 
-// TOTK_STAGED_INJECT=import: the import fails as lazy_import's does (no GPU buffer, counted in n_import_failures). The
+// DKB_STAGED_INJECT=import: the import fails as lazy_import's does (no GPU buffer, counted in n_import_failures). The
 // caller holds pool_lock shared.
 static int inject_import_fail(PoolRec *r) {
     plat_mutex_lock(&lazy_lock);
     if (r->lazy) {
         long n = plat_inc32(&n_import_failures);
-        if (n <= 8) rt_log("vk: pool %#llx (flags %#x, %#llx bytes) has no GPU buffer (%ld so far; TOTK_STAGED_INJECT=import)",
+        if (n <= 8) rt_log("vk: pool %#llx (flags %#x, %#llx bytes) has no GPU buffer (%ld so far; DKB_STAGED_INJECT=import)",
                            (unsigned long long)r->lo, r->flags, (unsigned long long)r->size, n);
         __atomic_store_n(&r->lazy, 0, __ATOMIC_RELEASE);
     }
@@ -4238,7 +4238,7 @@ static void staged_import(VkMemSpan *sp, int why) {
     static const char *const text[SI_N] = {"its VRAM mirror does not fit the budget", "its range is not write-watched",
                                            "it overlaps or shares a page with another pool",
                                            "the device-local allocation failed",
-                                           "first used on a TOTK_REPLAY_PAR helper thread", "its VRAM mirror was refused"};
+                                           "first used on a DKB_REPLAY_PAR helper thread", "its VRAM mirror was refused"};
     PoolRec *r = sp->pool;
     uint64_t t0 = qpc();
     pool_lock_shared();   // as resolve_locked: the record stays alive while lazy_import runs
@@ -4365,7 +4365,7 @@ static void staged_fill(PoolRec *r, const BigMirror *bm) {
         cb = vk_upload_begin();
         vkCmdCopyBuffer(cb, s->buf, r->mbuf, (uint32_t)k, reg);
         s->seq = vk_upload_seq();
-        // TOTK_STAGED_INJECT=fence: this piece's batch and every later one read as lost (retire, upload_wait_locked),
+        // DKB_STAGED_INJECT=fence: this piece's batch and every later one read as lost (retire, upload_wait_locked),
         // when a later piece will wait for this buffer.
         if (!pieces && copied > STG_SLOTS * STG_CHUNK && staged_inject() == INJECT_FENCE && !inject_lost)
             __atomic_store_n(&inject_lost, s->seq, __ATOMIC_RELAXED);
@@ -4419,7 +4419,7 @@ static void st_job_blocked(const StRange *s, int n, const PoolRec *r, uint64_t a
 }
 
 // st_lock held (no job leaves st_jobs meanwhile, and an ended job's lists no longer change), and own_lock with
-// TOTK_STAGED_WB=fault: the bytes of [a, b) of staged pool r (offsets from import_lo) whose guest copy is stale, as
+// DKB_STAGED_WB=fault: the bytes of [a, b) of staged pool r (offsets from import_lo) whose guest copy is stale, as
 // pieces clipped to [a, b) in *out, sorted by offset (they may overlap): the pool's owned ranges, and the write-back
 // and owned ranges of the jobs recorded before the submission of `fence` (a submission's own write-backs come after its
 // uploads in GPU order: the last part's prologue is recorded after vk_mem_mirror_end) whose staged_wb_done has not
@@ -4467,10 +4467,10 @@ static void st_cut(PoolRec *r, uint64_t a, uint64_t b, const struct KeptRange *b
     if (a < b) range_add(cut, ncut, ccut, r, a, b - a), *total += b - a;
 }
 
-// ---- TOTK_STAGED_BLK_CHECK=1 (off by default): st_blocked and st_cut against the union they replaced
+// ---- DKB_STAGED_BLK_CHECK=1 (off by default): st_blocked and st_cut against the union they replaced
 // Before ce4178e every prologue built one union of the blocked ranges (st_blk_update) and staged_upload cut each upload
 // range against it. With the check on, staged_upload builds that union again from the lists st_blocked reads, under
-// the locks it holds for them (st_lock; own_lock with TOTK_STAGED_WB=fault; the jobs' owned lists already waited for
+// the locks it holds for them (st_lock; own_lock with DKB_STAGED_WB=fault; the jobs' owned lists already waited for
 // with st_sorted_wait), cuts every upload range against it as the old loop did, and compares the blocked bytes, the
 // copied pieces and the byte counts with those of st_blocked and st_cut. tests/staged_blocked_test.py compares the same
 // on random lists; this compares them on the game's. Replay thread only (staged_upload), the counters aside.
@@ -4575,7 +4575,7 @@ static void st_chk_range(PoolRec *r, uint64_t a, uint64_t b, uint64_t fence, con
 }
 
 static void st_chk_log(const char *when) {
-    rt_log("mem: staged blocked check %s: uploads checked %lld, upload ranges %lld, mismatches %lld (TOTK_STAGED_BLK_CHECK)",
+    rt_log("mem: staged blocked check %s: uploads checked %lld, upload ranges %lld, mismatches %lld (DKB_STAGED_BLK_CHECK)",
            when, (long long)chk_uploads, (long long)chk_ranges, (long long)chk_bad);
 }
 
@@ -4641,7 +4641,7 @@ static int staged_upload(VkCommandBuffer cb, uint64_t fence) {
     for (const StJob *j = st_jobs; j; j = j->next)
         if (j->ended && j->fence < fence) st_sorted_wait(j, 0);
     if (staged_fault) plat_mutex_lock(&own_lock);   // the own lists stay as they are while they are read
-    if (blk_check) st_chk_union(fence);   // TOTK_STAGED_BLK_CHECK
+    if (blk_check) st_chk_union(fence);   // DKB_STAGED_BLK_CHECK
     uint64_t tb = qpc();
     ncut = 0;
     uint64_t total = 0, skipped = 0;
@@ -4781,7 +4781,7 @@ static int own_covered(const PoolRec *r, uint64_t pg, const CbPiece *pc, int n) 
     return 1;
 }
 
-// staged_wb_done, TOTK_STAGED_WB=fault, pool_lock shared, r live: the job's copy-back ranges w[i0..i1) of r go into
+// staged_wb_done, DKB_STAGED_WB=fault, pool_lock shared, r live: the job's copy-back ranges w[i0..i1) of r go into
 // guest memory. They are the GPU's writes to pages the CPU had read (r->cpu_read when the job was recorded), but such
 // a page can be owned again by now: a submission recorded before the fetch that made the page CPU-read put its writes
 // there on the own list, and its fence, after the fetch, protected the page again (own_take). Thawing such a page
@@ -4887,8 +4887,8 @@ static void staged_wb_done(void *arg) {
     uint64_t t_done = qpc();
     st_in_wb = 1;
     st_sorted_wait(j, 1);   // the sort thread's until sorted (st_sort_job)
-    if (j->no) {   // TOTK_STAGED_WB=fault: the writes that stay in the mirror
-        if (j->tbuf) vmaInvalidateAllocation(vk_ctx()->vma, j->talloc, 0, VK_WHOLE_SIZE);   // TOTK_STAGED_FETCH_TEST
+    if (j->no) {   // DKB_STAGED_WB=fault: the writes that stay in the mirror
+        if (j->tbuf) vmaInvalidateAllocation(vk_ctx()->vma, j->talloc, 0, VK_WHOLE_SIZE);   // DKB_STAGED_FETCH_TEST
         for (int i = 0; i < j->no;) {
             PoolRec *r = j->o[i].r;
             pool_lock_shared();   // only for the check: own_take runs without it
@@ -4913,7 +4913,7 @@ static void staged_wb_done(void *arg) {
             int k = i;
             for (; k < j->n && j->w[k].r == r; k++) {}
             if (live && staged_fault && ms_get(r) == MS_ON) staged_copy_back(r, j, i, k, &cw, &ncw, &ccw), live = 0;
-            for (int x = i; live && x < k;) {   // TOTK_STAGED_WB=fence: runs of ranges whose pages touch, one thaw each
+            for (int x = i; live && x < k;) {   // DKB_STAGED_WB=fence: runs of ranges whose pages touch, one thaw each
                 uint64_t base = r->import_lo, a = (base + j->w[x].off) & ~0xfffull;
                 uint64_t b = (base + j->w[x].off + j->w[x].size + 0xfff) & ~0xfffull;
                 int y = x + 1;
@@ -4926,7 +4926,7 @@ static void staged_wb_done(void *arg) {
                 for (int z = x; z < y; z++)
                     memcpy((void *)(uintptr_t)(base + j->w[z].off), j->map + j->w[z].roff, j->w[z].size);
                 cw_note_range(&cw, &ncw, &ccw, a, b);
-                // TOTK_STAGED_READ_PROBE: from here on the first CPU access to these pages is counted (memory.c).
+                // DKB_STAGED_READ_PROBE: from here on the first CPU access to these pages is counted (memory.c).
                 for (; x < y; x++) mem_probe_protect(base + j->w[x].off, j->w[x].size);
             }
             i = k;
@@ -5030,7 +5030,7 @@ static void mirror_create(PoolRec *r, BigMirror *fill) {
     r->mgen = gen_now;   // the whole-range copy below holds every write observed so far
     plat_mutex_unlock(&gen_lock);
     if (untracked) return refuse(r, MR_UNTRACKED, "its range is not write-watched");
-    if (staged && staged_inject() == INJECT_IMPORT) return refuse(r, MR_ALLOC, "TOTK_STAGED_INJECT=import");
+    if (staged && staged_inject() == INJECT_IMPORT) return refuse(r, MR_ALLOC, "DKB_STAGED_INJECT=import");
     uint64_t t3 = qpc();
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = n, .usage = pool_usage(c),
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
@@ -5277,7 +5277,7 @@ void vk_mem_use(VkMemSpan *sp) {
             if (!sp->buffer) staged_import(sp, SI_HELPER);
             return;
         }
-        uint64_t ph = perf_ph_begin_cpu();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+        uint64_t ph = perf_ph_begin_cpu();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
         uint64_t t0 = qpc();
         vk_texture_hold_barrier();   // the walk, with a pass end held back: its slices resolve the pool as it was
         int locked = mirror_lock_if_shared();
@@ -5300,7 +5300,7 @@ void vk_mem_use(VkMemSpan *sp) {
         return;
     }
     if (__atomic_load_n(&r->acc_sub, __ATOMIC_ACQUIRE) != msub) {
-        uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+        uint64_t ph = perf_ph_begin();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
         mirror_sync(r);
         perf_ph_end(PERF_PH_MSYNC, ph);
     }
@@ -5315,7 +5315,7 @@ void vk_mem_pick(VkMemSpan *sp) {
     if (!sp->buffer) return vk_mem_use(sp);
     if (ms_get(r) != MS_ON) return;
     if (__atomic_load_n(&r->acc_sub, __ATOMIC_ACQUIRE) != msub) {
-        uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+        uint64_t ph = perf_ph_begin();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
         mirror_sync(r);
         perf_ph_end(PERF_PH_MSYNC, ph);
     }
@@ -5347,7 +5347,7 @@ void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
     vk_spec_event();   // a bind the GPU writes through: never the helper thread's
     PoolRec *r = sp->pool;
     if (!r || ms_get(r) != MS_ON || sp->buffer != r->mbuf || !size) return;
-    if (fetch_test) ft_stamp(r, sp->offset, size);   // TOTK_STAGED_FETCH_TEST
+    if (fetch_test) ft_stamp(r, sp->offset, size);   // DKB_STAGED_FETCH_TEST
     static _Thread_local struct { const PoolRec *r; uint64_t off, size; uint32_t sub, tag; } seen[128];
     __typeof__(seen[0]) *k = &seen[((uintptr_t)r >> 6 ^ sp->offset >> 4) & 127];
     uint32_t sub = __atomic_load_n(&msub, __ATOMIC_RELAXED);
@@ -5377,7 +5377,7 @@ int vk_mem_gpu_kept(const VkMemSpan *sp, uint64_t size) {
     vk_spec_event();
     PoolRec *r = sp->pool;
     if (!r || ms_get(r) != MS_ON || sp->buffer != r->mbuf || !size) return 0;
-    if (fetch_test) ft_stamp(r, sp->offset, size);   // TOTK_STAGED_FETCH_TEST: a kept write changes the mirror too
+    if (fetch_test) ft_stamp(r, sp->offset, size);   // DKB_STAGED_FETCH_TEST: a kept write changes the mirror too
     const uint64_t page = 1ull << GEN_PAGE_SHIFT, a = r->import_lo + sp->offset, b = a + size;
     uint64_t pa = (a + page - 1) & ~(page - 1), pb = b & ~(page - 1);
     if (pa >= pb) return vk_mem_gpu_wrote(sp, size), 0;   // no whole page
@@ -5491,8 +5491,8 @@ static void freeze_pass(void) {
 }
 
 // Whether vk_mem_mirror_begin snaps pool r's regions for the submission after prev: the submissions p and 2p before the
-// next one synced it, for some p from 1 to TOTK_MIRROR_PRESNAP (8 by default), as with a pool one of a frame's
-// submissions uses every frame. TOTK_MIRROR_PRESNAP=0 snaps the previous submission's pools instead, as before. A pool
+// next one synced it, for some p from 1 to DKB_MIRROR_PRESNAP (8 by default), as with a pool one of a frame's
+// submissions uses every frame. DKB_MIRROR_PRESNAP=0 snaps the previous submission's pools instead, as before. A pool
 // missed here is snapped by its first sync (mirror_sync), in the middle of the recording, under mirror_lock and
 // gen_lock, and the slice workers wait for the lock while one runs. Bananza's submissions (4 a frame on Hilltop and
 // Canyon Layer) use disjoint pools: none of the previous submission's pools was synced by the next one, so that
@@ -5575,7 +5575,7 @@ static void mirror_begin(void) {
     mrep.presnap_t += qpc() - t0;
 }
 
-// TOTK_TRACE=perf: a part of the replay (perf.c ph_frame).
+// DKB_TRACE=perf: a part of the replay (perf.c ph_frame).
 void vk_mem_mirror_begin(void) {
     uint64_t ph = perf_ph_begin();
     mirror_begin();
@@ -5679,8 +5679,8 @@ static void verify_cb(void *arg) {   // completion thread
         }
         for (uint64_t o = 0; o < s->len; o += 1ull << GEN_PAGE_SHIFT) {
             uint64_t a = r->import_lo + s->off + o;
-            // A GPU-owned page (TOTK_STAGED_WB=fault): guest memory is stale there on purpose, and reading it would
-            // fetch it. Verify cannot cover those pages; TOTK_STAGED_WB=fence, whose fence copies put the GPU's bytes
+            // A GPU-owned page (DKB_STAGED_WB=fault): guest memory is stale there on purpose, and reading it would
+            // fetch it. Verify cannot cover those pages; DKB_STAGED_WB=fence, whose fence copies put the GPU's bytes
             // into guest memory, compares them.
             if (r->sfeed && staged_fault && mem_guard_state(a)) {
                 owned++;
@@ -5749,13 +5749,13 @@ static int verify_record(VkCommandBuffer cb, uint64_t fence) {
     return j->n + 2;
 }
 
-// TOTK_WB_EARLY (on by default; "ab" for an in-run A/B; a number above 1 sets the least KiB, default 256): the least
+// DKB_WB_EARLY (on by default; "ab" for an in-run A/B; a number above 1 sets the least KiB, default 256): the least
 // KiB of noted GPU writes worth a held part's write-back (vk_mem_mirror_wb_held), 0 when off. What no held part's
 // write-back takes goes back at the end of the submission, after its last full barrier, as before.
 int vk_mem_wb_early_min(void) {
     static int mode = -1, min_kib = 256;
     if (mode < 0) {
-        const char *e = cfg_get("TOTK_WB_EARLY");
+        const char *e = cfg_get("DKB_WB_EARLY");
         mode = rt_knob("WB_EARLY", "1");
         if (e && atoi(e) > 1) min_kib = atoi(e), mode = 1;
     }
@@ -5763,9 +5763,9 @@ int vk_mem_wb_early_min(void) {
 }
 
 // Whether a held part's write-back (vk_mem_mirror_wb_held) takes the range: tagged upto or lower. A staged mirror's
-// (TOTK_MIRROR_STAGED, sfeed) is never in these lists: a staged pool has no import for the write-back thread's copy to
+// (DKB_MIRROR_STAGED, sfeed) is never in these lists: a staged pool has no import for the write-back thread's copy to
 // land in, so vk_mem_gpu_wrote notes its ranges in stw and the slice threads' s lists, and vk_mem_mirror_end records
-// them for the readback buffer of the submission's job (staged_wb_record) and, with TOTK_STAGED_WB=fault, for the
+// them for the readback buffer of the submission's job (staged_wb_record) and, with DKB_STAGED_WB=fault, for the
 // pool's own list (staged_split_own). sfeed is set before MS_ON and never changes, and a range is only noted for a pool
 // in MS_ON, so the choice of list needs no lock.
 static int wb_early_takes(const MRange *m, uint32_t upto) { return m->tag <= upto; }
@@ -5784,7 +5784,7 @@ static uint64_t wb_take_tagged(MRange *a, int *n, uint32_t upto, MRange **out, i
     return bytes;
 }
 
-// ---- write-backs of held parts (TOTK_WB_EARLY), on a thread of their own
+// ---- write-backs of held parts (DKB_WB_EARLY), on a thread of their own
 // A held part has been submitted (vk_exec.c par_settle_front): the GPU writes tagged upto or lower, the walk's and every
 // slice thread's, were all recorded into that part or the ones before it in queue order (slices of a later held pass,
 // still being recorded, tag theirs higher). This thread takes them out of the lists, sorts them, records their
@@ -5913,7 +5913,7 @@ static void wb_shutdown(VkCtx *c) {   // vk_mem_shutdown, the device idle: the p
 void vk_mem_mirror_wb_held(uint64_t fence, uint32_t upto, uint64_t min_bytes) {
     if (!vk_mirror_on) return;
     // Enough to be worth a command buffer? The walk's own list here, the slice threads' under their locks.
-    uint64_t ph = perf_ph_begin_cpu();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+    uint64_t ph = perf_ph_begin_cpu();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
     uint64_t bytes = 0;
     for (int i = 0; i < nwbl; i++) bytes += wb_early_takes(&wbl[i], upto) ? wbl[i].size : 0;
     for (WbLocal *w = __atomic_load_n(&wb_locals, __ATOMIC_ACQUIRE); w && bytes < min_bytes; w = w->next) {
@@ -5941,7 +5941,7 @@ void vk_mem_mirror_wb_held(uint64_t fence, uint32_t upto, uint64_t min_bytes) {
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
     if (!vk_mirror_on) return 0;
     int rec = 0;
-    uint64_t ph = perf_ph_begin_cpu();   // TOTK_TRACE=perf: a part of the replay inside the mirror end (perf.c ph_frame)
+    uint64_t ph = perf_ph_begin_cpu();   // DKB_TRACE=perf: a part of the replay inside the mirror end (perf.c ph_frame)
     wb_jobs_wait();   // their copies go to the queue ahead of the last part, and the lists are this thread's again
     if (WB.t) {
         plat_mutex_lock(&WB.lock);
@@ -5973,7 +5973,7 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
         if (nwbl) rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies, fence);
         if (need_ref || nstw) {
             uint64_t ps = perf_ph_begin_cpu();
-            if (need_ref) rec += staged_ref_record(cb);   // TOTK_STAGED_FETCH_TEST
+            if (need_ref) rec += staged_ref_record(cb);   // DKB_STAGED_FETCH_TEST
             if (nstw) rec += staged_wb_record(cb);
             perf_ph_end(PERF_PH_ST_SPLIT, ps);
         }
@@ -5998,7 +5998,7 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
     return rec;
 }
 
-// One summary line: with TOTK_TRACE=perf every 60 frames, else at frames 600 and 1800.
+// One summary line: with DKB_TRACE=perf every 60 frames, else at frames 600 and 1800.
 static void mirror_log(uint64_t frame) {
     static uint64_t last, ww_last;
     plat_mutex_lock(&gen_lock);
@@ -6127,7 +6127,7 @@ static void mirror_log(uint64_t frame) {
 
 }
 
-// With TOTK_TRACE=perf every 600 frames: what holds device-local memory, to see what grows over a long session.
+// With DKB_TRACE=perf every 600 frames: what holds device-local memory, to see what grows over a long session.
 // VMA's blocks and allocations on the device-local heaps, texture entries with their own memory, the VRAM mirrors and
 // the objects waiting for their last submission to retire.
 static void vram_log(uint64_t frame) {
@@ -6203,7 +6203,7 @@ typedef struct {
     int ts, timed;   // its timestamp pair in up_pool (-1: none), and whether this use of it writes the pair
 } Batch;
 
-// The perf line's upload figures (TOTK_TRACE=perf, the full overlay). Upload batches go to the queue outside
+// The perf line's upload figures (DKB_TRACE=perf, the full overlay). Upload batches go to the queue outside
 // vk_sync.c's timed submissions, and the ASTC decoding of texture uploads records into them, so their GPU time, their
 // count, the bytes staged for them and the time threads wait for them are counted here (perf_gpu_line). Each batch owns
 // one timestamp pair, kept with its reused command buffer; batches past UP_PAIRS go untimed.
@@ -6286,7 +6286,7 @@ static void free_staging(VkCtx *c, Batch *b) {
     b->nstg = 0;
 }
 
-// TOTK_STAGED_INJECT=fence (staged_inject): the first upload batch that reads as on a lost device, and every later one;
+// DKB_STAGED_INJECT=fence (staged_inject): the first upload batch that reads as on a lost device, and every later one;
 // 0 none. Their fence status and fence wait give VK_ERROR_DEVICE_LOST, so retire stops in front of them as on a real
 // loss.
 static volatile uint64_t inject_lost;

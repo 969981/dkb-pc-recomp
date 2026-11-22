@@ -369,7 +369,7 @@ class LauncherBuildTest(unittest.TestCase):
     def test_totk_setup_has_no_download_code(self):
         sys.path.insert(0, str(ROOT / 'tools'))
         import make_release
-        exe = self.build(*make_release.launcher_sources('totk'), name='totk.exe', game='totk').upper()
+        exe = self.build(*make_release.launcher_sources('totk'), name='dkb.exe', game='totk').upper()
         self.assertNotIn(b'WINHTTP.DLL', exe)
         self.assertNotIn(b'BCRYPT.DLL', exe)
         self.assertNotIn('dkb-release.txt'.upper().encode('utf-16-le'), exe)

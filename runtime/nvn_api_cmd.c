@@ -10,7 +10,7 @@
 // the same command memory to several command buffers recording at once (budgeted for real NVN encodings), and our
 // records are larger. The game's command and control memory is accounted only. EndRecording copies the finished
 // recording into host memory; the handle is that copy (a flat OP_BEGIN ... OP_END sequence) and lives until the game
-// adds the same control memory again. CallCommands and CopyCommands inline the called recording, or with TOTK_CALL_REF
+// adds the same control memory again. CallCommands and CopyCommands inline the called recording, or with DKB_CALL_REF
 // record one OP_CALL naming its copy (inline_recording); copies hold no OP_JUMP.
 #include <stddef.h>
 #include <stdint.h>
@@ -76,7 +76,7 @@ static void memory_event(Cpu *c, cmd_t *o, int event, uint64_t min) {
 #define SEG_TOK(o) ((uint32_t)(((uintptr_t)(o) >> 3) & 0x7fffffffu))
 #define SEG_OWNED(o) ((o)->seg && (o)->seg_tok == SEG_TOK(o))
 // The prefix of a copy and of a recording buffer (see "recording copies" below).
-// ubo (TOTK_USNAP_LIST): a copy's merged uniform ranges (nvn_handle_ubo_list), NULL without; set by take_recording,
+// ubo (DKB_USNAP_LIST): a copy's merged uniform ranges (nvn_handle_ubo_list), NULL without; set by take_recording,
 // NULL in a recording buffer. Lists of 1 or 2 ranges live inline in ubo_inl to avoid heap churn on small leaves.
 typedef union {
     nvn_range_list hdr;
@@ -217,7 +217,7 @@ static const tex_t *tex_pin(const NVNtexture *nt) {
 // about 500 lookups per AddControlMemory under the exclusive lock (1.4.3 field: 53 calls a frame, 2 MiB ranges, 3.7
 // copies per page), and the recording threads waited on it.
 // deferred: 0 unknown, 1 none, 2 some. block: the size of the block the prefix starts (copy_block). refs
-// (TOTK_CALL_REF): the OP_CALL records in other copies that name this one; flags bit 0 (COPY_CALLS): this copy holds
+// (DKB_CALL_REF): the OP_CALL records in other copies that name this one; flags bit 0 (COPY_CALLS): this copy holds
 // OP_CALL records; bit 1 (COPY_WAITS): it, or a copy it calls, holds an OP_WAIT_SYNC record; depth: the longest chain of
 // OP_CALL records from this copy down (0 without any). A copy never changes after take_recording, so the submit scans
 // (wait_target, resolve_deferred) skip a copy whose prefix says it holds nothing for them.
@@ -308,12 +308,12 @@ static nvn_hmap copy_pages = {.klen = 8};   // page -> copy_bucket
 static nvn_hmap copy_live = {.klen = 8};    // handle -> copy_prefix of a live copy
 static uint64_t ncopies, copy_bytes, copies_made, nsubmits;
 // Asynchronous replay: copies released by the game, and per-submission clones, that a queued submission still reads.
-// Freed once gfx_replayed_submits() reaches their used_at. With TOTK_CALL_REF also copies released while an OP_CALL
+// Freed once gfx_replayed_submits() reaches their used_at. With DKB_CALL_REF also copies released while an OP_CALL
 // record still names them, with either replay; they are freed once no record names them (refs 0).
 static copy_prefix **zombies;
 static uint32_t nzombies, cap_zombies;
 
-// ---------- uniform range lists (nvn_api.h nvn_ubo_list_build, vk_usnap.c TOTK_USNAP_LIST)
+// ---------- uniform range lists (nvn_api.h nvn_ubo_list_build, vk_usnap.c DKB_USNAP_LIST)
 // Without a back end that builds them (tests, the null back end) a copy has none.
 __attribute__((weak)) int nvn_ubo_lists_on(void) { return 0; }
 __attribute__((weak)) size_t nvn_ubo_list_build(nvn_range *r, size_t n) {   // only called once lists are on
@@ -405,7 +405,7 @@ static void zombie_add(copy_prefix *pf) {   // copy_lock held
     zombies[nzombies++] = pf;
 }
 
-// TOTK_CALL_REF (default 1): CallCommands and CopyCommands of a recording without deferred binds or pushes record an
+// DKB_CALL_REF (default 1): CallCommands and CopyCommands of a recording without deferred binds or pushes record an
 // OP_CALL to its copy instead of copying its body into the caller (Hill: about 18,000 calls and 11 ms of the game's
 // main thread a frame). The replay, the WaitSync scan and the deferred-bind resolution already follow OP_CALL. The
 // called copy counts the OP_CALL records that name it (refs) and is freed only once that count is 0 and no queued
@@ -419,8 +419,8 @@ static void zombie_add(copy_prefix *pf) {   // copy_lock held
 static int call_ref(void) {
     static int on = -1;
     if (on < 0) {
-        on = cfg_bool("TOTK_CALL_REF");
-        if (on) rt_log("nvn: TOTK_CALL_REF: CallCommands references recordings without deferred records");
+        on = cfg_bool("DKB_CALL_REF");
+        if (on) rt_log("nvn: DKB_CALL_REF: CallCommands references recordings without deferred records");
     }
     return on;
 }
@@ -526,7 +526,7 @@ static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
 // about 1 ms a frame in reallocations and small copies (1.4.3, field); copying every recording at its end took about
 // two fifths of the main thread's running time in the Hilltop Layer of Surf Hills (3.2.0, 185 KiB a copy on average).
 // With uniform range lists on (nvn_ubo_lists_on), the check also gathers the copy's normalized uniform bindings (and
-// composes OP_CALL callees' merged lists under TOTK_CALL_REF, deduplicated through a stack-local L1 cache and
+// composes OP_CALL callees' merged lists under DKB_CALL_REF, deduplicated through a stack-local L1 cache and
 // consecutive-callee skip) into the calling thread's buffer, and the copy keeps their merged list (ubo_list_set). The
 // records are final here and the submit changes no uniform binding (resolve_deferred). If any callee lacks a list, the
 // caller gets NULL and the snapshot walks it (still taking lists for callees that have them).
@@ -601,7 +601,7 @@ static uint8_t *take_recording(cmd_t *o) {
         memcpy(pf + 1, p, n);
     }
     uint64_t block = pf->block;
-    // With TOTK_CALL_REF the deferred records are known from here on (inline_recording needs it before any submit).
+    // With DKB_CALL_REF the deferred records are known from here on (inline_recording needs it before any submit).
     *pf = (copy_prefix){COPY_MAGIC, n, 0, 0, call_ref() ? (uint64_t)(deferred ? 2 : 1) : 0, block, 0,
                         (uint16_t)((calls ? COPY_CALLS : 0) | (waits ? COPY_WAITS : 0)), (uint16_t)depth, NULL, {{0}}};
     if (ubo_ok) ubo_list_set(pf, ubo_buf, nubo);
@@ -783,7 +783,7 @@ NVN_API(nvnCommandBufferEndRecording) {
 // NVNboolean nvnCommandBufferIsRecording(const NVNcommandBuffer *cmd)
 NVN_API(nvnCommandBufferIsRecording) { ret_x(c, cmd_of(c)->recording != 0); }
 
-// With TOTK_CALL_REF (the default), a call to a recording without deferred records whose copy nests less than
+// With DKB_CALL_REF (the default), a call to a recording without deferred records whose copy nests less than
 // CALL_REF_DEPTH deep becomes one OP_CALL naming that copy, which counts the reference and so outlives the game's
 // release of its control memory. Every other call copies the called recording into the caller at the call position:
 // the game recycles command memory in small steps, so a handle may be gone by the time the caller is submitted.
@@ -811,7 +811,7 @@ static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
             o->hw_used += (size_t)bytes - 16 - (8 + sizeof(p_jump));   // the game sees the usage a copy would have taken
             o->last_rec = 0;
             if ((__atomic_add_fetch(&n_call_refs, 1, __ATOMIC_RELAXED) & 0xfffff) == 0)
-                rt_log("nvn: TOTK_CALL_REF: %llu calls referenced, %llu copied (deferred records), %llu copied (nested %d "
+                rt_log("nvn: DKB_CALL_REF: %llu calls referenced, %llu copied (deferred records), %llu copied (nested %d "
                        "deep), %llu abandoned recordings kept their counts, %u released copies still named or read",
                        (unsigned long long)n_call_refs, (unsigned long long)__atomic_load_n(&n_call_inlined, __ATOMIC_RELAXED),
                        (unsigned long long)__atomic_load_n(&n_call_deep, __ATOMIC_RELAXED), CALL_REF_DEPTH,
@@ -1456,7 +1456,7 @@ void nvn_submit_prepare(const uint64_t *handles, int n) {
         nvn_mode_trace(NVN_MODE_HANDLE, 0, handle, (uint32_t)i, now);
     }
     wait_submission(handles, n);
-    for (int i = 0; i < n; i++)   // a copy known to hold no deferred record (take_recording, TOTK_CALL_REF) has none to read
+    for (int i = 0; i < n; i++)   // a copy known to hold no deferred record (take_recording, DKB_CALL_REF) has none to read
         if (((const copy_prefix *)(uintptr_t)handles[i] - 1)->deferred != 1) resolve_deferred((const uint8_t *)(uintptr_t)handles[i], 0);
 }
 

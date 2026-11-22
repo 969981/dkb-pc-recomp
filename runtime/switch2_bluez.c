@@ -1,4 +1,4 @@
-// Ported from adriadam10/mkw-recomp (MIT, Copyright (c) 2026 Adrià), runtime/input/linux_switch2.c at eb8fe198; TOTK_SWITCH2 for MKW_SWITCH2.
+// Ported from adriadam10/mkw-recomp (MIT, Copyright (c) 2026 Adrià), runtime/input/linux_switch2.c at eb8fe198; DKB_SWITCH2 for MKW_SWITCH2.
 // Switch 2 controllers over Bluetooth LE on Linux (switch2.h): BlueZ over the system D-Bus, with libdbus-1 loaded at run
 // time as SDL loads it (no headers: the few calls and the two structs used are declared below, after dbus 1.12's
 // dbus-message.h and dbus-errors.h). One thread: LE discovery, Nintendo's advertisements (company id 0x0553), connect,
@@ -84,7 +84,7 @@ struct S2Link {
     struct S2Link *next;
 };
 static S2Link *busy;   // the link whose handshake is running (its replies come through pump)
-static int trace;      // TOTK_SWITCH2=2
+static int trace;      // DKB_SWITCH2=2
 static S2Link *links;
 
 // Devices seen advertising for us and not yet tried, and those that failed (not tried again for 10 s)
@@ -225,7 +225,7 @@ static void drop(S2Link *l) {
     free(l);
 }
 
-// TOTK_SWITCH2=2 logs each device once: BlueZ repeats an advertisement every time it hears it (DuplicateData)
+// DKB_SWITCH2=2 logs each device once: BlueZ repeats an advertisement every time it hears it (DuplicateData)
 static int first_seen(const char *path) {
     static char seen[64][160];
     static int n;
@@ -263,7 +263,7 @@ static void device_props(const char *path, DBusMessageIter *props) {
             D.get_basic(&me, &company);
             D.next(&me);
             if (!variant(&me, &mv) || !bytes(&mv, &d, &n)) continue;
-            if (trace && first_seen(path))   // TOTK_SWITCH2=2: each device with manufacturer data once, for a report
+            if (trace && first_seen(path))   // DKB_SWITCH2=2: each device with manufacturer data once, for a report
                 rt_log("input: Switch 2 trace: %s company 0x%04x, %d bytes%s", path, company, n,
                        company == S2_COMPANY_ID ? (s2_advert_parse(d, (size_t)n, &a) ? ", a Switch 2 controller" : ", Nintendo, not a Switch 2 controller") : "");
             if (company != S2_COMPANY_ID || !s2_advert_parse(d, (size_t)n, &a)) continue;
@@ -489,8 +489,8 @@ static void bt_main(void *arg) {
 }
 
 void switch2_start(void) {
-    trace = cfg_int("TOTK_SWITCH2") >= 2;
-    if (cfg_int("TOTK_SWITCH2") && !plat_thread_spawn(bt_main, NULL, "switch2", 0))
+    trace = cfg_int("DKB_SWITCH2") >= 2;
+    if (cfg_int("DKB_SWITCH2") && !plat_thread_spawn(bt_main, NULL, "switch2", 0))
         rt_log("input: Switch 2 controllers off: no thread");
 }
 

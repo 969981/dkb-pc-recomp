@@ -123,7 +123,7 @@ static int guard_fail(const char *kind, uint64_t v, uint64_t w) {
 // a frame on Hilltop Layer), so each thread keeps the last few pages it found readable. Those cover most entries but
 // not all (60 to 70 misses a frame there), and a miss is answered from memory.c's map of the guest heap and alias
 // region (mem_guest_readable) before plat_mem_readable, a system call, is asked: on Windows that VirtualQuery scanned
-// the run of like pages around the pointer, up to 308 MiB of committed heap with TOTK_HEAP_LAZY=0, up to 10 ms for one
+// the run of like pages around the pointer, up to 308 MiB of committed heap with DKB_HEAP_LAZY=0, up to 10 ms for one
 // call and 23 ms of the game threads' time a frame, and the back end's GetWriteWatch over the same reservation waited
 // behind it (#317: 5.2 to 6.5 ms a frame of queries that worked 0.4 to 0.5 ms; 36 and 45 fps on Hilltop, 74 and 71
 // with this map). rt_guard_stats counts the checks (in per-thread batches, so the hit path makes no shared write) and

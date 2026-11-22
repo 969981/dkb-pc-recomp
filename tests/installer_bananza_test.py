@@ -120,7 +120,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
 ''')
         for name in ('clang' + b.EXE, 'ninja' + b.EXE):
             (self.root / ('llvm/bin' if name.startswith('clang') else 'bin') / name).write_bytes(b'synthetic tool')
-        translator = self.root / 'bin' / ('totk_xlate' + b.EXE)
+        translator = self.root / 'bin' / ('dkb_xlate' + b.EXE)
         translator.write_bytes(b'synthetic translator')
         translator.with_suffix('.id').write_text('synthetic-translator-id\n')
         dlls = []
@@ -364,7 +364,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
             self.assertIn(build_game.flag_path(rt), gen_tokens)
             self.assertIn(build_game.flag_path(gen), gen_tokens)
             self.assertIn(build_game.flag_path(out), rt_tokens)
-            self.assertIn(f'-Map={build_game.flag_path(out / "totk.map")}', ld_tokens)
+            self.assertIn(f'-Map={build_game.flag_path(out / "dkb.map")}', ld_tokens)
 
         with patch.object(build_game, 'WIN', True):
             self.assertEqual(build_game.cmd_arg('plain/path'), 'plain/path')
@@ -1569,8 +1569,8 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         shutil.copyfile(self.options.translator.with_suffix('.id'), renamed.with_suffix('.id'))
         self.options.translator = renamed
         self.assertEqual(self.run_install()[0], 0)
-        self.assertTrue((self.dest/('totk_xlate'+b.EXE)).is_file())
-        self.assertTrue((self.dest/'totk_xlate.id').is_file())
+        self.assertTrue((self.dest/('dkb_xlate'+b.EXE)).is_file())
+        self.assertTrue((self.dest/'dkb_xlate.id').is_file())
         self.assertFalse((self.dest/renamed.name).exists())
 
     def test_wrong_translator_identity_is_rejected_before_writes(self):
@@ -1585,8 +1585,8 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         builder.write_text('''
 import json, os, pathlib, sys
 a=sys.argv; out=pathlib.Path(a[a.index('--out')+1]); out.mkdir(parents=True)
-(out/('totk_xlate.exe' if sys.platform=='win32' else 'totk_xlate')).write_bytes(b'synthetic translator')
-(out/'totk_xlate.id').write_text('synthetic-translator-id\\n')
+(out/('dkb_xlate.exe' if sys.platform=='win32' else 'dkb_xlate')).write_bytes(b'synthetic translator')
+(out/'dkb_xlate.id').write_text('synthetic-translator-id\\n')
 (out/'child-environment.json').write_text(json.dumps(dict(os.environ)))
 ''')
         self.temp.mkdir()
@@ -1602,7 +1602,7 @@ a=sys.argv; out=pathlib.Path(a[a.index('--out')+1]); out.mkdir(parents=True)
         # Windows treats environment names case-insensitively, including imported MSBuild properties.
         properties = {key.lower():value for key,value in child.items()}
         self.assertEqual(properties.get('usesharedcompilation'), 'false')
-        self.assertEqual(record['sha256'], b.sha256(self.dest/('totk_xlate'+b.EXE)))
+        self.assertEqual(record['sha256'], b.sha256(self.dest/('dkb_xlate'+b.EXE)))
         self.assertEqual(dict(os.environ), caller)
 
     def test_linked_source_is_rejected_before_writes(self):

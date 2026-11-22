@@ -38,7 +38,7 @@ static uint64_t memory_generation=1;   // the pool mappings: vk_mem_pool_gen
 static uint64_t mirror_generation;     // what vk_mem_gen counts on top of them (VRAM mirrors made)
 static uint32_t slots_generation=7, sampler_generation=9, texture_epoch=1;
 static uint32_t address_generation;   // vk_texture.c agen of the texture's address: moves when it is destroyed
-static int keep_ab=1;                 // TOTK_DESC_KEEP is "ab" here: on while this is 1
+static int keep_ab=1;                 // DKB_DESC_KEEP is "ab" here: on while this is 1
 static unsigned remapped, replaced, sampler_overwritten, lookup_count, full_count, locked, token_reads;
 static _Thread_local int prefetching;   // vk_exec_draw_prefetch's flag: never set here
 const VkTexImage *vk_texture_peek_by_id_locked(const dpool_ref *pool,int id,view_t *view,int *has_view,int *target)
@@ -58,7 +58,7 @@ static const GfxShaderRes resource={.slot=0,.type=GFX_TEX_2D};
 void rt_fatal(const char *fmt,...) { (void)fmt; abort(); }
 uint64_t vk_mem_gen(void) { return memory_generation+mirror_generation; }
 uint64_t vk_mem_pool_gen(void) { return memory_generation; }   // a remap below moves the pool mappings
-// TOTK_DESC_KEEP follows keep_ab; every other switch stays at its default.
+// DKB_DESC_KEEP follows keep_ab; every other switch stays at its default.
 int rt_knob(const char *name,const char *def) { return !strcmp(name,"DESC_KEEP")?2:atoi(def); }
 int rt_ab(void) { return keep_ab; }
 uint64_t vk_usnap_gen(void) { return 1; }
@@ -122,12 +122,12 @@ static void tex_info_full(VkExec *ex,const GfxShaderRes *r,uint64_t h,int storag
 static void support_in(const VkExec *ex,float in[3]) { (void)ex; (void)in; abort(); }
 static uint64_t ubo_ptr(const VkExec *ex,int st,const GfxShaderRes *r) { (void)ex; (void)st; (void)r; abort(); }
 '''
-    # The descriptor switches (TOTK_DESC_*), which tex_info_lookup and descriptor_state ask.
+    # The descriptor switches (DKB_DESC_*), which tex_info_lookup and descriptor_state ask.
     knobs = draw[draw.index('static int knob_on('):draw.index('static const char *const BSF_NAME[')]
     # Only the fields consumed by bind_sig are needed; pipeline range discovery
     # supplies one original fragment texture handle range, without a GPU pipeline.
     adapters = r'''
-static int bind_stats_on(DrawCtx *dc) { (void)dc; return 0; }   // TOTK_BIND_STATS off
+static int bind_stats_on(DrawCtx *dc) { (void)dc; return 0; }   // DKB_BIND_STATS off
 static int rs_class(const VkExec *ex,const RsRange *r) { (void)ex; (void)r; abort(); }
 static const RsList *rs_list(const VkExec *ex,const VkPipeInfo *info) {
     (void)ex; (void)info;
@@ -234,7 +234,7 @@ int main(void) {
     CHECK(ex.tex[NVN_STAGE_FS][0]==HANDLE && ex.img[NVN_STAGE_FS][0]==HANDLE &&
           vk_texture_slots_gen()==7 && vk_sampler_gen()==9,"handles and registration generations stayed unchanged");
 
-    // TOTK_DESC_KEEP: a VRAM mirror made between submissions moves vk_mem_gen but no pool mapping. Kept, the texture
+    // DKB_DESC_KEEP: a VRAM mirror made between submissions moves vk_mem_gen but no pool mapping. Kept, the texture
     // descriptors stay (the new epoch costs only the storage check, a lookup and no rebuild); off, they are dropped.
     builds=full_count;
     mirror_generation++, texture_epoch++;
@@ -275,7 +275,7 @@ int main(void) {
     keep_ab=1;
 
     // A texture registered over the sampler slot: vk_texture.c descriptor_registered bumps samp_gen for it whichever
-    // way TOTK_DESC_SAMP_GEN is set (tests/descriptor_memo_knobs_test.py), and the slot gives no sampler now.
+    // way DKB_DESC_SAMP_GEN is set (tests/descriptor_memo_knobs_test.py), and the slot gives no sampler now.
     builds=full_count;
     sampler_overwritten=1, sampler_generation++;
     expect(&ex,GFX_TEX_2D,202,0,2);

@@ -8,7 +8,7 @@
 // ---- moved from ov.h
 enum { OE_MSG_FOCUS_STATE_CHANGED = 15, OE_MSG_OPERATION_MODE_CHANGED = 30, OE_MSG_PERFORMANCE_MODE_CHANGED = 31 };
 void oe_push_message(uint32_t message);                   // ov_system.c
-void oe_set_focus(int in_focus);                          // ov_system.c: GetCurrentFocusState; TOTK_ASSUME_FOCUS pins 1
+void oe_set_focus(int in_focus);                          // ov_system.c: GetCurrentFocusState; DKB_ASSUME_FOCUS pins 1
 typedef struct { uint64_t alloc, free, realloc, user; } OvNvAllocator;
 typedef struct { OvNvAllocator graphics, devtools; uint64_t memory, memory_size; int initialized; } OvNvState;
 const OvNvState *ov_nv_state(void);                        // ov_gfx.c
@@ -29,7 +29,7 @@ int gfx_window_exiting(void);                              // an exit released t
 int gfx_window_closing(void);                              // the exit has started: the swapchain and the present passes are being freed
 int gfx_window_dirty(void);                                // the window changed size since the last take; leaves the mark
 int gfx_window_take_dirty(void);                           // the window changed size since the last call; clears the mark
-// The rectangle {x, y, w, h} a cw x ch picture is presented in inside a dw x dh image (TOTK_ASPECT); the rest is black.
+// The rectangle {x, y, w, h} a cw x ch picture is presented in inside a dw x dh image (DKB_ASPECT); the rest is black.
 void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]);
 #ifdef __APPLE__
 // macOS runs SDL's video calls (and AppKit's) on the process's main thread, so that thread runs the window's event
@@ -80,7 +80,7 @@ const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const u
 const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                   const GfxShaderAnswers *a);
 uint64_t gfx_shader_async_done(void);                      // translations finished by the background worker
-void gfx_shader_counts(uint64_t *keys, uint64_t *translated);   // distinct keys in memory, translations done (TOTK_TRACE=perf)
+void gfx_shader_counts(uint64_t *keys, uint64_t *translated);   // distinct keys in memory, translations done (DKB_TRACE=perf)
 // Translator answers for this device (vk_caps.c): shaderFloat64, storage offset rounding, subgroup size per vs/fs/cs.
 void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits);
 // Both host setters precede shader requests. GS has no subgroup default; repeated identical setup is harmless.
@@ -96,9 +96,9 @@ void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **o
 // to shader-answers.bin, and its program to shader-programs.bin, in the directory of `keys_path` (pipeline-keys.bin).
 void gfx_shader_record_at(const char *keys_path);
 void gfx_shader_record_flush(int force);                   // appends pending records; without force at most every 2 s
-// Translates every recorded (program, answers) on `threads` threads with up to `procs` translators (TOTK_TEST_PREPARE_SHADERS).
+// Translates every recorded (program, answers) on `threads` threads with up to `procs` translators (DKB_TEST_PREPARE_SHADERS).
 void gfx_shader_prepare_recorded(int threads, int procs);
-// totk.exe --prepare-shaders: translates <dir>/seed-answers.bin + seed-programs.bin (tools/prepare_shaders.py) and
+// dkb.exe --prepare-shaders: translates <dir>/seed-answers.bin + seed-programs.bin (tools/prepare_shaders.py) and
 // writes <dir>/shader-prepared.bin (stage, priority, input id per variant). 0 on success.
 int gfx_shader_prepare_seed(const char *dir, int threads, int procs);
 typedef struct { uint8_t iid[32]; uint8_t stage, prio; } GfxWarmEnt;   // prio 0: met in play; 1..3: prepared
@@ -154,7 +154,7 @@ uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]);   // Output
 void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]);     // CS: the LocalSize execution mode; 1, 1, 1 otherwise
 
 // ---- back end (gfx_null.c, vk_*.c).
-// TOTK_TRACE=gfx and the flight recorder: replay counters of the current frame, as the back end counts them.
+// DKB_TRACE=gfx and the flight recorder: replay counters of the current frame, as the back end counts them.
 typedef struct {
     uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
     uint64_t twin_restarts;   // pass restarts to copy a depth twin (vk_exec_draw.c twin_prepare)
@@ -211,17 +211,17 @@ typedef struct {
     void (*exit_wait)(void);
     void (*exit_release)(void);
     int  (*shader_tool)(int tool);  // --prepare-shaders and the like: GFX_TOOL_*; returns the process's exit code
-    // TOTK_FLIGHT thumbnails (flight.h): each present also keeps a FLIGHT_THUMB_W x FLIGHT_THUMB_H copy in a ring
+    // DKB_FLIGHT thumbnails (flight.h): each present also keeps a FLIGHT_THUMB_W x FLIGHT_THUMB_H copy in a ring
     // of n. thumbs_enable before the first present. thumbs_read copies frame's as RGBA when the ring still holds it
     // complete; 0 when it was never written, is still in flight or was overwritten. Any thread.
     void (*thumbs_enable)(int n);
     int  (*thumbs_read)(uint64_t frame, uint8_t *rgba);
     const GfxExecFrame *(*exec_frame)(void);   // the replay counters; they grow until the back end's frame log resets them
     int  (*device_text)(char *buf, size_t n);  // the system info's GPU and driver lines; 0 while there is no device
-    void (*dump_request)(void);     // F9 in the game window: the frame dump of TOTK_DUMP=key
+    void (*dump_request)(void);     // F9 in the game window: the frame dump of DKB_DUMP=key
 } GfxBackend;
 extern const GfxBackend gfx_null_backend, gfx_vulkan_backend;
-const GfxBackend *gfx_backend(void);                       // TOTK_GPU=null|vulkan (default vulkan)
+const GfxBackend *gfx_backend(void);                       // DKB_GPU=null|vulkan (default vulkan)
 int gfx_shader_tool(int tool);                             // the chosen back end's shader_tool; main.c's --*-shaders modes
 
 // ---- NVN front end (nvn_procs.c)

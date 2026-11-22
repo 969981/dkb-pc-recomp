@@ -360,9 +360,9 @@ void vk_exec_xfer_shutdown(void);
 
 int probe_vkcopy_astc(void) {
     // Keep configuration explicit: otherwise a passing CPU/native/BC fallback would not cover this decoder path.
-    if (strcmp(cfg_value("TOTK_ASTC"), "gpu") || cfg_bool("TOTK_ASTC_BC") ||
-        cfg_bool("TOTK_REPLAY_ASYNC") || strcmp(cfg_value("TOTK_SPLIT_DRAWS"), "0")) {
-        printf("probe-vkcopy-astc: requires TOTK_ASTC=gpu TOTK_ASTC_BC=0 TOTK_REPLAY_ASYNC=0 TOTK_SPLIT_DRAWS=0\n");
+    if (strcmp(cfg_value("DKB_ASTC"), "gpu") || cfg_bool("DKB_ASTC_BC") ||
+        cfg_bool("DKB_REPLAY_ASYNC") || strcmp(cfg_value("DKB_SPLIT_DRAWS"), "0")) {
+        printf("probe-vkcopy-astc: requires DKB_ASTC=gpu DKB_ASTC_BC=0 DKB_REPLAY_ASYNC=0 DKB_SPLIT_DRAWS=0\n");
         return 1;
     }
     uint64_t heap = 0;

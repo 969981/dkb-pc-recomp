@@ -27,7 +27,7 @@ As far as we know, no other static recompilation of a Switch 2 game is public.
 the Glacier layer, Snow World (Layer 500), the Resort and the Tempest layer. The current release is 0.5.1
 (20 November), a fix for 0.5.0's NVIDIA shader cache on Windows (#437). The [latest release](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries
 `DKB-Launcher.exe`, one small Windows file that installs the build tools, builds the game from your own dump (`.nup`,
-`.nx` or folders) and updates in place with one click. It also has the setup zip, a Linux AppImage and tarball, and a
+`.nx` or folders) and updates in place with one click. It also has the setup zip, a Linux AppImage, and a
 macOS preview: [docs/installer.md](docs/installer.md).
 
 New in 0.5.0:

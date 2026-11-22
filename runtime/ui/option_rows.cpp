@@ -373,14 +373,14 @@ static int row(const char *key, UiTextId label, UiTextId desc, const RowView &v,
     return off ? 0 : step;
 }
 
-// ---- writing a setting: at once in memory (live settings follow), to totk.ini a moment later (opt_save_tick)
+// ---- writing a setting: at once in memory (live settings follow), to dkb.ini a moment later (opt_save_tick)
 static uint64_t g_save_at;   // plat_now_ns deadline of the pending write; 0 none
 static bool g_save_logged;
 
 static void apply(const char *key, const char *value) {
     if (*value) {
         cfg_set(key, value);
-    } else {   // the automatic choice: the key unset, its line removed from totk.ini
+    } else {   // the automatic choice: the key unset, its line removed from dkb.ini
         const char *k = key;
         cfg_reset(&k, 1);
     }
@@ -394,7 +394,7 @@ int opt_save_tick(int force) {
     g_save_at = 0;
     if (!cfg_save() && !g_save_logged) {
         g_save_logged = true;
-        rt_log("menu: could not write totk.ini; the changed settings hold for this session");
+        rt_log("menu: could not write dkb.ini; the changed settings hold for this session");
     }
     return 0;
 }
@@ -579,7 +579,7 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
         ImGui::PopID();
     }
     char k[64];
-    snprintf(k, sizeof k, "TOTK_%s", key);
+    snprintf(k, sizeof k, "DKB_%s", key);
     offer_help(ImGui::GetID("##bind_help"), row_hov, row_foc, label, desc, k, nullptr, nullptr, false, note);
     ImGui::SetCursorScreenPos(p);
     ImGui::Dummy(ImVec2(w, h));

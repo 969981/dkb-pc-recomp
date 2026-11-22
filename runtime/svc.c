@@ -137,13 +137,13 @@ static void get_info(Cpu *c, uint64_t pc) {
     c->x[1] = v;
 }
 
-// TOTK_SVC_SLOW=1 (the environment or totk.ini): time every guest service call and report the ones that block for 100 ms or more, with the guest address
+// DKB_SVC_SLOW=1 (the environment or dkb.ini): time every guest service call and report the ones that block for 100 ms or more, with the guest address
 // that asked for it. A call this slow stalls the whole guest (and leaves the GPU idle while it runs), which is what the
 // once-per-run hitch looks like; the sampler cannot name it because the wait happens across a kernel transition.
 static int svc_slow_on(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = cfg_get("TOTK_SVC_SLOW");
+        const char *e = cfg_get("DKB_SVC_SLOW");
         on = e && *e && strcmp(e, "0");
     }
     return on;

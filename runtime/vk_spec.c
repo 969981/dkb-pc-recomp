@@ -87,9 +87,9 @@ int vk_spec_helpers_for(uint32_t cpus) {
     return cpus >= 24 ? 5 : cpus >= 16 ? 4 : cpus >= 8 ? 3 : cpus >= 4 ? 2 : 1;
 }
 
-// How many helpers to start: TOTK_REPLAY_HELPERS, or what the logical processors of the process give.
+// How many helpers to start: DKB_REPLAY_HELPERS, or what the logical processors of the process give.
 static int helpers_wanted(void) {
-    const char *e = cfg_get("TOTK_REPLAY_HELPERS");
+    const char *e = cfg_get("DKB_REPLAY_HELPERS");
     int n = e && *e ? atoi(e) : 0;
     if (n <= 0) n = vk_spec_helpers_for(plat_cpu_usable());
     return n > VK_SPEC_HELPERS ? VK_SPEC_HELPERS : n;
@@ -100,7 +100,7 @@ int vk_spec_on(void) {
     if (mode < 0) {
         static char name[VK_SPEC_HELPERS][16];
         mode = rt_knob("REPLAY_PAR", "0");
-        const char *e = cfg_get("TOTK_REPLAY_PAR");
+        const char *e = cfg_get("DKB_REPLAY_PAR");
         checking = e && !strcmp(e, "check");
         if (mode) {
             // Normal, not the caller's: the first call comes from inside submit_record, which raises the render thread
@@ -118,9 +118,9 @@ int vk_spec_on(void) {
             nhelpers = n;
             if (!n) mode = 0;
         }
-        rt_log("vk_spec: long runs of draws are %s (TOTK_REPLAY_PAR=%s, %d helper thread%s)",
+        rt_log("vk_spec: long runs of draws are %s (DKB_REPLAY_PAR=%s, %d helper thread%s)",
                !mode ? "translated by the replay thread alone"
-               : mode == 2 ? "shared with the helper threads in the B blocks (TOTK_AB)"
+               : mode == 2 ? "shared with the helper threads in the B blocks (DKB_AB)"
                : checking ? "translated by the helper threads and by the replay thread and compared, the replay thread's submitted"
                : "shared with the helper threads",
                mode == 2 ? "ab" : checking ? "check" : mode ? "1" : "0", nhelpers, nhelpers == 1 ? "" : "s");

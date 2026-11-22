@@ -107,7 +107,7 @@ typedef struct {
 // freed while the GPU still uses it is undefined behaviour (a device loss at best). The wait goes on in steps of a
 // second; the first few such waits are logged, not every frame of a slow GPU. A lost device ends the process with the
 // fault report, as vk_memory.c upload_wait_locked does, instead of returning as if the work were done. A GPU that stops
-// without reporting a loss keeps this thread waiting; vk_sync.c completion_main's hang check (TOTK_GPU_HANG_S) ends the
+// without reporting a loss keeps this thread waiting; vk_sync.c completion_main's hang check (DKB_GPU_HANG_S) ends the
 // process once the game's own submissions stall behind the same queue.
 static void fence_wait(VkDevice dev, VkFence f, const char *what) {
     enum { TOLD_MAX = 4 };
@@ -224,7 +224,7 @@ static VkPipeline compute_pipeline(VkDevice dev, const uint32_t *code, size_t by
 
 // The scene splash = <n> asks for: 2 the cavern, 3 the jungle, any other value that is not 0 the canyon
 static int scene_of_cfg(void) {
-    int n = cfg_int("TOTK_SPLASH");
+    int n = cfg_int("DKB_SPLASH");
     return n == SCENE_CAVERN || n == SCENE_JUNGLE ? n : SCENE_CANYON;
 }
 
@@ -520,8 +520,8 @@ static void screen_main(void *arg) {
         plat_event_set(&g_test_done);
         return;
     }
-    double test_s = g_test ? atof(cfg_get("TOTK_SPLASH_TEST")) : 0;
-    const char *shots = cfg_get("TOTK_SPLASH_SHOTS");
+    double test_s = g_test ? atof(cfg_get("DKB_SPLASH_TEST")) : 0;
+    const char *shots = cfg_get("DKB_SPLASH_SHOTS");
     if (shots && *shots) plat_file_mkdir_p(shots);
     gfx_window_start();   // the window, its surface and swapchain; the device is made already
     rt_log("splash: the start-up screen is up %.0f ms after the process started (splash = 0 turns it off)",
@@ -609,12 +609,12 @@ void vk_splash(int when) {
     if (when == GFX_SPLASH_START) {
         const char *gpu = rt_config()->gpu;
         if ((gpu && !strcmp(gpu, "null")) || rt_config()->shot) return;
-        if (!cfg_bool("TOTK_SPLASH")) {
-            const char *w = cfg_get("TOTK_SPLASH_WATCH");
+        if (!cfg_bool("DKB_SPLASH")) {
+            const char *w = cfg_get("DKB_SPLASH_WATCH");
             g_watch = w && !strcmp(w, "1");
             return;
         }
-        const char *test = cfg_get("TOTK_SPLASH_TEST");
+        const char *test = cfg_get("DKB_SPLASH_TEST");
         g_test = test && atof(test) > 0;
         plat_event_init(&g_done, 1, 0);
         plat_event_init(&g_test_done, 1, 0);
@@ -841,7 +841,7 @@ static int save_frame(Renderer *r, const char *path) {
 }
 
 int probe_splash(void) {
-    const char *dir = cfg_get("TOTK_SPLASH_SHOTS");
+    const char *dir = cfg_get("DKB_SPLASH_SHOTS");
     if (!dir || !*dir) dir = "splash-probe";
     if (!vk_init()) {
         printf("probe-splash: FAIL no Vulkan device\n");

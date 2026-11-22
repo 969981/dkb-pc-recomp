@@ -1,4 +1,4 @@
-// Ported from adriadam10/mkw-recomp (MIT, Copyright (c) 2026 Adrià), runtime/input/switch2_win.c at eb8fe198; TOTK_SWITCH2 for MKW_SWITCH2.
+// Ported from adriadam10/mkw-recomp (MIT, Copyright (c) 2026 Adrià), runtime/input/switch2_win.c at eb8fe198; DKB_SWITCH2 for MKW_SWITCH2.
 // Switch 2 controllers over Bluetooth LE on Windows (switch2.h): WinRT through its C ABI (llvm-mingw's WIDL headers),
 // the same flow as switch2_bluez.c: an advertisement watcher for Nintendo's manufacturer data (company id 0x0553),
 // BluetoothLEDevice from the address, the GATT characteristics by their UUIDs (uncached: that read is what connects),
@@ -284,7 +284,7 @@ static int parse_guid(const char *s, GUID *g) {
 
 static ICryptographicBufferStatics *bytes_to_buffer;
 static uint8_t host[6];   // the adapter's address, little endian (what the controllers wake toward)
-static int trace;         // TOTK_SWITCH2=2
+static int trace;         // DKB_SWITCH2=2
 
 // ---- links
 
@@ -440,7 +440,7 @@ static struct { uint64_t addr; uint16_t pid; int use; } pending[MAX_PENDING];
 static int npending;
 static struct { uint64_t addr, until; } failed[MAX_PENDING];
 
-static int first_seen(uint64_t addr) {   // TOTK_SWITCH2=2 logs each device once
+static int first_seen(uint64_t addr) {   // DKB_SWITCH2=2 logs each device once
     static uint64_t seen[64];
     static int n;
     for (int i = 0; i < n; i++)
@@ -664,7 +664,7 @@ static void bt_main(void *arg) {
 }
 
 void switch2_start(void) {
-    trace = cfg_int("TOTK_SWITCH2") >= 2;
-    if (cfg_int("TOTK_SWITCH2") && !plat_thread_spawn(bt_main, NULL, "switch2", 0))
+    trace = cfg_int("DKB_SWITCH2") >= 2;
+    if (cfg_int("DKB_SWITCH2") && !plat_thread_spawn(bt_main, NULL, "switch2", 0))
         rt_log("input: Switch 2 controllers off: no thread");
 }

@@ -74,8 +74,8 @@ void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
     (void)p; (void)off; (void)size; rt_fatal("unexpected pool flush");
 }
 uint64_t rt_original(Cpu *c) { (void)c; rt_fatal("unexpected guest observer"); return 0; }
-int cfg_bool(const char *name) {   // TOTK_CALL_REF on: recordings with deferred pushes are copied in either way
-    if (!strcmp(name, "TOTK_CALL_REF")) return 1;
+int cfg_bool(const char *name) {   // DKB_CALL_REF on: recordings with deferred pushes are copied in either way
+    if (!strcmp(name, "DKB_CALL_REF")) return 1;
     rt_fatal("unexpected setting lookup");
     return 0;
 }
@@ -310,7 +310,7 @@ static void scenario(int async) {
     free_sync(s);
 }
 
-// TOTK_CALL_REF: a call to a recording without deferred records is one OP_CALL naming its copy, counted in the copy.
+// DKB_CALL_REF: a call to a recording without deferred records is one OP_CALL naming its copy, counted in the copy.
 static uint64_t record_calls(NVNcommandBuffer *cmd, void *ctl, int n, const uint64_t *callees, int deferred) {
     begin(cmd, ctl);
     CALL(nvnCommandBufferBarrier, U(cmd), 1);

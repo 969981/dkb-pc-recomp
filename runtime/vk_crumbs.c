@@ -19,7 +19,7 @@ static VkBuffer buf;
 static VmaAllocation alloc;
 static volatile uint32_t *words;   // 0 and 1: the newest crumb reached and finished; 2 and 3: the same for VK_CRUMB_BIND
 
-// TOTK_CRUMB_BIND=1: ring of the newest pipeline binds, indexed by bind number & (BIND_RING - 1). Recording runs a frame
+// DKB_CRUMB_BIND=1: ring of the newest pipeline binds, indexed by bind number & (BIND_RING - 1). Recording runs a frame
 // or more ahead of the GPU, hence the size. Written by recording threads without a lock; a slot's seq holds the bind
 // number plus BIND_VALID (bind number 0 occurs at the 28-bit wrap), so a slot being rewritten is skipped by the report.
 enum { BIND_RING = 1 << 16, BIND_VALID = 1 << 28 };
@@ -205,9 +205,9 @@ void vk_crumbs_init(VkCtx *c) {
     }
     words = info.pMappedData;
     words[0] = words[1] = words[2] = words[3] = 0;
-    const char *bind = cfg_get("TOTK_CRUMB_BIND");
+    const char *bind = cfg_get("DKB_CRUMB_BIND");
     bind_on = bind && !strcmp(bind, "1");
-    rt_log("vk: GPU breadcrumbs on (VK_AMD_buffer_marker)%s", bind_on ? ", pipeline binds marked (TOTK_CRUMB_BIND=1)" : "");
+    rt_log("vk: GPU breadcrumbs on (VK_AMD_buffer_marker)%s", bind_on ? ", pipeline binds marked (DKB_CRUMB_BIND=1)" : "");
 }
 
 // isa_dump state (below), reset on release.

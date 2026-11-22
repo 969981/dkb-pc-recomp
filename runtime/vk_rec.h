@@ -1,5 +1,5 @@
 // The recorder thread (vk_rec.c): the Vulkan calls the replay makes into its command buffer are made by a thread of
-// their own. vk_sync.c brackets each part of a submission with rec_begin (after vkBeginCommandBuffer, unless TOTK_REC_BEGIN=1: rec_begin_part) and rec_end
+// their own. vk_sync.c brackets each part of a submission with rec_begin (after vkBeginCommandBuffer, unless DKB_REC_BEGIN=1: rec_begin_part) and rec_end
 // (before vkEndCommandBuffer). In between, every vkCmd* on that command buffer copies its arguments into a packet of a
 // ring, in call order, and the recorder makes the real call in that order; calls into any other command buffer (uploads,
 // the window, probes) are made at once. A call the ring has no packet for (a structure with a pNext chain) waits for
@@ -10,7 +10,7 @@
 // submission's value, and the command pool stay on the submitting thread.
 //
 // Every vkCmd* the runtime calls through vk.h goes through the rc_* wrappers below (the macros at the end); the
-// extension commands called through function pointers have rec_* wrappers of their own. TOTK_VK_RECORDER=0 makes every
+// extension commands called through function pointers have rec_* wrappers of their own. DKB_VK_RECORDER=0 makes every
 // call at once (the same calls in the same order), =ab switches it with the A/B blocks (rt_ab), per submission part.
 //
 // The design follows Savage Wind Recomp's and LAS Recomp's recorder threads (LAS Recomp runtime/nvn/vulkan/record.c,
@@ -18,7 +18,7 @@
 #pragma once
 
 void rec_begin(VkCommandBuffer cb);   // the submitting thread, sub_lock held
-// TOTK_REC_BEGIN=1: begins part cb (vkBeginCommandBuffer, the submit crumb, the start timestamp of query pair ts_pair
+// DKB_REC_BEGIN=1: begins part cb (vkBeginCommandBuffer, the submit crumb, the start timestamp of query pair ts_pair
 // of ts_pool, -1 none) on the recorder, or here when there is no recorder, and calls rec_begin (1). Off: does nothing (0)
 // and the caller begins cb and calls rec_begin itself.
 int rec_begin_part(VkCommandBuffer cb, uint64_t fence, int ts_pair, VkQueryPool ts_pool);
@@ -27,19 +27,19 @@ void rec_end(void);                   // waits for the recorder; no-op when rec_
 // when it records cb, and the wait for it (1); otherwise rec_end and the breadcrumb, and the caller ends cb (0).
 int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n);
 void rec_drain(void);                 // waits until the recorder made every call queued so far
-// A part the recorder ended (rec_end_cb returned 1) that is not the submission's last: with TOTK_REC_SUBMIT=1 the
+// A part the recorder ended (rec_end_cb returned 1) that is not the submission's last: with DKB_REC_SUBMIT=1 the
 // recorder submits pro (the part's mirror prologue, VK_NULL_HANDLE for none) and cb in queue order after its calls,
-// without a wait (1); 0 when the caller has to submit (no recorder, or TOTK_REC_SUBMIT at its default of 0). fence:
+// without a wait (1); 0 when the caller has to submit (no recorder, or DKB_REC_SUBMIT at its default of 0). fence:
 // the submission's value, for the failure message.
 int rec_submit(VkCommandBuffer pro, VkCommandBuffer cb, uint64_t fence);
 void rec_submit_wait(void);           // any thread: returns once every part queued by rec_submit so far is submitted
-void rec_stats_log(void);             // TOTK_TRACE=perf: packets, bytes, drains and waits since the last call
+void rec_stats_log(void);             // DKB_TRACE=perf: packets, bytes, drains and waits since the last call
 // The end of a sliced pass whose slices are still being recorded (vk_exec.c par_defer): between rec_capture_begin and
 // rec_capture_end the calls into the part being recorded are held back (both return the capture's position: the
 // capture is [begin, end)), and rec_capture_play makes them into cb on the calling thread once the slices are executed
 // there. The recorder must be idle for the play (rec_drain), and nothing may be captured that has no packet.
 // rec_capture_reset forgets every capture, once none is held.
-// rec_capture_begin_for(cb) captures the calls into cb when the recorder does not record it (TOTK_VK_RECORDER=0, the
+// rec_capture_begin_for(cb) captures the calls into cb when the recorder does not record it (DKB_VK_RECORDER=0, the
 // default on AMD's proprietary driver): the wrappers queue packets for cb into the capture as they would for the
 // recorder's part, and every other call goes on as before. rec_capture_alone(cb): such a capture can be taken for cb.
 uint32_t rec_capture_begin(void);

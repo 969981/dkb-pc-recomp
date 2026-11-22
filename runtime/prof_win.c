@@ -1,21 +1,21 @@
-// Sampling profiler (TOTK_PROFILE=<path>) and per-frame timing (TOTK_TRACE=perf). tools/prof_report.py reads the profile.
+// Sampling profiler (DKB_PROFILE=<path>) and per-frame timing (DKB_TRACE=perf). tools/prof_report.py reads the profile.
 // A host thread wakes every 1 ms and, for every other thread, suspends it, reads Rip and resumes it. The sampler never
 // allocates or takes a lock between SuspendThread and ResumeThread and never runs guest code. The profile is text:
-//   totk-prof 1 / base <hex> / period_us / samples N / thread <tid> <samples> <in-exe samples> / module <base> <size> <path> /
-//   rip <hex> <count> (the top PROF_TOP Rips) / stack <count> <rip> <caller> ... (TOTK_PROFILE_RENDER or
-//   TOTK_PROFILE_CHAINS only, the top PROF_STACKS call chains)
-// With TOTK_PROFILE_RENDER (the render thread), TOTK_PROFILE_REPLAY (the async replay thread that records), or
-// TOTK_PROFILE_CHAINS=1 (every thread, chains of all threads summed: for
+//   dkb-prof 1 / base <hex> / period_us / samples N / thread <tid> <samples> <in-exe samples> / module <base> <size> <path> /
+//   rip <hex> <count> (the top PROF_TOP Rips) / stack <count> <rip> <caller> ... (DKB_PROFILE_RENDER or
+//   DKB_PROFILE_CHAINS only, the top PROF_STACKS call chains)
+// With DKB_PROFILE_RENDER (the render thread), DKB_PROFILE_REPLAY (the async replay thread that records), or
+// DKB_PROFILE_CHAINS=1 (every thread, chains of all threads summed: for
 // short frame ranges, as each sample copies a stack) the sampler also copies up to STK_COPY bytes of the suspended
 // thread's stack and, after
 // ResumeThread, unwinds the copy with the .pdata tables (RtlVirtualUnwind), so it takes no lock while the thread is
 // suspended. The unwind stops at the first frame outside the copy; deeper callers are cut.
-// TOTK_PROFILE_SLOW=<ms> keeps every thread's chains of the last half second in a ring (a thread outside the exe, mostly
+// DKB_PROFILE_SLOW=<ms> keeps every thread's chains of the last half second in a ring (a thread outside the exe, mostly
 // waiting, copies 8 KiB of stack, one in it STK_COPY; a thread that ran no cycle since its previous sample is not
 // suspended and repeats its previous chain; a sample that took over 2 ms to stop its thread, which happens while the
 // thread is in a long kernel call, is written as `tstall <tid> <ms into the window> <ms stopping> <rip>...` with the
 // chain where the thread stopped) and, after a present at least <ms> after the previous one, writes
-// that interval's samples (plus the 20 ms before) to <TOTK_PROFILE>.f<frame>: the profile format, one `stack 1` line per
+// that interval's samples (plus the 20 ms before) to <DKB_PROFILE>.f<frame>: the profile format, one `stack 1` line per
 // sample, and `tstack <tid> <ms into the window> <rip>...` lines that keep the thread and the time. At most 64 dumps.
 // A sampler round that took over 5 ms is written as `tgap <ms into the window> <ms> wait <ms> list <ms> dump <ms> loop
 // <ms> worst <tid> <stop|copy|unwind> <ms>`: the timer wait, taking the new thread list, writing a dump, the round over
@@ -23,10 +23,10 @@
 // while a round is late, so a tgap is a hole in every thread's samples.
 // The thread list is made by a thread of its own (refresher_main) every 64 ms and taken over by the sampler between two
 // rounds: CreateToolhelp32Snapshot walks every thread of the system, and while the sampler made the list itself (every
-// 64 rounds) it took 27 to 41 ms, a hole in every TOTK_PROFILE_SLOW dump of the Hilltop Layer's first frame.
+// 64 rounds) it took 27 to 41 ms, a hole in every DKB_PROFILE_SLOW dump of the Hilltop Layer's first frame.
 // A thread's stack ends at its StackBase (the TEB's NT_TIB, read once per thread): the copy runs from Rsp to there when
 // Rsp lies between StackLimit and StackBase, and a VirtualQuery finds the committed range only for an Rsp outside them
-// (TOTK_PROFILE_VQ=1: always, as before). A VirtualQuery takes the process's address-space lock and waits behind a long
+// (DKB_PROFILE_VQ=1: always, as before). A VirtualQuery takes the process's address-space lock and waits behind a long
 // query or mapping change of another thread, with the sampled thread held suspended meanwhile.
 #include <windows.h>
 #include <psapi.h>
@@ -56,7 +56,7 @@
 
 typedef struct { uint64_t rip, n; } RipCount;
 #define PROF_DEPTH 32             // frames kept per call chain, the sampled Rip first (driver chains run 20 deep)
-// cycles, depth, last: TOTK_PROFILE_SLOW only, the thread's cycle count and chain at its previous sample
+// cycles, depth, last: DKB_PROFILE_SLOW only, the thread's cycle count and chain at its previous sample
 // teb: the thread's TEB (its NT_TIB: StackBase, StackLimit), 0 when unknown
 typedef struct { DWORD tid; HANDLE h; uintptr_t teb; uint64_t n, in_exe, cycles; uint32_t depth; uint64_t last[PROF_DEPTH]; } ThreadSlot;
 
@@ -72,15 +72,15 @@ static const char *out_path;
 static HANDLE sampler;
 static volatile LONG stop, written;
 static uintptr_t exe_lo, exe_hi;
-static int only_render;             // TOTK_PROFILE_RENDER=1: sample the render thread only
-static int only_main;               // TOTK_PROFILE_MAIN=1: sample the guest main thread only
-static int only_replay;             // TOTK_PROFILE_REPLAY=1: sample the replay thread only (the one that records)
-static int chains;                  // call chains are kept: TOTK_PROFILE_RENDER, TOTK_PROFILE_REPLAY or TOTK_PROFILE_CHAINS
+static int only_render;             // DKB_PROFILE_RENDER=1: sample the render thread only
+static int only_main;               // DKB_PROFILE_MAIN=1: sample the guest main thread only
+static int only_replay;             // DKB_PROFILE_REPLAY=1: sample the replay thread only (the one that records)
+static int chains;                  // call chains are kept: DKB_PROFILE_RENDER, DKB_PROFILE_REPLAY or DKB_PROFILE_CHAINS
 static volatile uint64_t cur_frame; // last presented frame
-static uint64_t frame_lo, frame_hi; // TOTK_PROFILE_FRAMES=<lo>-<hi>: sample only while presents lo..hi-1 are pending
-static int64_t world_lo, world_hi;  // TOTK_PROFILE_FRAMES=w<lo>-<hi>: only while the world clock is in [lo, hi) s (us)
+static uint64_t frame_lo, frame_hi; // DKB_PROFILE_FRAMES=<lo>-<hi>: sample only while presents lo..hi-1 are pending
+static int64_t world_lo, world_hi;  // DKB_PROFILE_FRAMES=w<lo>-<hi>: only while the world clock is in [lo, hi) s (us)
 
-#define SLOW_RING (1u << 15)        // TOTK_PROFILE_SLOW: about 0.5 s of samples of every thread
+#define SLOW_RING (1u << 15)        // DKB_PROFILE_SLOW: about 0.5 s of samples of every thread
 #define SLOW_DUMPS 64
 typedef struct { uint64_t t; DWORD tid; uint32_t depth; uint64_t rip[PROF_DEPTH]; } Sample;
 static Sample ring[SLOW_RING];
@@ -88,7 +88,7 @@ static uint64_t ring_n;
 #define STALL_RING 1024
 static Sample stalls[STALL_RING];   // t: when the stop began; rip[PROF_DEPTH - 1] holds the stop's ns
 static uint64_t stall_n;
-static uint64_t slow_ns;            // TOTK_PROFILE_SLOW in ns, 0 off
+static uint64_t slow_ns;            // DKB_PROFILE_SLOW in ns, 0 off
 static volatile LONG64 dump_lo, dump_hi, dump_frame;   // the render thread asks for a window, the sampler writes it
 
 static void count_rip(uint64_t rip) {
@@ -154,7 +154,7 @@ static DWORD list_tid[PROF_THREADS];
 static int list_n;
 static volatile LONG list_seq;
 static volatile DWORD refresher_tid;
-static int use_vq;   // TOTK_PROFILE_VQ=1: every stack range from VirtualQuery
+static int use_vq;   // DKB_PROFILE_VQ=1: every stack range from VirtualQuery
 
 static DWORD WINAPI refresher_main(void *arg) {
     DWORD sampler_tid = (DWORD)(uintptr_t)arg, pid = GetCurrentProcessId();
@@ -228,7 +228,7 @@ static void take_threads(void) {
     n_threads = n;
 }
 
-// TOTK_PROFILE_SLOW: the sampler rounds that took over 5 ms (tgap lines of the dump).
+// DKB_PROFILE_SLOW: the sampler rounds that took over 5 ms (tgap lines of the dump).
 typedef struct { uint64_t t, total, wait, list, dump, loop, worst; DWORD tid; int step; } Gap;
 #define GAP_RING 256
 static Gap gaps[GAP_RING];
@@ -255,7 +255,7 @@ static void slow_dump(void) {
     FILE *f = dumps < SLOW_DUMPS ? fopen(path, "w") : NULL;
     if (f) {
         dumps++;
-        fprintf(f, "totk-prof 1\nbase %llx\nperiod_us 1000\nframe %llu interval_ms %.1f\nmain %u render %u replay %u\n",
+        fprintf(f, "dkb-prof 1\nbase %llx\nperiod_us 1000\nframe %llu interval_ms %.1f\nmain %u render %u replay %u\n",
                 (unsigned long long)(uintptr_t)GetModuleHandleW(NULL), (unsigned long long)frame, (hi - lo) / 1e6 - 20,
                 main_tid, render_tid, replay_tid);
         write_modules(f);
@@ -290,8 +290,8 @@ static void slow_dump(void) {
     InterlockedExchange64(&dump_hi, 0);
 }
 
-// TOTK_PROFILE_FRAMES: 1 while the present or world-clock range holds (always without one). It bounds the sampling and
-// the TOTK_PROFILE_SLOW dumps alike, so the 64 dumps are not spent on the slow frames of the boot.
+// DKB_PROFILE_FRAMES: 1 while the present or world-clock range holds (always without one). It bounds the sampling and
+// the DKB_PROFILE_SLOW dumps alike, so the 64 dumps are not spent on the slow frames of the boot.
 static int in_window(void) {
     if (frame_hi && (cur_frame < frame_lo || cur_frame >= frame_hi)) return 0;
     if (world_hi) {   // -1 before the world clock starts
@@ -302,7 +302,7 @@ static int in_window(void) {
 }
 
 // The committed stack above rsp of thread t, suspended: up to its TEB's StackBase when rsp lies in [StackLimit,
-// StackBase), else (no TEB, another stack, TOTK_PROFILE_VQ=1) the committed run VirtualQuery reports. 0 when rsp is in
+// StackBase), else (no TEB, another stack, DKB_PROFILE_VQ=1) the committed run VirtualQuery reports. 0 when rsp is in
 // the guard page or not committed: a thread stopped between its sub rsp and the stack probe has Rsp in the guard page,
 // and touching it would fault.
 static size_t stack_above(const ThreadSlot *t, uintptr_t rsp) {
@@ -360,7 +360,7 @@ static DWORD WINAPI sampler_main(void *arg) {
             uint64_t stop1 = slow_ns ? kern_now_ns() : 0, stop_ns = stop1 - stop0;
             size_t n = 0;
             if (ok && chains && (n = stack_above(t, ctx.Rsp))) {
-                // TOTK_PROFILE_SLOW: a thread outside the exe, mostly waiting, copies 8 KiB, but the threads the slow
+                // DKB_PROFILE_SLOW: a thread outside the exe, mostly waiting, copies 8 KiB, but the threads the slow
                 // frames are about (render, replay, guest main) copy all of STK_COPY: their driver and DLSS chains
                 // are deep, and an 8 KiB copy lost the caller.
                 int ours = t->tid == render_tid || t->tid == replay_tid || t->tid == main_tid;
@@ -427,7 +427,7 @@ void prof_sampler_write(void) {
         rt_log("prof: cannot write %s", out_path);
         return;
     }
-    fprintf(f, "totk-prof 1\nbase %llx\nperiod_us 1000\nsamples %llu\ndropped %llu\n", (unsigned long long)(uintptr_t)GetModuleHandleW(NULL),
+    fprintf(f, "dkb-prof 1\nbase %llx\nperiod_us 1000\nsamples %llu\ndropped %llu\n", (unsigned long long)(uintptr_t)GetModuleHandleW(NULL),
             (unsigned long long)total, (unsigned long long)dropped);
     for (int i = 0; i < n_threads; i++)
         fprintf(f, "thread %lu %llu %llu\n", threads[i].tid, (unsigned long long)threads[i].n, (unsigned long long)threads[i].in_exe);
@@ -452,19 +452,19 @@ void prof_sampler_write(void) {
 }
 
 int prof_sampler_start(void) {
-    out_path = cfg_get("TOTK_PROFILE");
+    out_path = cfg_get("DKB_PROFILE");
     if (!out_path || !*out_path) {
         out_path = NULL;
         return 0;
     }
-    only_render = cfg_get("TOTK_PROFILE_RENDER") != NULL;
-    only_main = !only_render && cfg_get("TOTK_PROFILE_MAIN") != NULL;
-    only_replay = !only_render && !only_main && cfg_get("TOTK_PROFILE_REPLAY") != NULL;
-    const char *ch = cfg_get("TOTK_PROFILE_CHAINS");
-    const char *sl = cfg_get("TOTK_PROFILE_SLOW");
+    only_render = cfg_get("DKB_PROFILE_RENDER") != NULL;
+    only_main = !only_render && cfg_get("DKB_PROFILE_MAIN") != NULL;
+    only_replay = !only_render && !only_main && cfg_get("DKB_PROFILE_REPLAY") != NULL;
+    const char *ch = cfg_get("DKB_PROFILE_CHAINS");
+    const char *sl = cfg_get("DKB_PROFILE_SLOW");
     slow_ns = sl && atoi(sl) > 0 ? (uint64_t)atoi(sl) * 1000000ull : 0;
     chains = only_render || only_main || only_replay || slow_ns || (ch && *ch && strcmp(ch, "0"));
-    const char *fr = cfg_get("TOTK_PROFILE_FRAMES");
+    const char *fr = cfg_get("DKB_PROFILE_FRAMES");
     double wl, wh;
     if (fr && fr[0] == 'w' && sscanf(fr + 1, "%lf-%lf", &wl, &wh) == 2 && wl >= 0 && wl < wh)
         world_lo = (int64_t)(wl * 1e6), world_hi = (int64_t)(wh * 1e6);
@@ -474,7 +474,7 @@ int prof_sampler_start(void) {
         exe_lo = (uintptr_t)mi.lpBaseOfDll;
         exe_hi = exe_lo + mi.SizeOfImage;
     }
-    const char *vq = cfg_get("TOTK_PROFILE_VQ");
+    const char *vq = cfg_get("DKB_PROFILE_VQ");
     use_vq = vq && *vq && strcmp(vq, "0");
     DWORD sampler_tid = 0;
     sampler = CreateThread(NULL, 0, sampler_main, NULL, 0, &sampler_tid);
@@ -488,7 +488,7 @@ int prof_sampler_start(void) {
     return 1;
 }
 
-// perf_present, every present: the frame the sampler's TOTK_PROFILE_FRAMES window counts, and a TOTK_PROFILE_SLOW
+// perf_present, every present: the frame the sampler's DKB_PROFILE_FRAMES window counts, and a DKB_PROFILE_SLOW
 // dump of a present at least slow_ns after the previous one (d 0 on the first present).
 void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
     cur_frame = frame;

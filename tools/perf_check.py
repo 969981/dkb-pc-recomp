@@ -1,6 +1,6 @@
-"""Find slowdowns in game logs taken with TOTK_TRACE=perf, say what held each one back, and compare groups of runs.
+"""Find slowdowns in game logs taken with DKB_TRACE=perf, say what held each one back, and compare groups of runs.
 
-    python tools/perf_check.py build/dkb100/logs/totk.log
+    python tools/perf_check.py build/dkb100/logs/dkb.log
     python tools/perf_check.py run1.out run2.out --min-fps 50 --hitch-ms 100
     python tools/perf_check.py --group off='runs/gs0-*.out' --group on='runs/gs1-*.out'
     python tools/perf_check.py scenario.out --fail            exit 1 when a run has a slowdown (scripted scenarios)
@@ -19,11 +19,11 @@ each episode gets the cause most of its windows show, checked in this order:
 An episode is major when its mean interval passes 1.5 times the budget, it lasts --major-windows windows or more, or one
 of its frames takes a second or longer; otherwise it is minor (a short dip such as a streaming load at the same point of
 every run). Verdicts: SLOW with a major episode, HITCHY with minor ones only, OK without slow windows, "no data" when the
-log has no perf windows (the run did not get that far, or TOTK_TRACE=perf was not set).
+log has no perf windows (the run did not get that far, or DKB_TRACE=perf was not set).
 
 Windows before --skip-world seconds of game time are left out (title screen and loading). A hitch is a window whose
 longest frame passed --hitch-ms; hitches are counted but do not change the verdict. Each cause comes with the tool that
-looks deeper (crit_path.py, prof_report.py, TOTK_PERF_SLOW_GPU_MS). Standard library only.
+looks deeper (crit_path.py, prof_report.py, DKB_PERF_SLOW_GPU_MS). Standard library only.
 """
 import argparse
 import glob
@@ -50,11 +50,11 @@ CAUSES = ('compile', 'texture', 'gpu', 'render-cpu', 'game-cpu')
 HINTS = {
     'compile': 'shader translation or pipeline builds: expected on a first run with a new translator; on a warm cache, '
                'look for shaders translated again (gfx_shader.c keys) or pipelines missing from pipeline-cache.bin',
-    'texture': 'texture uploads: rerun with TOTK_TRACE=perf,gfx, or TOTK_FLIGHT=1 and tools/flight_view.py to see the '
+    'texture': 'texture uploads: rerun with DKB_TRACE=perf,gfx, or DKB_FLIGHT=1 and tools/flight_view.py to see the '
                'frames and their uploads',
-    'gpu': 'GPU work: rerun with TOTK_PERF_SLOW_GPU_MS=50 to log the slow replay parts, their stages and indirect arguments',
-    'render-cpu': 'the render thread itself: rerun with TOTK_PROFILE=1 TOTK_PROFILE_RENDER=1, then tools/prof_report.py',
-    'game-cpu': "the game's threads: rerun with TOTK_CRIT=1, then tools/crit_path.py for each frame's critical path "
+    'gpu': 'GPU work: rerun with DKB_PERF_SLOW_GPU_MS=50 to log the slow replay parts, their stages and indirect arguments',
+    'render-cpu': 'the render thread itself: rerun with DKB_PROFILE=1 DKB_PROFILE_RENDER=1, then tools/prof_report.py',
+    'game-cpu': "the game's threads: rerun with DKB_CRIT=1, then tools/crit_path.py for each frame's critical path "
                 '(running, waiting for a core, in a host call, or waiting on another thread)',
 }
 

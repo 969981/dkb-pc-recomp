@@ -115,7 +115,7 @@ static uint64_t n_uploads, n_reuploads;
 // Re-uploads since the last perf line (tex_lock): all, and those of textures a WriteTexels wrote since their last upload.
 static uint64_t ru_n, ru_bytes, ru_ns, ru_wt_n, ru_wt_bytes, ru_wt_ns;
 static uint64_t n_hash_kept;   // untracked checks whose storage hash matched the last upload's (untracked_same)
-// TOTK_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
+// DKB_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
 // live image that the GPU wrote gets that image's content (alias_copy). Counts since the last log line.
 static int tex_alias = -1;
 static uint64_t n_alias_copied, n_alias_upload, n_alias_uninit;
@@ -203,9 +203,9 @@ static void tex_init(void *p) {
     __atomic_store_n(&tex_ready, 1, __ATOMIC_RELEASE);
     return;
 }
-// TOTK_LOCK_HOLDS=1 (diagnostic, off by default) times every outermost hold of tex_lock and keeps, by the return
-// address of the function that took it (the caller's call site, as an exe offset for totk.map), the holds over 200 us:
-// with TOTK_TRACE=perf the slices of parallel passes waited about 3 ms a frame for this lock, up to 3 ms at a time.
+// DKB_LOCK_HOLDS=1 (diagnostic, off by default) times every outermost hold of tex_lock and keeps, by the return
+// address of the function that took it (the caller's call site, as an exe offset for dkb.map), the holds over 200 us:
+// with DKB_TRACE=perf the slices of parallel passes waited about 3 ms a frame for this lock, up to 3 ms at a time.
 #define HOLD_SITES 16
 static int holds_on = -1;
 static _Thread_local uint64_t hold_t0;
@@ -243,11 +243,11 @@ static void holds_log(uint64_t frame) {
 static void lock_at(void *ra) {
     if (!__atomic_load_n(&tex_ready, __ATOMIC_ACQUIRE)) plat_once(&tex_once, tex_init, NULL);
     if (!plat_rmutex_trylock(&tex_lock)) {
-        uint64_t t0 = kern_now_ns();   // contended: TOTK_TRACE=perf counts the long waits (perf_lock_wait)
+        uint64_t t0 = kern_now_ns();   // contended: DKB_TRACE=perf counts the long waits (perf_lock_wait)
         plat_rmutex_lock(&tex_lock);
         if (rt_trace & RT_TRACE_PERF) perf_lock_wait(PERF_LOCK_TEXTURE, kern_now_ns() - t0);
     }
-    if (holds_on < 0) holds_on = cfg_get("TOTK_LOCK_HOLDS") && atoi(cfg_get("TOTK_LOCK_HOLDS")) > 0;
+    if (holds_on < 0) holds_on = cfg_get("DKB_LOCK_HOLDS") && atoi(cfg_get("DKB_LOCK_HOLDS")) > 0;
     if (holds_on && tex_lock.depth == 1) hold_t0 = kern_now_ns(), hold_ra = ra;
 }
 #define lock() lock_at(__builtin_return_address(0))
@@ -277,7 +277,7 @@ static void hold_barrier(void) {   // tex_lock held
     uint32_t depth = plat_rmutex_release(&tex_lock);
     vk_exec_held_wait();
     plat_rmutex_retake(&tex_lock, depth);
-    if (t0) hold_t0 += kern_now_ns() - t0;   // the lock was not held meanwhile: TOTK_LOCK_HOLDS leaves the wait out
+    if (t0) hold_t0 += kern_now_ns() - t0;   // the lock was not held meanwhile: DKB_LOCK_HOLDS leaves the wait out
     tex_frozen--;
 }
 
@@ -501,14 +501,14 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     int bw, bh, block_views = 0;
-    // TOTK_BLOCK_VIEWS_3D (default 0): a 3D BC image also gets block views. On RDNA2 cards (driver 26.10.1, issue #5)
+    // DKB_BLOCK_VIEWS_3D (default 0): a 3D BC image also gets block views. On RDNA2 cards (driver 26.10.1, issue #5)
     // the 32x32x32 BC4 volume the game creates at the logo, made BLOCK_TEXEL_VIEW_COMPATIBLE and 2D_ARRAY_COMPATIBLE,
     // took a GPU write just past the end of its memory: device lost at the first submit after it when the image ended
     // its memory block. Draws into a 3D BC image go through a stand-in instead (vk_exec.c bc_target).
     static int bv3d = -1;
     if (bv3d < 0) {
         bv3d = rt_knob("BLOCK_VIEWS_3D", "0");
-        rt_log("vk: 3D BC textures %s (TOTK_BLOCK_VIEWS_3D=%d)", bv3d ? "get block views (renderable)" : "have no block views",
+        rt_log("vk: 3D BC textures %s (DKB_BLOCK_VIEWS_3D=%d)", bv3d ? "get block views (renderable)" : "have no block views",
                bv3d);
     }
     if (!ds && samples == 1 && f.vk == f.ideal && nvn_fmt_bpb(d->format, &bw, &bh) && bw == 4 && bh == 4 &&
@@ -680,7 +680,7 @@ static void sweep_released(void) {
     while (nreleased > RELEASED_MAX && rel_head) destroy_tex(rel_head);
 }
 
-// TOTK_TEX_VRAM_PRESSURE (percent of the device-local budget, default 90; 0 = off): above it, each submit drops up to
+// DKB_TEX_VRAM_PRESSURE (percent of the device-local budget, default 90; 0 = off): above it, each submit drops up to
 // PRESSURE_STEP of the oldest released entries, so a 4 GiB card does not keep RELEASED_MAX released images (each ASTC
 // one decoded to RGBA8) while the heap spills into system memory. A few per submit, for the reason above. Only entries
 // that come back intact are dropped: mirrored ones the GPU never wrote, re-uploaded from their storage. A render target
@@ -692,7 +692,7 @@ static uint64_t n_pressure_drops;
 
 static void sweep_pressure(void) {   // tex_lock held
     if (vram_pressure < 0) {
-        const char *s = cfg_get("TOTK_TEX_VRAM_PRESSURE");
+        const char *s = cfg_get("DKB_TEX_VRAM_PRESSURE");
         vram_pressure = s && *s ? atoi(s) : 90;
         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 90;
         rt_log("vk: released textures under VRAM pressure: %s%d%%", vram_pressure ? "dropped above " : "off", vram_pressure);
@@ -740,7 +740,7 @@ static void shrink_rgb(int format, const uint8_t *src, uint8_t *dst, size_t n) {
     for (size_t i = 0; i < n; i++, src += 4 * e, dst += 3 * e) memcpy(dst, src, 3 * e);
 }
 
-// TOTK_ASTC=check: the compute decoder's texels of n regions (gpu: the regions one after the other) against
+// DKB_ASTC=check: the compute decoder's texels of n regions (gpu: the regions one after the other) against
 // astc_decode_ldr of the same raw blocks (raw: the staging bytes the regions point into).
 static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar, int n, const uint8_t *gpu) {
     static volatile int32_t n_bad;
@@ -942,7 +942,7 @@ static int fills_no_page(const Tex *e) {
 }
 
 // A texture that fills no page keeps a copy of its storage bytes from when a GPU write to it was recorded
-// (vk_texture_gpu_written), up to SNAP_MAX bytes; wb_exact (TOTK_WB_EXACT, default on) enables it.
+// (vk_texture_gpu_written), up to SNAP_MAX bytes; wb_exact (DKB_WB_EXACT, default on) enables it.
 enum { SNAP_MAX = 4096 };
 static int wb_exact = -1;
 static volatile int32_t n_kept;
@@ -953,7 +953,7 @@ static volatile int32_t n_kept;
 // camera renders the ID, screen rect and depth of what is under the reticle into 4x4 targets of 512 bytes, two
 // slots used in turn, and the CPU reads them a frame later. One slot's rect target shares its page with data the CPU
 // writes every frame: without the copy its renders were never written back, the game read a zero rect every other
-// frame and the target's name label blinked. TOTK_WB_EXACT=0 restores the page-only decision.
+// frame and the target's name label blinked. DKB_WB_EXACT=0 restores the page-only decision.
 static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
     uint64_t lo = (e->pub.addr + 0xfff) & ~0xfffull, hi = (e->pub.addr + e->t.L.size) & ~0xfffull;
     if (hi <= lo) lo = e->pub.addr, hi = e->pub.addr + e->t.L.size;
@@ -965,7 +965,7 @@ static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
     return 0;
 }
 
-// ---- content hash for untracked storage (TOTK_TEX_HASH, default on; =0 uploads again on every untracked check)
+// ---- content hash for untracked storage (DKB_TEX_HASH, default on; =0 uploads again on every untracked check)
 // Where the pages have no write watch (macOS: vk_mem_changed answers -1), a mirrored texture used to be deswizzled and
 // uploaded again in every submission that bound it. On an M4 that grew to 17,000-20,000 re-uploads (about 3 GiB) per
 // 60 frames a minute into play, and the frame rate fell to 8-11 fps (#116). Instead, the storage bytes are hashed just
@@ -1008,7 +1008,7 @@ static uint64_t storage_hash(const Tex *e) {
 // that may follow and returns 1 when it equals the one taken before e's last upload (the upload is then skipped).
 // Tracked: forgets the hash, since an upload made on a write-watch answer has none.
 static int untracked_same(Tex *e, int ch) {
-    if (tex_hash < 0) tex_hash = cfg_bool("TOTK_TEX_HASH");
+    if (tex_hash < 0) tex_hash = cfg_bool("DKB_TEX_HASH");
     if (ch != -1 || !tex_hash) { e->hashed = 0; return 0; }
     uint64_t h = storage_hash(e);
     int same = e->hashed && e->uploaded && h == e->chash;
@@ -1055,7 +1055,7 @@ static int make_fresh_snap(Tex *e) {
     return 1;
 }
 
-// ---------------------------------------------------------------- aliases (TOTK_TEX_ALIAS)
+// ---------------------------------------------------------------- aliases (DKB_TEX_ALIAS)
 // Bytes per block and block size of the image's VkFormat (ASTC decodes to RGBA8, RGB expands to RGBA); 0 when the
 // VkFormat substitutes another one of unknown size.
 static int img_block(const Tex *e, int *bw, int *bh) {
@@ -1193,7 +1193,7 @@ static Tex *entry_of(const tex_t *t) {
         if (e && e->released && takeback_free(e, t, &k)) {
             if (!takeback_logged) {
                 takeback_logged = 1;
-                rt_log("vk: a render target was taken back without waiting for held slices (TOTK_HOLD_TAKEBACK)");
+                rt_log("vk: a render target was taken back without waiting for held slices (DKB_HOLD_TAKEBACK)");
             }
             n_takeback++;
             skipped_hold = 1;
@@ -1213,10 +1213,10 @@ static Tex *entry_of(const tex_t *t) {
     }
     if (!e) {
         if (tex_alias < 0) {
-            tex_alias = cfg_bool("TOTK_TEX_ALIAS");
+            tex_alias = cfg_bool("DKB_TEX_ALIAS");
             rt_log("vk: texture aliases: %s", tex_alias ? "a new image takes the live image's content" : "a new image starts empty");
         }
-        uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+        uint64_t ph = perf_ph_begin();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
         e = create_tex(t, &k, tex_alias);
         perf_ph_end(PERF_PH_IMAGE, ph);
         if (!e) return NULL;
@@ -1294,8 +1294,8 @@ const VkTexImage *vk_texture_get_target(const tex_t *t) {
 }
 
 // Small render targets the CPU reads without NVN's invalidate (vk_texture_write_back_small); small_pending: one may be
-// dirty. wb_limit is the largest target (bytes) that goes back when the CPU waits for a fence: TOTK_WB_FENCE_LIMIT,
-// read once. wb_trace: TOTK_TRACE=gfx, read together with it.
+// dirty. wb_limit is the largest target (bytes) that goes back when the CPU waits for a fence: DKB_WB_FENCE_LIMIT,
+// read once. wb_trace: DKB_TRACE=gfx, read together with it.
 enum { WB_SMALL_DEFAULT = 64 << 10 };
 static int small_pending;
 static uint64_t wb_limit = WB_SMALL_DEFAULT;
@@ -1304,7 +1304,7 @@ static int wb_cfg_read;
 
 static void wb_cfg_init(void) {
     if (wb_cfg_read) return;
-    int v = cfg_int("TOTK_WB_FENCE_LIMIT");
+    int v = cfg_int("DKB_WB_FENCE_LIMIT");
     wb_limit = v < 0 ? 0 : (uint64_t)v;
     wb_trace = (rt_trace & RT_TRACE_GFX) != 0;
     wb_cfg_read = 1;
@@ -1329,7 +1329,7 @@ static void gpu_written_entry(Tex *e);
 
 // vk_texture_gpu_written for a write a helper part made. An entry that went meanwhile is left alone: making a new one
 // here would upload its storage after the part that rendered into it. A released entry is still marked: with the
-// replay on the submitting thread (TOTK_REPLAY_ASYNC=0, the default), another game thread's nvnTextureFinalize or
+// replay on the submitting thread (DKB_REPLAY_ASYNC=0, the default), another game thread's nvnTextureFinalize or
 // nvnTextureInitialize reaches vk_texture_release without waiting for the walk, so it can land between the helper's
 // vk_texture_gpu_written_ready and the join. The part did render into the image, and tex_lock orders the release against this marking, so the entry
 // ends as if the release had come right after the render: GPU-owned, its fence recorded and, when mirrored, on the
@@ -1366,7 +1366,7 @@ static void gpu_written_entry(Tex *e) {
         if (e->pub.mirrored) {
             e->gpu_dirty = 1;
             storage_rewritten(e, 0, &e->gpu_gen);   // CPU writes up to here are older than this render
-            if (wb_exact < 0) wb_exact = cfg_bool("TOTK_WB_EXACT");
+            if (wb_exact < 0) wb_exact = cfg_bool("DKB_WB_EXACT");
             if (wb_exact && !e->snap && e->t.L.size <= SNAP_MAX && fills_no_page(e) && !(e->snap = malloc(SNAP_MAX)))
                 rt_fatal("vk: out of memory for a texture's storage copy");
             if (e->snap) memcpy(e->snap, (const void *)(uintptr_t)e->pub.addr, e->t.L.size);
@@ -1465,7 +1465,7 @@ static void descriptor_registered(DescSlot *d, uint32_t kind) {
     // A sampler lookup answers from sampler slots only (vk_sampler_by_id_locked), so a texture registered over a slot
     // that held no sampler changes no sampler answer. Bananza registers texture descriptors all through a frame, and
     // bumping samp_gen with each one made every kept texture descriptor look its sampler up again (vk_exec_draw.c TD).
-    // TOTK_DESC_SAMP_GEN (0|1|ab, on by default; vk_exec_draw.c td_hash_on has its measure) bumps it for samplers
+    // DKB_DESC_SAMP_GEN (0|1|ab, on by default; vk_exec_draw.c td_hash_on has its measure) bumps it for samplers
     // only; off, every registration bumps it.
     static int mode = -1;
     if (mode < 0) mode = rt_knob("DESC_SAMP_GEN", "1");
@@ -2019,8 +2019,8 @@ void vk_texture_write_back(uint64_t addr, uint64_t size) {
     if (queued) wb_land();
 }
 
-// ---- asynchronous write-back (TOTK_WB_ASYNC, on by default; 0: the replay waits as before)
-// A deferred guest read (TOTK_NX2_READ_NOWAIT, opt-in) queues a write-back on the replay thread; no other read comes
+// ---- asynchronous write-back (DKB_WB_ASYNC, on by default; 0: the replay waits as before)
+// A deferred guest read (DKB_NX2_READ_NOWAIT, opt-in) queues a write-back on the replay thread; no other read comes
 // here. Done there with vk_texture_write_back, the replay waited for the GPU to finish all the work queued so far
 // (the upload batch is behind it), about a fifth of the replay thread in a dense Bananza area, where the replay is
 // the critical path. Instead the copy image -> staging is recorded and submitted without waiting, and the staging
@@ -2034,7 +2034,7 @@ void vk_texture_write_back(uint64_t addr, uint64_t size) {
 // Measured on the Bananza route (RTX 3050 laptop, GPU-bound): no FPS gain beyond run-to-run noise, and 30-45% of the
 // late copies dropped that way. That run predates the snap refresh in vk_texture_wb_poll, which stops a landing
 // from making the next render's copy look rewritten; it was not measured again. In Canyon Layer (Ryzen 7 5700X3D,
-// RTX 3060 Ti, replay-bound), in-launch A/B (TOTK_AB=4, two launches, world 45-95 s): the frame interval 1.2 and
+// RTX 3060 Ti, replay-bound), in-launch A/B (DKB_AB=4, two launches, world 45-95 s): the frame interval 1.2 and
 // 1.8 ms shorter, the replay 0.3 and 0.7 ms shorter, and none of 2,000 late copies dropped.
 typedef struct {
     Tex *e;                       // NULL once the entry was destroyed (wb_async_forget)
@@ -2121,10 +2121,10 @@ static int wb_queue(Tex *e) {
 }
 
 void vk_texture_write_back_async(uint64_t addr, uint64_t size) {
-    if (wb_async < 0) {   // TOTK_WB_ASYNC: 1 (default) asynchronous, 0 waited, ab switched with TOTK_AB's blocks
+    if (wb_async < 0) {   // DKB_WB_ASYNC: 1 (default) asynchronous, 0 waited, ab switched with DKB_AB's blocks
         wb_async = rt_knob("WB_ASYNC", "1");
-        rt_log("vk: deferred-read write-backs %s", wb_async == 2 ? "asynchronous in the B blocks (TOTK_AB)"
-                                                    : wb_async ? "asynchronous (TOTK_WB_ASYNC=1)" : "waited for");
+        rt_log("vk: deferred-read write-backs %s", wb_async == 2 ? "asynchronous in the B blocks (DKB_AB)"
+                                                    : wb_async ? "asynchronous (DKB_WB_ASYNC=1)" : "waited for");
     }
     if (!RT_KNOB_ON(wb_async)) {
         vk_texture_write_back(addr, size);
@@ -2260,7 +2260,7 @@ void vk_texture_wb_poll(void) {
 // first, texture lock held. Done under the lock, the GPU wait (image_texels: vk_upload_flush(1), the copy behind all
 // the work queued so far) kept the lock for about 0.35 ms, some 340 times a second in Bananza's Lake Level (3.2.0), and
 // the replay's texture lookups waited for it: slot tokens, bind_resources and shader_for in the replay's slices, and
-// vk_texture_new_submit and vk_texture_gpu_written on the submitting thread. TOTK_WB_UNLOCKED (default 1) queues the
+// vk_texture_new_submit and vk_texture_gpu_written on the submitting thread. DKB_WB_UNLOCKED (default 1) queues the
 // copies here as the asynchronous write-back does (wb_queue) and has the caller wait without the lock (wb_land); the
 // copies then land through vk_texture_wb_poll's checks: an entry destroyed meanwhile only frees its staging, a CPU
 // write to the storage after the render keeps the CPU's bytes, and a render recorded meanwhile leaves the texture
@@ -2286,7 +2286,7 @@ static int wb_all_queueable(Tex **hit, int k) {
 static int wb_copies(Tex **hit, int k) {
     if (wb_unlocked < 0) {
         wb_unlocked = rt_knob("WB_UNLOCKED", "1");
-        rt_log("vk: waited write-backs wait for the GPU %s (TOTK_WB_UNLOCKED=%s)",
+        rt_log("vk: waited write-backs wait for the GPU %s (DKB_WB_UNLOCKED=%s)",
                wb_unlocked == 2 ? "without the texture lock in the B blocks" : wb_unlocked ? "without the texture lock" : "under the texture lock",
                wb_unlocked == 2 ? "ab" : wb_unlocked ? "1" : "0");
     }
@@ -2318,7 +2318,7 @@ static void wb_land(void) {   // texture lock not held
 // storage, unless the CPU rewrote it since. Larger targets still go back on an invalidate, memcpy or ReadTexels.
 int vk_texture_small_dirty(void) { return __atomic_load_n(&small_pending, __ATOMIC_ACQUIRE); }
 
-// TOTK_TRACE=gfx: a dirty target the fence write-back leaves alone because it is over the limit (what a CPU read
+// DKB_TRACE=gfx: a dirty target the fence write-back leaves alone because it is over the limit (what a CPU read
 // after the wait would miss), or sends back although it is over the default limit (what a raised limit changed). One
 // line per target address and outcome; the table is small and a full one stops logging.
 static void wb_note(const Tex *e, int skipped) {

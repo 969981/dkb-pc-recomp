@@ -44,7 +44,7 @@ typedef struct {
     float part_ms[PERF_PARTS];
 } PerfStats;
 
-// Overlay mode 0 off, 1 fps, 2 full, 3 breakdown, 4 counter (TOTK_PERF_OVERLAY), from the present path when the setting
+// Overlay mode 0 off, 1 fps, 2 full, 3 breakdown, 4 counter (DKB_PERF_OVERLAY), from the present path when the setting
 // changes. Full and breakdown start the machine sampling thread (twice a second) and turn on the event counts and GPU
 // timestamps; leaving them stops those. The counter is like fps: no hardware sampler. Off: perf_present skips
 // perfmon_frame and nothing samples.

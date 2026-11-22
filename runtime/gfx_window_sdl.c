@@ -1,6 +1,6 @@
 // The SDL3 back end of the window (gfx_wsys.h), for hosts without Win32: the window on a thread of its own that also
-// runs SDL's event loop, F11 fullscreen (borderless, the desktop's mode), the settings TOTK_WINDOW_SIZE and
-// TOTK_FULLSCREEN, the display's refresh rate, focus, the Vulkan surface. The swapchain and the present are
+// runs SDL's event loop, F11 fullscreen (borderless, the desktop's mode), the settings DKB_WINDOW_SIZE and
+// DKB_FULLSCREEN, the display's refresh rate, focus, the Vulkan surface. The swapchain and the present are
 // vk_present.c's. Keyboard and mouse events go to input_sdl.c and to the menu (ui/menu_sdl.cpp).
 //
 // SDL wants its video calls on the thread that initialised video, so this thread does them all: the others hand it
@@ -8,7 +8,7 @@
 // exists: the Vulkan instance asks for SDL's surface extensions first (gfx_window_vk_extensions), the window comes with
 // gfx_window_start (wsys_open).
 //
-// TOTK_WINDOW_SIZE is in pixels. SDL_GetWindowPixelDensity converts between pixels and the units SDL_SetWindowSize
+// DKB_WINDOW_SIZE is in pixels. SDL_GetWindowPixelDensity converts between pixels and the units SDL_SetWindowSize
 // and mouse positions use. input_sdl.c and the menu convert mouse positions back through gfx_window_sdl_density.
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,7 +75,7 @@ static char g_applied_size[32];
 static int g_applied_mode;
 
 static void note_applied(void) {
-    snprintf(g_applied_size, sizeof g_applied_size, "%s", cfg_value("TOTK_WINDOW_SIZE"));
+    snprintf(g_applied_size, sizeof g_applied_size, "%s", cfg_value("DKB_WINDOW_SIZE"));
     g_applied_mode = gfx_cfg_window_mode();
 }
 
@@ -128,7 +128,7 @@ static void set_mode(int mode) {
 // Window thread: the window takes the size and mode of the settings when they changed. A window resized by hand keeps
 // its size when another setting changes.
 static void apply_settings(void) {
-    int size_changed = strcmp(cfg_value("TOTK_WINDOW_SIZE"), g_applied_size) != 0, mode = gfx_cfg_window_mode();
+    int size_changed = strcmp(cfg_value("DKB_WINDOW_SIZE"), g_applied_size) != 0, mode = gfx_cfg_window_mode();
     int mode_changed = mode != g_applied_mode;
     note_applied();
     if (size_changed) {
@@ -181,8 +181,8 @@ static void toggle_window_mode(void) {
     int cur = is_fullscreen() ? (g_applied_mode ? g_applied_mode : 1) : 0, mode = cur ? 0 : last_fs;
     set_mode(mode);
     // the menu shows these; the next start keeps them
-    cfg_set("TOTK_WINDOW_MODE", mode == 2 ? "fullscreen" : mode == 1 ? "borderless" : "windowed");
-    cfg_set("TOTK_FULLSCREEN", mode ? "1" : "0");
+    cfg_set("DKB_WINDOW_MODE", mode == 2 ? "fullscreen" : mode == 1 ? "borderless" : "windowed");
+    cfg_set("DKB_FULLSCREEN", mode ? "1" : "0");
     cfg_save();
     note_applied();
 }
@@ -209,7 +209,7 @@ static void handle(const SDL_Event *e) {
     menu_sdl_event(e);
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
-        if (e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) gfx_backend()->dump_request();   // TOTK_DUMP=key
+        if (e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) gfx_backend()->dump_request();   // DKB_DUMP=key
         if (e->key.scancode == SDL_SCANCODE_F11 && !e->key.repeat) {
             toggle_window_mode();
         }
@@ -245,7 +245,7 @@ static void video_init(void) {
         plat_event_set(&g_video_ready);
         return;
     }
-    SDL_SetHint(SDL_HINT_APP_ID, "totk-recomp");   // Wayland's app id: the desktop file and the taskbar match it
+    SDL_SetHint(SDL_HINT_APP_ID, "dkb-recomp");   // Wayland's app id: the desktop file and the taskbar match it
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "0");
     g_video_ok = SDL_Init(SDL_INIT_VIDEO);
     if (!g_video_ok) rt_log("gfx: SDL video init failed (%s)", SDL_GetError());
@@ -288,7 +288,7 @@ static void window_main(void *arg) {
 void gfx_window_main_thread(void) {
     video_init();
     if (!headless_on()) window_loop();
-    // No video (a headless run with TOTK_GPU=null, or a session without a display): the game thread ends the process.
+    // No video (a headless run with DKB_GPU=null, or a session without a display): the game thread ends the process.
     for (;;) plat_sleep_ms(1000);
 }
 
@@ -350,7 +350,7 @@ static void open_window(void *arg) {
     density_update();
     note_applied();
     refresh_rate_update();
-    if (cfg_get("TOTK_BACKGROUND_WINDOW")) rt_log("gfx: TOTK_BACKGROUND_WINDOW has no effect with SDL windows");
+    if (cfg_get("DKB_BACKGROUND_WINDOW")) rt_log("gfx: DKB_BACKGROUND_WINDOW has no effect with SDL windows");
     if (gfx_cfg_fullscreen()) set_mode(gfx_cfg_window_mode());
     SDL_SyncWindow(g_win);
     input_sdl_window(g_win);

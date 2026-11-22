@@ -27,7 +27,7 @@ Summarise any bundle again: `.venv\Scripts\python.exe -I tools\perf_evidence.py 
 - `-Exe` (default `build\dkb100\dkb.exe`), `-Exefs` (default `build\extracted\dkb100-dump\exefs`, where
   `tools\extract_nup.py` writes it) and `-Romfs` (default `build\extracted\dkb100\romfs`, the packed folder with `romfs.bin`
   and `index.json`): relative to the repo root or absolute. The runner copies the exe folder's `dkb.exe`,
-  `*.dll`, `*.bin` and `dkb.ini` (or `totk.ini` for a TotK build) into `<bundle>\bin\` and runs the copy, so every bundle holds
+  `*.dll`, `*.bin` and `dkb.ini` into `<bundle>\bin\` and runs the copy, so every bundle holds
   a full copy of `dkb.exe` (about 190 MB). The source folder is not written to.
 - Requires PowerShell 7 (`#Requires -Version 7.0`). GPU and process sampling use `nvidia-smi`; on a machine without it the
   GPU columns of `samples.csv` read `n/a` and the run goes on.
@@ -35,7 +35,7 @@ Summarise any bundle again: `.venv\Scripts\python.exe -I tools\perf_evidence.py 
   presses, then from tick 3000 a 600-tick cycle of forward walk (5 s), diagonal walk (2 s), camera turn right (1.5 s)
   and walk back (1.5 s), until the run ends. Ticks are 60 Hz from the first present. Stick values are +-32767.
   The walk starts after the menu sequence: at tick 1800 the game was still in an intro caption.
-- `-Realtime`: unset by default, so the run uses the game's own default (runtime/cfg.c); `0` or `1` sets `TOTK_REALTIME`.
+- `-Realtime`: unset by default, so the run uses the game's own default (runtime/cfg.c); `0` or `1` sets `DKB_REALTIME`.
   Builds without the realtime patch set ignore it.
 - `-Measure flight|summary`. See below.
 - `-Seconds` (wall clock, default 180), `-WarmAfter` (default 60), `-SampleSeconds` (default 5), `-Label`.
@@ -45,7 +45,7 @@ Summarise any bundle again: `.venv\Scripts\python.exe -I tools\perf_evidence.py 
 
 - **flight** (default): per-frame records from the flight recorder: one dump per 1200 presents, plus one per frame over
   50 ms. The dump schedule covers the first 15 x 1200 presents (about 300 s at 60 fps); frames after the last dump are not
-  recorded, so use `-Measure summary` for longer runs. `cfg.c` files `TOTK_FLIGHT` under "diagnostics", so these runs are NOT diagnostics-off (gate 14 FAIL).
+  recorded, so use `-Measure summary` for longer runs. `cfg.c` files `DKB_FLIGHT` under "diagnostics", so these runs are NOT diagnostics-off (gate 14 FAIL).
 - **summary**: no flight recorder. Frame stats come from the game's frametime lines (every 60 s and at exit): mean, 1%
   low, counts over 25/50/100 ms, and the five worst frames with their compile waits. Coarser: per-period.
 
@@ -54,7 +54,7 @@ Summarise any bundle again: `.venv\Scripts\python.exe -I tools\perf_evidence.py 
 - Refuses to start while any `dkb.exe` runs. Never stops a process it did not start.
 - The game is closed by `CloseMainWindow()`, the normal exit path (flushes logs). It is killed only after 60 s with no
   exit, and the run is marked `forced_close` and not reusable. In the walking verification runs one exit took over 20 s.
-- Inherited `TOTK_*` and `DKB_*` variables are cleared for the run and restored afterwards.
+- Inherited `DKB_*` and `DKB_*` variables are cleared for the run and restored afterwards.
 - Profile and shader cache are per bundle. The user's save is never touched.
 
 ## Bundle contents
@@ -65,7 +65,7 @@ Summarise any bundle again: `.venv\Scripts\python.exe -I tools\perf_evidence.py 
 | `samples.csv` | Every 5 s: AC line, GPU temp, power, SM and memory clock, utilisation, VRAM, throttle mask (`nvidia-smi`), process working set, commit, peak, handles, threads. |
 | `flight/<dump>/frames.tsv` | Per-frame records (flight mode): interval and render-thread waits (pace, fence, drain, pipe, xlate, tex, astc) and counts. |
 | `flight/<dump>/f*.png` | Thumbnails (only with `-Thumbs`). |
-| `bin/logs/dkb.log` | The game log (`bin/logs/totk.log` for a TotK build). Written here because the runner runs the copy with stderr on the console (see below). |
+| `bin/logs/dkb.log` | The game log. Written here because the runner runs the copy with stderr on the console (see below). |
 | `input-<script>.txt` | The scripted input that was used. |
 | `visit.json` | `visit`, `complete`, `stop`, `exit_code`. |
 | `evidence.txt` / `evidence.json` | Statistics, anatomy of slow frames, and verdicts. |

@@ -1,6 +1,6 @@
-// totk.exe --probe-nvn: the NVN front end and the null back end, called the way the
+// dkb.exe --probe-nvn: the NVN front end and the null back end, called the way the
 // game calls them: through the real nvnp_* procs with a synthetic Cpu (AAPCS64 arguments in x0..x7 and v0..v7), on the
-// guest main thread, on the null back end whatever TOTK_GPU says. Checks, in order:
+// guest main thread, on the null back end whatever DKB_GPU says. Checks, in order:
 //   - pool, buffer, texture, sampler, sync and event objects against MacNativeGames' semantics (hle_nvn.c), the
 //     texture storage sizes against the original-SDK goldens of MNG tests/texture_auto_layout/probe.c;
 //   - every op kind recorded through the CommandBuffer procs and parsed back with nvn_op_first/next/payload, and
@@ -8,7 +8,7 @@
 //   - the null back end's CPU-visible side effects (event write and add, counter report, buffer copy, uniform update,
 //     in stream order across handles) landing in guest memory at submit, and not before;
 //   - the proc table: every name of nvn_procs.inc resolves to its own synthetic address, an unknown name to NULL;
-//   - named fatal stubs stop with their name, each in a child process (this executable again, TOTK_PROBE_NVN_CHILD).
+//   - named fatal stubs stop with their name, each in a child process (this executable again, DKB_PROBE_NVN_CHILD).
 // The 40 layout goldens themselves are run by --probe-nvn-tex against nvn_tex.c; here four of them go through the procs.
 // Ported in part from MacNativeGames games/totk/tests/texture_auto_layout/probe.c @ b75be8cf (MIT, Copyright (c) 2026
 // jhaizhou; origin d2r-mobile): the golden metadata, which holds no game bytes.
@@ -22,7 +22,7 @@
 #include "nvn_api.h"
 #include "platform/platform.h"
 
-#define CHILD_ENV "TOTK_PROBE_NVN_CHILD"
+#define CHILD_ENV "DKB_PROBE_NVN_CHILD"
 
 #define NVN_PROC(n) void nvnp_##n(Cpu *c);
 #include "nvn_procs.inc"
@@ -722,7 +722,7 @@ static void probe_commands(void) {
     uint64_t h = record_all();
     parse_all(h);
 
-    // CallCommands inlines the called recording at the call position, or with TOTK_CALL_REF (the default) records one
+    // CallCommands inlines the called recording at the call position, or with DKB_CALL_REF (the default) records one
     // OP_CALL naming it when the recording holds no deferred binds or pushes
     begin(&cmd2, ctlmem2, 0x34000);
     CALL(nvnCommandBufferBarrier, U(&cmd2), 1);
@@ -785,7 +785,7 @@ static void probe_null_effects(void) {
     CALL(nvnCommandBufferBarrier, U(c), 1);
     uint64_t ha = CALL(nvnCommandBufferEndRecording, U(c));
 
-    // The second recording calls the first, which has no deferred records: with TOTK_CALL_REF one OP_CALL names it, so
+    // The second recording calls the first, which has no deferred records: with DKB_CALL_REF one OP_CALL names it, so
     // the null back end reaches its side effects through the call (gfx_null.c null_replay)
     begin(&cmd2, ctlmem2, 0x38000);
     CALL(nvnCommandBufferCallCommands, U(&cmd2), 1, U(&ha));
@@ -902,7 +902,7 @@ static void probe_children(void) {
 int probe_nvn(void) {
     const char *child = getenv(CHILD_ENV);
     if (child && *child) return run_as_child(child);
-    // The probe checks the null back end whatever TOTK_GPU says; the choice is made once, at the first object call.
+    // The probe checks the null back end whatever DKB_GPU says; the choice is made once, at the first object call.
     ((RtConfig *)rt_config())->gpu = "null";
     nvn_procs_register();
     hostfn_seal();

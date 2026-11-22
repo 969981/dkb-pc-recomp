@@ -64,7 +64,7 @@ void perf_count(int kind) { (void)kind; }
 uint64_t perf_begin(void) { return 0; }
 void perf_replay(uint64_t start) { (void)start; }
 void perf_replay_totals(uint64_t d, uint64_t t, uint64_t c) { (void)d; (void)t; (void)c; }
-// perf.c's replay parts (TOTK_TRACE=perf), off in the fixture
+// perf.c's replay parts (DKB_TRACE=perf), off in the fixture
 int perf_ph_replay_begin(void) { return 0; }
 void perf_ph_replay_end(int prev) { (void)prev; }
 uint64_t perf_ph_begin(void) { return 0; }
@@ -85,7 +85,7 @@ void vk_spec_event(void) {}
 // the nonwaiting branch; reaching any of these new dependencies is a fixture failure, not a simulated success.
 void perf_end(int kind, uint64_t start) { (void)kind; (void)start; check(0, "retirement never times a prefix wait"); }
 void perf_gpu_wait(uint64_t start) { (void)start; check(0, "retirement never waits for a prefix"); }
-int cfg_bool(const char *key) { check(!strcmp(key, "TOTK_TEX_ALIAS"), "default texture alias setting"); return 1; }
+int cfg_bool(const char *key) { check(!strcmp(key, "DKB_TEX_ALIAS"), "default texture alias setting"); return 1; }
 VkCtx *vk_ctx(void) { return &context; }
 // Upload batch timing (vk_memory.c, inserted with the memory types): the synthetic device has no queue family with timestamps
 // and no query pool, so uploads stay untimed.
@@ -208,7 +208,7 @@ static VkResult synthetic_device_idle(VkDevice d) {
 }
 void vk_texture_shutdown(void) { check(scenario == SHUTDOWN, "shutdown uses an empty synthetic texture cache"); }
 
-// vk_memory.c's compute copy of small write-back ranges (TOTK_SPARSE_MIRROR_COPY): never made in this fixture, so
+// vk_memory.c's compute copy of small write-back ranges (DKB_SPARSE_MIRROR_COPY): never made in this fixture, so
 // vk_mem_shutdown finds nothing to destroy.
 static struct { VkPipeline pipeline; VkPipelineLayout layout; VkDescriptorSetLayout set; } sparse_copy;
 static void synthetic_destroy_pipeline(VkDevice d, VkPipeline p, const VkAllocationCallbacks *a) { (void)d; (void)p; (void)a; check(0, "no sparse copy pipeline"); }
@@ -222,7 +222,7 @@ static void staged_shutdown(VkCtx *c) { (void)c; }   // vk_memory.c: no staged m
 static uint64_t staged_min;
 static int staged_fault;
 static void staged_own_shutdown(VkCtx *c) { (void)c; }
-static volatile uint64_t inject_lost;   // vk_memory.c batch_status: TOTK_STAGED_INJECT=fence is off here
+static volatile uint64_t inject_lost;   // vk_memory.c batch_status: DKB_STAGED_INJECT=fence is off here
 typedef struct WbLocal { void *a; int n, cap; void *k; int nk, ck; void *s; int ns, cs; struct WbLocal *next; } WbLocal;
 static WbLocal *wb_locals;
 #define cmd_pool memory_cmd_pool
@@ -276,7 +276,7 @@ static VkResult synthetic_begin(VkCommandBuffer cb, const VkCommandBufferBeginIn
     in_recording = 1; return VK_SUCCESS;
 }
 static VkResult synthetic_end(VkCommandBuffer cb) { check(cb && in_recording, "synthetic command recording ends"); in_recording = 0; return VK_SUCCESS; }
-// vk_sync.c part_begin with TOTK_REC_BEGIN=0, the default: the submitting thread begins the part, writes the submit
+// vk_sync.c part_begin with DKB_REC_BEGIN=0, the default: the submitting thread begins the part, writes the submit
 // crumb and the start timestamp, then hands the part to the recorder, the same calls the split made before it existed.
 static void part_begin(VkCommandBuffer cb, uint64_t fence) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,

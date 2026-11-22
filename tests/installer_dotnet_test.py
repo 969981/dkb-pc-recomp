@@ -59,8 +59,8 @@ for index in range(2):
     (out/f'worker{index}.proj').write_text(f'<Project><UsingTask TaskName="CleanupTask" AssemblyFile="{assembly}" /><Target Name="Run"><CleanupTask Marker="{marker}" /></Target></Project>')
 (out/'parallel.proj').write_text('<Project><ItemGroup><Worker Include="worker0.proj;worker1.proj" /></ItemGroup><Target Name="Run"><MSBuild Projects="@(Worker)" Targets="Run" BuildInParallel="true" /></Target></Project>')
 subprocess.run([dotnet,'msbuild',out/'parallel.proj','-t:Run','-m:2','-nologo','-v:q'],check=True)
-(out/('totk_xlate.exe' if os.name=='nt' else 'totk_xlate')).write_bytes(b'synthetic translator')
-(out/'totk_xlate.id').write_text('local-msbuild-probe\n')
+(out/('dkb_xlate.exe' if os.name=='nt' else 'dkb_xlate')).write_bytes(b'synthetic translator')
+(out/'dkb_xlate.id').write_text('local-msbuild-probe\n')
 ''')
     ctx = SimpleNamespace(temp=workspace, dest=dest, layout=SimpleNamespace(root=base, tools=tools,
                            python=Path(sys.executable), dlls=(), llvm=dotnet.parent, sysroot=None),

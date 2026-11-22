@@ -1,4 +1,4 @@
-// AMD Anti-Lag 2 through VK_AMD_anti_lag, without AMD's SDK (TOTK_ANTILAG = 1; off by default, experimental): the
+// AMD Anti-Lag 2 through VK_AMD_anti_lag, without AMD's SDK (DKB_ANTILAG = 1; off by default, experimental): the
 // driver delays the start of the game's next frame so that its input is sampled later and the frame waits less in the
 // queue, for less delay from input to the screen. A C rewrite of Hookshot's gpu/vk/vk_antilag.cpp
 // (https://git.notrexed.dev/Hookshot/Hookshot @ 7191250b7b0f8a4becd79ee086229a2620872fc7, GPL-3.0).
@@ -15,7 +15,7 @@
 // game's own frame gives a present stage (vk_framegen.c vk_fg_show); the made frame gives none.
 //
 // The input stage stands for the game's simulation start only roughly: it is given on the thread that presents, and
-// under asynchronous replay (TOTK_REPLAY_ASYNC) the game has by then run up to a frame ahead.
+// under asynchronous replay (DKB_REPLAY_ASYNC) the game has by then run up to a frame ahead.
 #include <string.h>
 
 #include "cfg.h"
@@ -71,7 +71,7 @@ static void update(int on, const VkAntiLagPresentationInfoAMD *stage) { update_o
 // With al held: the setting on, and the extension and its feature. Turning off tells the driver once.
 static int on(void) {
     if (!ready()) return 0;
-    int want = cfg_bool("TOTK_ANTILAG");
+    int want = cfg_bool("DKB_ANTILAG");
     if (want != A.active) {
         if (!want) update(0, NULL);
         A.active = want, A.frame_marked = 0, A.since = A.frame;

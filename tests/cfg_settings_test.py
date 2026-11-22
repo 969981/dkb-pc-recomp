@@ -1,7 +1,7 @@
 """Check the settings table (runtime/cfg.c) and, with --exe, every accepted value through the real dkb.exe.
 
 Static: every metas[] key is in known[] and sections[], every default satisfies its own accepts list or range, no
-duplicates, every key the menu uses has a row, and documented TOTK_/DKB_ names exist in known[] (warnings only).
+duplicates, every key the menu uses has a row, and documented DKB_ names exist in known[] (warnings only).
 Runtime (--exe): a scratch copy of the exe and its DLLs loads a dkb.ini through `dkb.exe --probe-cfg` with
 DKB_PROBE_CFG_INI set; the probe prints "key = value" for every row. Run i sets each key to its i-th accepted value
 (all keys in one ini), so the whole table takes about twenty launches.
@@ -86,7 +86,7 @@ class Static(unittest.TestCase):
     def test_menu_keys_have_rows(self):
         used = set()
         for f in (ROOT/'runtime/ui').glob('*.cpp'):
-            used |= set(re.findall(r'"TOTK_([A-Z0-9_]+)"', f.read_text(encoding='utf-8')))
+            used |= set(re.findall(r'"DKB_([A-Z0-9_]+)"', f.read_text(encoding='utf-8')))
         used -= {'SAVE', 'MENU_TEST', 'MENU_TEST_DIR', 'MENU_TEST_SET'}   # test hooks, not rows
         rows = {m[0] for m in METAS}
         # BIND_* rows are the remapping page's, edited through binds_page.cpp, not metas[]
@@ -95,7 +95,7 @@ class Static(unittest.TestCase):
     def test_documented_keys_exist(self):
         seen = {}
         for f in sorted((ROOT/'docs').glob('*.md')):
-            for k in re.findall(r'\b(?:TOTK|DKB)_([A-Z][A-Z0-9_]+)', f.read_text(encoding='utf-8')):
+            for k in re.findall(r'\bDKB_([A-Z][A-Z0-9_]+)', f.read_text(encoding='utf-8')):
                 if k not in KNOWN:
                     seen.setdefault(k, set()).add(f.name)
         for k, fs in sorted(seen.items()):
@@ -112,7 +112,7 @@ class Runtime(unittest.TestCase):
         shutil.copy2(EXE, Path(cls.tmp)/'dkb.exe')
         for dll in src.glob('*.dll'):
             shutil.copy2(dll, cls.tmp)
-        cls.env = {k: v for k, v in os.environ.items() if not k.startswith(('TOTK_', 'DKB_'))}
+        cls.env = {k: v for k, v in os.environ.items() if not k.startswith('DKB_')}
         cls.base = cls.dump({})
 
     @classmethod

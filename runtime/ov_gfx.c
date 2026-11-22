@@ -116,7 +116,7 @@ static struct { const char *name; unsigned n; } hdr_tr[HDR_TRACE_NAMES];
 
 int hdr_trace_on(void) {
     static int on = -1;   // racing threads compute the same value
-    if (on < 0) on = cfg_bool("TOTK_HDR_TRACE");
+    if (on < 0) on = cfg_bool("DKB_HDR_TRACE");
     return on;
 }
 
@@ -160,11 +160,11 @@ void hdr_trace_dump(const char *name, const void *p) {
 int hdr_native_on(void) {
     static int on = -1;   // racing threads compute the same value
     if (on < 0) {
-        int want = cfg_bool("TOTK_HDR_NATIVE");
+        int want = cfg_bool("DKB_HDR_NATIVE");
         int v320 = !strcmp(rt_game_target, "dkb458752");
         if (want && !v320) rt_log("hdr: hdr_native is for game 3.2.0 only, untested on %s; it stays off", rt_game_display);
-        else if (want && !cfg_bool("TOTK_HDR")) rt_log("hdr: hdr_native needs hdr = 1; it stays off");
-        on = want && v320 && cfg_bool("TOTK_HDR");
+        else if (want && !cfg_bool("DKB_HDR")) rt_log("hdr: hdr_native needs hdr = 1; it stays off");
+        on = want && v320 && cfg_bool("DKB_HDR");
     }
     return on;
 }
@@ -182,7 +182,7 @@ static void ov_hdr_status(Cpu *c) {
                arg_p(c, 1) ? "set" : "null", peak ? "set" : "null", arg_p(c, 3) ? "set" : "null");
     int hdr = hdr_answer();
     if (on) *on = (uint8_t)hdr;
-    if (peak && hdr) *peak = (uint16_t)cfg_double("TOTK_HDR_PEAK_NITS");
+    if (peak && hdr) *peak = (uint16_t)cfg_double("DKB_HDR_PEAK_NITS");
     ret_x(c, 0);
 }
 // Result QueryDisplayHdrPaperWhite(u16 *nits, const Display *): the BT.2408 reference white, 203 nits, or
@@ -190,7 +190,7 @@ static void ov_hdr_status(Cpu *c) {
 static void ov_hdr_paper_white(Cpu *c) {
     uint16_t *nits = arg_p(c, 0);
     if (hdr_trace_hit(c, "QueryDisplayHdrPaperWhite")) rt_log("hdr-trace: QueryDisplayHdrPaperWhite nits=%s", nits ? "set" : "null");
-    if (nits) *nits = hdr_answer() ? (uint16_t)cfg_double("TOTK_HDR_GAME_NITS") : 203;
+    if (nits) *nits = hdr_answer() ? (uint16_t)cfg_double("DKB_HDR_GAME_NITS") : 203;
     ret_x(c, 0);
 }
 // Result QueryDisplayVrrSupported(bool *out, const Display *): no

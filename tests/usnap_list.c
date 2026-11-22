@@ -1,4 +1,4 @@
-// Uniform range lists of TOTK_USNAP_LIST (vk_usnap.c nvn_ubo_list_build / collect / list_check, nvn_api_cmd.c
+// Uniform range lists of DKB_USNAP_LIST (vk_usnap.c nvn_ubo_list_build / collect / list_check, nvn_api_cmd.c
 // take_recording with OP_CALL list composition), through the real recorder. tests/usnap_list_test.py cuts the list,
 // sort, collect and check functions out of runtime/vk_usnap.c into usnap_list_cut.c. No game, renderer or GPU.
 #include <stdarg.h>
@@ -39,7 +39,7 @@ static uint64_t call(void (*fn)(Cpu *), const uint64_t args[8]) {
 // The recorder and the submit preparation are linked; these replace the host services they reach. Single-threaded.
 unsigned rt_trace;
 static uint64_t replayed;
-int nvn_ubo_lists_on(void) { return 1; }   // TOTK_USNAP_LIST on: overrides the recorder's weak default
+int nvn_ubo_lists_on(void) { return 1; }   // DKB_USNAP_LIST on: overrides the recorder's weak default
 void nvn_called(uint8_t *seen_, const char *name) { (void)seen_; (void)name; }
 void nvn_mode_trace(unsigned kind, uint64_t cb, uint64_t handle, uint32_t value, uint64_t submit) {
     (void)kind; (void)cb; (void)handle; (void)value; (void)submit;
@@ -51,10 +51,10 @@ void plat_mutex_unlock(PlatMutex *m) { (void)m; }
 void plat_mutex_lock_shared(PlatMutex *m) { (void)m; }
 void plat_mutex_unlock_shared(PlatMutex *m) { (void)m; }
 uint64_t gfx_replayed_submits(void) { return replayed; }
-// TOTK_CALL_REF from USNAP_LIST_CALL_REF (tests/usnap_list_test.py runs the fixture with 0 and 1): the recorder reads it
+// DKB_CALL_REF from USNAP_LIST_CALL_REF (tests/usnap_list_test.py runs the fixture with 0 and 1): the recorder reads it
 // once.
 int cfg_bool(const char *name) {
-    if (!strcmp(name, "TOTK_CALL_REF")) return getenv("USNAP_LIST_CALL_REF") && atoi(getenv("USNAP_LIST_CALL_REF"));
+    if (!strcmp(name, "DKB_CALL_REF")) return getenv("USNAP_LIST_CALL_REF") && atoi(getenv("USNAP_LIST_CALL_REF"));
     rt_fatal("unexpected setting lookup: %s", name);
     return 0;
 }
@@ -199,7 +199,7 @@ static void fixed_list(void) {
     CALL(nvnCommandBufferFinalize, UP(&cmd));
 }
 
-// CallCommands with and without TOTK_CALL_REF: callee lists compose across OP_CALL (including repeated callees,
+// CallCommands with and without DKB_CALL_REF: callee lists compose across OP_CALL (including repeated callees,
 // empty callees, merged > 64 KiB callee ranges, and nested chains up to CALL_REF_DEPTH) and pass list_check.
 static void called_lists(void) {
     NVNcommandBuffer cmd = {0};
@@ -468,6 +468,6 @@ int main(void) {
     async_lists();
     radix_and_span_cases();
     failures += union_cases();
-    printf("usnap lists (TOTK_CALL_REF %d): %d checks, %d failures\n", nvn_call_ref_on(), checks, failures);
+    printf("usnap lists (DKB_CALL_REF %d): %d checks, %d failures\n", nvn_call_ref_on(), checks, failures);
     return failures != 0;
 }

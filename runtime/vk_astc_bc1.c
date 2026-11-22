@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The ASTC textures this renderer keeps as BC (TOTK_ASTC_BC) and the format their images are in: whether an upload
+// The ASTC textures this renderer keeps as BC (DKB_ASTC_BC) and the format their images are in: whether an upload
 // counts the kinds of the blocks it writes, what the kinds say about the format (astc_opaque.h), the image made
 // again in the format that calls for it and the entry left describing it. vk_astc.c encodes the BC1 blocks
 // (bc1_encode.comp). The method is Hookshot's (gpu/vk/vk_texture.cpp bc_reformat, commit 97024ef5,
@@ -49,7 +49,7 @@ static int vk_astc_bc_remake(VkTexImage *img, VkImageCreateFlags flags, VkImageU
     int32_t k = __atomic_add_fetch(to_bc1 ? &n_to_bc1 : &n_to_bc3, 1, __ATOMIC_RELAXED);
     if (k <= 4 || (k & (k - 1)) == 0)
         rt_log("vk: ASTC texture %#llx %ux%u x%u: %s (%d opaque textures kept as BC1, %d back to BC3; "
-               "TOTK_ASTC_BC1=0: all BC3)", (unsigned long long)img->addr, img->width, img->height, img->layers,
+               "DKB_ASTC_BC1=0: all BC3)", (unsigned long long)img->addr, img->width, img->height, img->layers,
                to_bc1 ? "every block opaque, kept as BC1" : "alpha in it now, BC3 again",
                (int)__atomic_load_n(&n_to_bc1, __ATOMIC_RELAXED), (int)__atomic_load_n(&n_to_bc3, __ATOMIC_RELAXED));
     return 1;

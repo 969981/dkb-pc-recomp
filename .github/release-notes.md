@@ -19,7 +19,7 @@ DKB Recomp 0.5.1: a static recompilation of *Donkey Kong Bananza* (Switch 2) to 
 - **Start-up.** A start-up screen shows real progress in the game window until the game's first picture (#430; `splash = 0` turns it off).
 - **Loading and memory.** The staged mirror is on by default on Windows with an NVIDIA GPU. The frame that enters a level or layer takes about half as long (worst frame 444 to 230 ms on an RTX 5060 Ti 8 GB; #442, #424, #429; `mirror_staged = 0` turns it off).
 - **Fewer CPU threads.**
-  - Recording a draw costs about 14% less. On 6 logical processors, frames over 50 ms in the heaviest scene tested fell from about 22 to 15 a minute (`TOTK_DYN_KEEP=0` brings back the old path).
+  - Recording a draw costs about 14% less. On 6 logical processors, frames over 50 ms in the heaviest scene tested fell from about 22 to 15 a minute (`DKB_DYN_KEEP=0` brings back the old path).
   - The replay runs above normal priority while it submits a frame, so loading threads no longer starve it. On 6 logical processors a level transition's replay fell from about 11 ms a frame to 0.25 ms.
 - **AMD.** `replay_threads` is on by default on every discrete card on AMD's proprietary driver, not only the RX 9070 series (#141, #418). Integrated GPUs, AMDVLK and RADV keep it off, and the RX 5000 series is not measured yet.
 - **Crashes.**
@@ -38,7 +38,7 @@ DKB Recomp 0.5.1: a static recompilation of *Donkey Kong Bananza* (Switch 2) to 
   - `DKB-Setup.exe` and the AppImage pass a setup command line on to the command-line setup. `--play [DIR]` starts the finished game, and the setup window takes `--source` and `--dest` to prefill its form.
   - The AppImage keeps its work folder inside the install folder.
   - The NVIDIA shader cache on Linux, the flight recorder, and the uv, NuGet and dotnet caches stay in the install or work folder. A test fails if a setup writes anything to the home folder.
-  - The Windows zip ships a RecompLauncher profile (`recomplauncher.json`), and the AppImage's folder also ships as a `.tar.gz`.
+  - The Windows zip ships a RecompLauncher profile (`recomplauncher.json`).
 - **macOS.** The install check finds the Vulkan loader and the headers on Apple silicon (#444). `DKB_HEADLESS=1` runs the game with no window, for captures and scripted runs. CI now compiles the whole runtime on macOS at every push.
 - **Picture.** Text and the HUD are sharp at 1440p and above with `scene_res = full`. Without it, the HUD is drawn at two thirds of the screen size and stretched (#214).
 
@@ -77,7 +77,6 @@ Pull requests in 0.5.0: wrothgaril, GlebShekovtsov, cybersecurityhandle, anthony
 | `dkb-release.txt` | the launcher | The version, file names, sizes and SHA-256 the launcher checks. |
 | `DKB-Setup-<version>-linux-x86_64.tar.gz` | Linux x86-64, kernel 6.7 or later | Preview. Source package with `setup.sh`. You install the system packages it lists (`./setup.sh --check`), then it runs the command-line installer. |
 | `DKB-Setup-<version>-x86_64.AppImage` | Linux x86-64 (SteamOS, any distribution with glibc 2.31 or later) | Preview. Self-contained: bundles Python, LLVM and a sysroot, so no system packages are needed. Make it executable and run it. |
-| `DKB-Setup-<version>-x86_64.tar.gz` | Same as the AppImage | The AppImage's folder as a plain archive, for launchers that cannot mount an AppImage (a Flatpak sandbox). Unpack, run `./setup.sh`, and `./play.sh DIR` starts the finished game. |
 | `DKB-Setup-<version>-macos-arm64.zip` | macOS 14.4 or later, Apple silicon | Preview. Same idea with `setup.command`. Play is not verified, and the destructible terrain is missing because Metal has no geometry stage. |
 
 ## Requirements (Windows)

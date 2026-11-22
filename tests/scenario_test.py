@@ -24,10 +24,10 @@ class Ending(unittest.TestCase):
     def test_completed_without_perf_output(self):
         kind, detail = sc.ending(0, 'nothing\n', False)
         self.assertEqual(kind, 'completed')
-        self.assertIn('TOTK_TRACE=perf', detail)
+        self.assertIn('DKB_TRACE=perf', detail)
 
     def test_reported_crash(self):
-        text = PERF + '[host] FATAL: access violation (0xc0000005) at host 00007FF6 (totk+0x91c9630), reading address 0x38\n'
+        text = PERF + '[host] FATAL: access violation (0xc0000005) at host 00007FF6 (dkb+0x91c9630), reading address 0x38\n'
         self.assertEqual(sc.ending(71, text, False)[0], 'crashed')
         self.assertIn('access violation', sc.ending(71, text, False)[1])
 
@@ -147,16 +147,16 @@ class Files(unittest.TestCase):
             self.assertIn(str(Path(d) / s['save']), out.getvalue())   # the message names the folder to create
 
     def test_run_env_placeholder_and_trace(self):
-        s = dict(input='tools/input/dkb-title-to-save.txt', env={'TOTK_FLIGHT_DIR': '{run}/flight'})
+        s = dict(input='tools/input/dkb-title-to-save.txt', env={'DKB_FLIGHT_DIR': '{run}/flight'})
         out = Path('build') / 'scenarios' / 'x' / 'run-1'
-        env = sc.run_env(s, {'TOTK_DUMP_DIR': '{run}/dump', 'TOTK_TRACE': 'fs'}, out, {'TOTK_TRACE': 'gfx', 'KEEP': '1'})
-        self.assertEqual(env['TOTK_DUMP_DIR'], f'{out}/dump')
-        self.assertEqual(env['TOTK_FLIGHT_DIR'], f'{out}/flight')
-        self.assertEqual(env['TOTK_TRACE'], 'fs,perf')   # --env replaces the caller's value, perf is added
+        env = sc.run_env(s, {'DKB_DUMP_DIR': '{run}/dump', 'DKB_TRACE': 'fs'}, out, {'DKB_TRACE': 'gfx', 'KEEP': '1'})
+        self.assertEqual(env['DKB_DUMP_DIR'], f'{out}/dump')
+        self.assertEqual(env['DKB_FLIGHT_DIR'], f'{out}/flight')
+        self.assertEqual(env['DKB_TRACE'], 'fs,perf')   # --env replaces the caller's value, perf is added
         self.assertEqual(env['KEEP'], '1')
-        self.assertTrue(env['TOTK_INPUT_SCRIPT'].endswith('dkb-title-to-save.txt'))
-        self.assertEqual(env['TOTK_VOLUME'], '0')   # muted by default
-        self.assertEqual(sc.run_env(s, {}, out, {'TOTK_VOLUME': '40'})['TOTK_VOLUME'], '40')
+        self.assertTrue(env['DKB_INPUT_SCRIPT'].endswith('dkb-title-to-save.txt'))
+        self.assertEqual(env['DKB_VOLUME'], '0')   # muted by default
+        self.assertEqual(sc.run_env(s, {}, out, {'DKB_VOLUME': '40'})['DKB_VOLUME'], '40')
 
     def test_perf_is_judged_only_when_asked(self):
         self.assertFalse(sc.perf_fails({}, 'SLOW'))

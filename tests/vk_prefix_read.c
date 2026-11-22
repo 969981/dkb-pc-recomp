@@ -54,7 +54,7 @@ void perf_end(int k, uint64_t t) { (void)k; (void)t; }
 void perf_gpu_wait(uint64_t t) { (void)t; }
 void perf_replay(uint64_t t) { (void)t; }
 void perf_replay_totals(uint64_t d, uint64_t t, uint64_t c) { (void)d; (void)t; (void)c; }
-// perf.c's replay parts (TOTK_TRACE=perf), off in the fixture
+// perf.c's replay parts (DKB_TRACE=perf), off in the fixture
 int perf_ph_replay_begin(void) { return 0; }
 void perf_ph_replay_end(int prev) { (void)prev; }
 uint64_t perf_ph_begin(void) { return 0; }
@@ -79,7 +79,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t f) {
 void vk_usnap_end(uint64_t f) { NEED(!x_here && f == X.fence); snapshot_end++; }
 void vk_exec_pass_end(VkExec *ex) { NEED(ex == &X); ex->in_pass = 0; }
 static void par_flush(VkExec *ex) { (void)ex; }
-// No pass end is held back (TOTK_PAR_DEFER off): nothing to settle, and no slice contexts wait for their merge.
+// No pass end is held back (DKB_PAR_DEFER off): nothing to settle, and no slice contexts wait for their merge.
 static void par_settle_all(VkExec *ex) { (void)ex; }
 static int par_no_defer __attribute__((unused)), par_unmerged, par_nworkers;
 void vk_exec_draw_slices_end(int n) { (void)n; }
@@ -112,13 +112,13 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     NEED(cb == slots[cur_slot].cb && ((!crumb && !n) || (crumb == VK_CRUMB_SUBMIT_END && n == cur_fence)));
     end_step = ++step; return recorder;
 }
-// TOTK_REC_SUBMIT=0, the default: the recorder submits no part, split_impl submits every one itself.
+// DKB_REC_SUBMIT=0, the default: the recorder submits no part, split_impl submits every one itself.
 int rec_submit(VkCommandBuffer pro, VkCommandBuffer cb, uint64_t fence) {
     NEED(recorder && cb == slots[cur_slot].cb && fence == cur_fence); (void)pro; return 0;
 }
 void rec_begin(VkCommandBuffer cb) { NEED(cb == slots[cur_slot].cb && begin_step > submit_step); }
 void vk_crumb(VkCommandBuffer cb, int k, uint64_t n) { NEED(cb == slots[cur_slot].cb && k == VK_CRUMB_SUBMIT && n == cur_fence); }
-// vk_sync.c part_begin with TOTK_REC_BEGIN=0, the default: the submitting thread begins the part, writes the submit
+// vk_sync.c part_begin with DKB_REC_BEGIN=0, the default: the submitting thread begins the part, writes the submit
 // crumb and the start timestamp, then hands the part to the recorder, the same calls the split made before it existed.
 static void part_begin(VkCommandBuffer cb, uint64_t fence) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,

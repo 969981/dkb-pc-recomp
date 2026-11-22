@@ -1,5 +1,5 @@
 """Unit tests for runtime/vk_texture.c tex_same_desc, takeback_free, epoch-view visibility, entry_pick_alias,
-and runtime/vk_exec_draw.c token-0 memo gating (TOTK_HOLD_TAKEBACK).
+and runtime/vk_exec_draw.c token-0 memo gating (DKB_HOLD_TAKEBACK).
 
 Extracts agen_idx, vk_texture_takebacks, vk_texture_view, vk_texture_view_active, tex_is_released,
 tb_bucket_stale, tex_same_desc, takeback_free, entry_pick_alias, and vk_texture_slot_token_again verbatim

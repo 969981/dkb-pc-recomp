@@ -1,5 +1,5 @@
 """runtime/vk_rec.c captures a held pass end without the recorder thread (rec_capture_begin_for, used by vk_exec.c
-par_defer with TOTK_VK_RECORDER=0, the default on AMD's proprietary driver).
+par_defer with DKB_VK_RECORDER=0, the default on AMD's proprietary driver).
 
 vk_rec.c is compiled with Vulkan stubs that log each command made, and no recorder is started. The checks:
 

@@ -25,7 +25,7 @@
 static void spv_dump(const uint32_t *w, uint64_t words, const GfxShader *src) {
     static int on = -1;
     static volatile int64_t total;
-    if (on < 0) on = cfg_get("TOTK_DUMP_SPV") != NULL;
+    if (on < 0) on = cfg_get("DKB_DUMP_SPV") != NULL;
     const char *lp = on ? rt_log_path() : NULL, *cut = lp ? strrchr(lp, '/') : NULL;
     if (!cut || !src) return;
     uint64_t h = 0xcbf29ce484222325ull;
@@ -50,7 +50,7 @@ static uint32_t *spv_override(const uint32_t *w, uint64_t words, uint64_t *out_w
     static int n = -1;
     if (n < 0) {
         n = 0;
-        const char *e = cfg_get("TOTK_SPV_OVERRIDE");
+        const char *e = cfg_get("DKB_SPV_OVERRIDE");
         while (e && *e && n < 8) {
             char *end;
             unsigned long long h = strtoull(e, &end, 16);
@@ -92,13 +92,13 @@ static uint32_t *spv_override(const uint32_t *w, uint64_t words, uint64_t *out_w
 // mask, which AMD's near-plane clipping turns into long wedges (Eglantine too). Named by NVN 2 stage origin, which
 // gfx_shader.c keeps per input id in shader-cache/nvn2-origins.bin, so the pipelines the boot prewarm builds from the
 // cache know it once the stage was lowered in any run (--translate-shaders or play). Until then the FNV-1a 64 of the
-// translated SPIR-V (the "fs" hash of a TOTK_DUMP passes.txt) names it on the hosts where it was measured.
-// TOTK_FIX_SCREEN_UV=0 leaves them as the game wrote them.
+// translated SPIR-V (the "fs" hash of a DKB_DUMP passes.txt) names it on the hosts where it was measured.
+// DKB_FIX_SCREEN_UV=0 leaves them as the game wrote them.
 static int screen_uv_stage(const GfxShader *src) {
     static const uint64_t origins[] = {0x81f30a4006e64d83ull};
     static const uint64_t spirv_hashes[] = {0x544677ae4ec509beull};   // RX 9070 XT, translator d1b11706005e89ab
     static int on = -1;
-    if (on < 0) on = cfg_bool("TOTK_FIX_SCREEN_UV");
+    if (on < 0) on = cfg_bool("DKB_FIX_SCREEN_UV");
     if (!on || !src || gfx_shader_stage(src) != GFX_STAGE_FS) return 0;
     uint64_t o = gfx_shader_origin(src);
     for (size_t i = 0; i < sizeof origins / sizeof *origins; i++)
@@ -117,7 +117,7 @@ static int screen_uv_stage(const GfxShader *src) {
 // told HDR is on, so a module made before a fallback to SDR is not used on the SDR swapchain.
 static uint32_t *hdr_shoulder(const GfxShader *src, const uint32_t *w, uint64_t words, uint64_t *out_n) {
     static int on = -1;   // racing threads compute the same value
-    if (on < 0) on = hdr_native_on() && cfg_bool("TOTK_HDR_SHOULDER");
+    if (on < 0) on = hdr_native_on() && cfg_bool("DKB_HDR_SHOULDER");
     if (!on || !src || gfx_shader_stage(src) != GFX_STAGE_FS) return NULL;
     uint32_t *o = spirv_hdr_shoulder(w, words, out_n);
     if (o)
@@ -129,7 +129,7 @@ static uint32_t *hdr_shoulder(const GfxShader *src, const uint32_t *w, uint64_t 
 // DKB_NAN_GUARD (spirv_nan_guard.c): fragment stages store 0 instead of NaN to their float colour outputs (default,
 // or "zero"), a colour named by the stage instead ("mark"), or what they computed ("0"). One NaN texel in the scene
 // colour is spread by the bloom into a glowing band crossed by black lines, and the console shows none. In "mark"
-// mode the colour comes from the stage's SPIR-V hash (the "fs" hash of a TOTK_DUMP passes.txt): each of r, g, b is
+// mode the colour comes from the stage's SPIR-V hash (the "fs" hash of a DKB_DUMP passes.txt): each of r, g, b is
 // 0, 1, 4 or 16 from two bits of the hash, so a frame dump's _tm image tells the stage apart from the others drawn in
 // the pass, and the log lists each stage with its colour.
 static uint32_t *nan_guard(const GfxShader *src, const uint32_t *w, uint64_t words, uint64_t *out_n) {
@@ -137,7 +137,7 @@ static uint32_t *nan_guard(const GfxShader *src, const uint32_t *w, uint64_t wor
     static volatile int32_t logged;
     int mode = __atomic_load_n(&mode_set, __ATOMIC_RELAXED);
     if (mode < 0) {   // every racing thread computes the same value; only the first logs it
-        const char *e = cfg_get("TOTK_NAN_GUARD");
+        const char *e = cfg_get("DKB_NAN_GUARD");
         int m = !e || !strcmp(e, "1") || !strcmp(e, "zero") ? 1 : !strcmp(e, "0") || !*e ? 0 : !strcmp(e, "mark") ? 2 : 1;
         if (!plat_xchg32(&logged, 1)) {
             if (e && *e && strcmp(e, "0") && strcmp(e, "1") && strcmp(e, "zero") && strcmp(e, "mark"))
@@ -176,7 +176,7 @@ static uint32_t *nan_guard(const GfxShader *src, const uint32_t *w, uint64_t wor
 // A rule applies only to the stage its NVN 2 origin names and only if the module has exactly the expected pattern;
 // otherwise the module is left alone and the light-quad skip (vk_exec_draw.c light_quad_fault_skip) still covers its
 // draws. A folded stage is drawn instead of skipped.
-// TOTK_FIX_LQ_FOLD: 1 (default) folds Tower's three stages. Tower lost the device in 3 of 3 runs without the fold
+// DKB_FIX_LQ_FOLD: 1 (default) folds Tower's three stages. Tower lost the device in 3 of 3 runs without the fold
 // (32 to 38 s in) and passed 2 of 2 with it. Ice's ba1dd1e7ae8abb33 is in the table but not folded by default: drawn
 // folded it still lost the device in Ice, so light_quad_fault_skip skips it by name before it looks at the fold. The
 // #9 faults also came minutes in, so the other stages stay unfolded until longer runs show the fold holds there. "all" folds every stage of the
@@ -193,7 +193,7 @@ static int lq_platform;   // gfx_spirv_set_lq_fold_platform: Bananza on NVIDIA; 
 static int8_t lq_state[LQ_RULES];
 
 void gfx_spirv_set_lq_fold_platform(int nvidia) {
-    const char *v = cfg_value("TOTK_FIX_LQ_FOLD");
+    const char *v = cfg_value("DKB_FIX_LQ_FOLD");
     int mode = !strcasecmp(v, "all") ? 2 : !strcmp(v, "0") || !*v ? 0 : 1;
     lq_platform = nvidia && !rt_game_version ? mode : 0;
 }
@@ -260,7 +260,7 @@ uint32_t *gfx_spirv_final(const GfxShader *src, const uint32_t *w, uint64_t word
     }
     static int fmz_mode = -1;   // 0 off, 1 vertex stage only, 2 every stage
     if (fmz_mode < 0) {
-        const char *e = cfg_get("TOTK_FMZ");
+        const char *e = cfg_get("DKB_FMZ");
         // On by default for vertex stages (#75): the end-of-tutorial cutscene loses the NVIDIA device without it.
         fmz_mode = !e ? 1 : !strcmp(e, "0") || !*e ? 0 : !strcmp(e, "vertex") ? 1 : !strcmp(e, "all") ? 2 : 1;
         if (e && *e && strcmp(e, "0") && strcmp(e, "vertex") && strcmp(e, "all")) rt_log("vk: DKB_FMZ=%s ignored, using vertex (use 0, vertex or all)", e);
@@ -271,7 +271,7 @@ uint32_t *gfx_spirv_final(const GfxShader *src, const uint32_t *w, uint64_t word
     static int fmz_sel_read;
     if (!fmz_sel_read) {
         fmz_sel_read = 1;
-        const char *s = cfg_get("TOTK_FMZ_SEL");
+        const char *s = cfg_get("DKB_FMZ_SEL");
         char *end;
         if (s && *s) {
             fmz_sel_mask = strtoull(s, &end, 16);

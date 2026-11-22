@@ -147,7 +147,7 @@ static void on_message(uint32_t type, const wchar_t *message) {
 // there is no such folder.
 static int library_dir(int i, char *out, size_t cap) {
     if (i == 0) {
-        const char *e = cfg_get("TOTK_FSR_DIR");
+        const char *e = cfg_get("DKB_FSR_DIR");
         if (!e || !*e || strlen(e) >= cap) return 0;
         strcpy(out, e);
         return 1;
@@ -222,7 +222,7 @@ static int load(void) {
     if (!G.create || !G.destroy || !G.query || !G.dispatch)   // (the handle stays: unloading a vendor library is not safe)
         return rt_log("fsr4: %s lacks the FidelityFX API's entry points; FSR 3.1 runs instead", path), 0;
     rt_log("fsr4: loaded %s", path);
-    const char *ldr = cfg_value("TOTK_FSR4_LDR");
+    const char *ldr = cfg_value("DKB_FSR4_LDR");
     G.ldr = *ldr && strcmp(ldr, "0");
     G.device_context = (VkDeviceContext){c->device, c->phys, vkGetDeviceProcAddr};
     struct ffxQueryDescGetVersions v = {0};
@@ -296,7 +296,7 @@ int vk_fsr4_wanted(void) {
     static int chosen;
     uint64_t f = frames_now();
     if (f != __atomic_load_n(&seen, __ATOMIC_RELAXED)) {
-        __atomic_store_n(&chosen, !strcmp(cfg_value("TOTK_UPSCALER"), "fsr4"), __ATOMIC_RELAXED);
+        __atomic_store_n(&chosen, !strcmp(cfg_value("DKB_UPSCALER"), "fsr4"), __ATOMIC_RELAXED);
         __atomic_store_n(&seen, f, __ATOMIC_RELAXED);
     }
     return __atomic_load_n(&chosen, __ATOMIC_RELAXED) && !__atomic_load_n(&G.failed, __ATOMIC_RELAXED) && usable();
@@ -319,7 +319,7 @@ int vk_fsr4_wants_descriptor_buffer(void) {
     // A Vulkan FSR 4 build such as fsr4-vk records with descriptor buffers, which the device has to enable when it is
     // created (Longshot vk_fsr4.cpp fsr4_wants_descriptor_buffer): only with upscaler = fsr4 at the start and the
     // library in one of its folders.
-    if (strcmp(cfg_value("TOTK_UPSCALER"), "fsr4")) return 0;
+    if (strcmp(cfg_value("DKB_UPSCALER"), "fsr4")) return 0;
     char path[1280];
     return library_file(0, LIB_NAME, path, sizeof path) || library_file(1, LIB_NAME, path, sizeof path);
 #endif

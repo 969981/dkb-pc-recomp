@@ -21,8 +21,8 @@ void perf_end(int kind, uint64_t start) { (void)kind; (void)start; }
 void perf_count(int kind) { (void)kind; }
 void rt_log(const char *format, ...) { (void)format; }
 // gfx_spirv_final reads the FMZ switches; every other key stays forbidden.
-const char *cfg_get(const char *name) { if (!strcmp(name, "TOTK_FMZ") || !strcmp(name, "TOTK_FMZ_SEL") ||
-    !strcmp(name, "TOTK_PCACHE_GATE"))   // vk_pipeline.c pcache_gate_on: unset, the gate stays off (one thread here)
+const char *cfg_get(const char *name) { if (!strcmp(name, "DKB_FMZ") || !strcmp(name, "DKB_FMZ_SEL") ||
+    !strcmp(name, "DKB_PCACHE_GATE"))   // vk_pipeline.c pcache_gate_on: unset, the gate stays off (one thread here)
     return NULL; abort(); }
 int cfg_int(const char *name) { (void)name; abort(); }
 int tex_vk_format(int format, TexVkFormat *out) { (void)format; (void)out; abort(); }

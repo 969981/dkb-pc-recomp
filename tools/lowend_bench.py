@@ -1,6 +1,6 @@
 """Benchmark dkb.exe the way a weak PC would run it, and print one comparable table.
 
-Runs the game for a fixed time with TOTK_TRACE=perf and the draw profile on,
+Runs the game for a fixed time with DKB_TRACE=perf and the draw profile on,
 optionally restricted to the first N logical processors, samples its memory
 every 5 s, then parses the game log. Every optimisation gets a before/after
 table from this. Windows first (affinity and memory sampling use ctypes);
@@ -140,9 +140,9 @@ def run(args):
     out.mkdir(parents=True, exist_ok=True)
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", args.label or "run")
     log_path, csv_path = out / (stem + ".log"), out / (stem + "-mem.csv")
-    env = dict(os.environ, TOTK_TRACE="perf", DKB_DRAW_PROFILE="1", TOTK_DRAW_PROFILE="1")
+    env = dict(os.environ, DKB_TRACE="perf", DKB_DRAW_PROFILE="1")
     if args.script:
-        env["TOTK_INPUT_SCRIPT"] = args.script
+        env["DKB_INPUT_SCRIPT"] = args.script
     for kv in args.env:
         k, _, v = kv.partition("=")
         env[k] = v

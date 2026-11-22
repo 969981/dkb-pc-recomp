@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The vulkan_driver setting (TOTK_VULKAN_DRIVER / DKB_VULKAN_DRIVER): a player's own Vulkan driver, such as a Mesa
+// The vulkan_driver setting (DKB_VULKAN_DRIVER): a player's own Vulkan driver, such as a Mesa
 // build outside the system's folders, for this game only. Linux only: elsewhere the setting does nothing.
 #ifndef VK_DRIVER_ENV_H
 #define VK_DRIVER_ENV_H

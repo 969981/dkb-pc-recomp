@@ -876,7 +876,7 @@ static int find_hole(uint64_t lo, uint64_t hi, uint64_t size, uint64_t align, ui
 
 // Says how the window above the modules is actually laid out when a reservation finds no room there: the size asked
 // for and the largest hole that is left. Runs without vm_lock (a diagnostic: the list moving under it is harmless),
-// and only for TOTK_MEM_HOLES, since memory.c steps down through several sizes on a normal boot.
+// and only for DKB_MEM_HOLES, since memory.c steps down through several sizes on a normal boot.
 static void hole_report(uint64_t lo, uint64_t hi, uint64_t size) {
     uint64_t best = 0, best_at = 0, a = lo;
     while (a < hi) {
@@ -895,7 +895,7 @@ static void hole_report(uint64_t lo, uint64_t hi, uint64_t size) {
         a = q + sz;
     }
     if (hi > a && hi - a > best) best = hi - a, best_at = a;
-    if (!getenv("TOTK_MEM_HOLES")) return;
+    if (!getenv("DKB_MEM_HOLES")) return;
     fprintf(stderr, "platform: no %llu MiB hole above %#llx up to %#llx (the largest left is %llu MiB at %#llx)\n",
             (unsigned long long)(size >> 20), (unsigned long long)lo, (unsigned long long)hi,
             (unsigned long long)(best >> 20), (unsigned long long)best_at);

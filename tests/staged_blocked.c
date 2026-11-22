@@ -7,7 +7,7 @@
 // then sorted by the production st_sort_job, as the sort thread does), and the fence of the prologue. For every query
 // range [a, b) of a pool, the lookup's blocked bytes and the pieces st_cut gives to the upload must equal those of the
 // old union: one sorted, merged list of every ended job's ranges before the fence and of every pool on st_own, and the
-// old cut loop over it. The comparison of TOTK_STAGED_BLK_CHECK (st_chk_union, st_chk_range) runs on every query as well
+// old cut loop over it. The comparison of DKB_STAGED_BLK_CHECK (st_chk_union, st_chk_range) runs on every query as well
 // and must flag exactly the queries where the two disagree. On a mismatch the case is shrunk to a minimal one and
 // printed with its seed.
 //
@@ -35,7 +35,7 @@ static void rt_fatal(const char *fmt, ...) {
     exit(2);
 }
 static uint64_t qpc(void) { return 0; }
-static int show_log;   // print_case: the lines TOTK_STAGED_BLK_CHECK logs
+static int show_log;   // print_case: the lines DKB_STAGED_BLK_CHECK logs
 static void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void rt_log(const char *fmt, ...) {
     if (!show_log) return;
@@ -49,7 +49,7 @@ static void rt_log(const char *fmt, ...) {
 
 /* PRODUCTION_TYPES */
 
-static int staged_fault;           // the own lists count (TOTK_STAGED_WB=fault)
+static int staged_fault;           // the own lists count (DKB_STAGED_WB=fault)
 static StJob *st_jobs;             // the case's jobs
 static PoolRec **st_own;           // own_listed: the pools whose own list holds a range
 static int nst_own, cst_own;
@@ -79,7 +79,7 @@ static int ref_cmp(const void *x, const void *y) {
 }
 
 // The union of the write-back and owned ranges of the jobs recorded before the submission of `fence`, and with
-// TOTK_STAGED_WB=fault of the own lists of the pools on st_own: sorted by pool and offset, the ranges that overlap or
+// DKB_STAGED_WB=fault of the own lists of the pools on st_own: sorted by pool and offset, the ranges that overlap or
 // touch joined.
 static void ref_build(uint64_t fence) {
     nref = 0;
@@ -213,7 +213,7 @@ static const char *const cv_name[CV_N] = {
     "everything blocked", "pieces of two lists overlap", "the same piece in two lists", "owned list reordered by the sort",
     "empty input range", "single-byte blocked range", "blocked range at offset 0", "blocked range at the pool's end",
     "blocked range across or on a 4 KiB boundary", "blocked range across or on a 64 KiB boundary",
-    "job skipped for its fence", "job skipped as not ended", "TOTK_STAGED_WB=fence", "blocked pieces from several lists",
+    "job skipped for its fence", "job skipped as not ended", "DKB_STAGED_WB=fence", "blocked pieces from several lists",
     "partly blocked", "copied in two pieces or more",
 };
 static uint64_t cov[CV_N];
@@ -225,7 +225,7 @@ typedef struct {
 } Answer;
 
 // Runs query qi of the installed case (ref_build and st_chk_union done): 1 when the lookup and the union agree and
-// TOTK_STAGED_BLK_CHECK's comparison says so too; last_same and last_flagged hold the two verdicts.
+// DKB_STAGED_BLK_CHECK's comparison says so too; last_same and last_flagged hold the two verdicts.
 static int last_same, last_flagged;
 static int query(const Case *c, int qi, Answer *an, int count) {
     static struct KeptRange *blk;
@@ -542,7 +542,7 @@ static void print_pieces(const char *what, const Piece *x, int n) {
 
 static void print_case(const Case *c) {
     static Answer an;
-    printf("  TOTK_STAGED_WB=%s, prologue fence %llu\n", c->fault ? "fault" : "fence", (unsigned long long)c->fence);
+    printf("  DKB_STAGED_WB=%s, prologue fence %llu\n", c->fault ? "fault" : "fence", (unsigned long long)c->fence);
     for (int p = 0; p < c->np; p++) {
         int used = c->nown[p] || c->q[0].p == p;
         for (int i = 0; i < c->nj && !used; i++)
@@ -579,7 +579,7 @@ static void print_case(const Case *c) {
     print_pieces("copied, old union ", an.c[1], an.nc[1]);
     printf("    copied/left out bytes: lookup %llu/%llu, old union %llu/%llu\n", (unsigned long long)an.total[0],
            (unsigned long long)an.skipped[0], (unsigned long long)an.total[1], (unsigned long long)an.skipped[1]);
-    printf("  the fixture's comparison: %s; TOTK_STAGED_BLK_CHECK's: %s\n", last_same ? "same" : "different",
+    printf("  the fixture's comparison: %s; DKB_STAGED_BLK_CHECK's: %s\n", last_same ? "same" : "different",
            last_flagged ? "flagged (log lines above)" : "not flagged");
 }
 
@@ -608,10 +608,10 @@ int main(int argc, char **argv) {
     }
     int knob = chk_ranges != (int64_t)queries || chk_uploads != cases || chk_bad;
     show_log = 1;
-    st_chk_log("at exit");   // the line TOTK_STAGED_BLK_CHECK ends a game run with
+    st_chk_log("at exit");   // the line DKB_STAGED_BLK_CHECK ends a game run with
     show_log = 0;
     printf("staged-blocked: %ld cases from seed %llu, %llu upload ranges, 0 mismatches%s%s\n", cases,
            (unsigned long long)seed0, (unsigned long long)queries, missing ? ", but a coverage count is 0" : "",
-           knob ? ", but TOTK_STAGED_BLK_CHECK's counts are off" : "");
+           knob ? ", but DKB_STAGED_BLK_CHECK's counts are off" : "");
     return missing || knob ? 1 : 0;
 }

@@ -45,7 +45,7 @@ enum {
     PAD_COUNT
 };
 
-// Gamepad layouts (TOTK_PAD_LAYOUT): which face button is Switch A. Nintendo: by position, east A, south B, west Y,
+// Gamepad layouts (DKB_PAD_LAYOUT): which face button is Switch A. Nintendo: by position, east A, south B, west Y,
 // north X. Xbox: south A, east B, west X, north Y, as an Xbox pad labels them (cross A, circle B on a PlayStation pad).
 enum { PAD_LAYOUT_NINTENDO, PAD_LAYOUT_XBOX, PAD_LAYOUT_COUNT };
 
@@ -65,7 +65,7 @@ typedef struct InputMap {
 extern InputMap input_map;
 
 void input_map_reset(void);
-// The script and totk.ini names, any case when parsed; NULL for an id without one. Actions: A B X Y LCLICK RCLICK L R ZL
+// The script and dkb.ini names, any case when parsed; NULL for an id without one. Actions: A B X Y LCLICK RCLICK L R ZL
 // ZR PLUS MINUS LEFT UP RIGHT DOWN, then LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN and the same for RSTICK (the
 // stick directions the keys drive). Keys: a-z 0-9 space tab lshift ... (key_names in input_map.c). Pads: south east ...
 const char *input_action_name(int action);
@@ -77,7 +77,7 @@ const char *input_pad_name(int pad);
 // layout; pad:default keeps each layout's own button. Stick directions take keys only. Invalid entries are logged and
 // skipped; when none is valid the action keeps its bindings. 1 when applied.
 int input_map_bind(const char *button, const char *list);
-// Applies the TOTK_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
+// Applies the DKB_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
 void input_map_configure(void);
 
 // For Switch A, B, X and Y in that order, the face button of its first gamepad binding in layout: s(outh), e(ast),
@@ -85,14 +85,14 @@ void input_map_configure(void);
 // buttons give the same letters in both. The PlayStation prompt overlay made for these letters names every face button
 // by the one that does it (runtime/romfs.c ps_prompts_init, tools/dkb_ps_prompts.py --layout). Pure.
 void input_map_face_spec(const InputMap *m, int layout, char out[5]);
-// The same for the defaults with the TOTK_BIND_* lines applied, built on a copy (input_map is left alone).
+// The same for the defaults with the DKB_BIND_* lines applied, built on a copy (input_map is left alone).
 void input_map_face_spec_cfg(int layout, char out[5]);
 // The letter each Switch-letter glyph A, B, X, Y must show for a face spec (as above): the label printed at the
 // position of its button, from the Xbox labels (s A, e B, w X, n Y) or the Nintendo ones (s B, e A, w Y, n X); '?' for
 // an unbound button. "ABXY" is the game's own; "BAYX" is xbox_prompts (romfs.c keys_prompts_init). Pure.
 void input_map_face_keys(const char spec[5], int nintendo_labels, char out[5]);
 
-// The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts" is the Nintendo layout with
+// The layout for a DKB_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts" is the Nintendo layout with
 // the A/B and X/Y prompts swapped (runtime/romfs.c overlay_init), so the buttons map as "nintendo". Anything else
 // ("auto", NULL) picks Nintendo when the pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox
 // otherwise.

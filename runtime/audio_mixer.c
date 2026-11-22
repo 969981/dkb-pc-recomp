@@ -6,9 +6,9 @@
 // Per 5 ms frame the render thread (audren.c, renderer lock held) decodes every started voice (PCM8/16/24/32, float,
 // DSP-ADPCM) along the sample path the voice clock consumes, resamples it linearly, runs the voice biquads, scales it
 // into its destination mix, folds the submixes, runs the mix effects and writes the device sink's mix (stereo, or 5.1 with
-// TOTK_AUDIO_CHANNELS, Mixer.channels) into a single-producer single-consumer ring. The SDL audio thread drains that
+// DKB_AUDIO_CHANNELS, Mixer.channels) into a single-producer single-consumer ring. The SDL audio thread drains that
 // ring without taking any lock: an empty ring plays silence and never blocks the render thread or the guest.
-// TOTK_AUDIO=none (or TOTK_AUDIO_OFF) mixes without a device; TOTK_AUDIO_PREFILL_MS (0..500, default 20) is the
+// DKB_AUDIO=none (or DKB_AUDIO_OFF) mixes without a device; DKB_AUDIO_PREFILL_MS (0..500, default 20) is the
 // queued audio the output waits for after start or underrun.
 // The device's clock paces the render thread, as the audio hardware paces the Switch's DSP (audio_mixer_fill, audren.c
 // render_thread): one frame every frame period of host time, nudged by at most 5 % toward the output target, max(prefill,
@@ -72,7 +72,7 @@ typedef struct Mixer {
 
 static _Atomic float device_volume = 1.0f;
 
-// TOTK_VOLUME: the player's volume in percent (0..100) on top of the game's own; a live setting (the
+// DKB_VOLUME: the player's volume in percent (0..100) on top of the game's own; a live setting (the
 // menu), parsed again when cfg_version changes. Render thread only.
 static float host_volume(void) {
     static float v = 1.0f;
@@ -80,7 +80,7 @@ static float host_volume(void) {
     unsigned ver = cfg_version();
     if (ver == seen) return v;
     seen = ver;
-    double pct = cfg_double("TOTK_VOLUME");
+    double pct = cfg_double("DKB_VOLUME");
     v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
     return v;
 }
@@ -92,7 +92,7 @@ static void report_once(Mixer *m, unsigned bit, const char *msg, int value) {
 }
 
 // ---- output: SDL3 audio stream fed from the ring
-// How much audio the output waits for before it starts, and again after an underrun: TOTK_AUDIO_PREFILL_MS rounded up
+// How much audio the output waits for before it starts, and again after an underrun: DKB_AUDIO_PREFILL_MS rounded up
 // to whole 5 ms render blocks. Returns -1 for a value outside 0..500 ms.
 static int prefill_blocks_for(const char *e) {
     if (!e || !*e) return 4;
@@ -102,16 +102,16 @@ static int prefill_blocks_for(const char *e) {
     return (int)ceil(ms / 5.0);
 }
 
-// TOTK_AUDIO_CHANNELS: the output channels of this run, decided once. stereo gives 2; 5.1 gives 6 (FL FR C LFE RL RR,
+// DKB_AUDIO_CHANNELS: the output channels of this run, decided once. stereo gives 2; 5.1 gives 6 (FL FR C LFE RL RR,
 // the device sink's order and SDL's); auto gives 6 when the default playback device has at least six channels and 2
 // otherwise. IAudioDevice reports the same count to the game (GetActiveChannelCount), which picks its sink layout from
-// it. TOTK_AUDIO=none: 2, without touching SDL. Adapted from TotK Recomp PR 438 (MIT).
+// it. DKB_AUDIO=none: 2, without touching SDL. Adapted from TotK Recomp PR 438 (MIT).
 static int output_channels(void) {
     static _Atomic int decided;
     int n = atomic_load(&decided);
     if (n) return n;
-    const char *want = cfg_value("TOTK_AUDIO_CHANNELS"), *mode = cfg_get("TOTK_AUDIO");
-    if ((mode && !strcmp(mode, "none")) || cfg_get("TOTK_AUDIO_OFF")) n = 2;
+    const char *want = cfg_value("DKB_AUDIO_CHANNELS"), *mode = cfg_get("DKB_AUDIO");
+    if ((mode && !strcmp(mode, "none")) || cfg_get("DKB_AUDIO_OFF")) n = 2;
     else if (!strcmp(want, "5.1")) n = 6;
     else if (!strcmp(want, "stereo")) n = 2;
     else {
@@ -119,7 +119,7 @@ static int output_channels(void) {
         int inited = SDL_InitSubSystem(SDL_INIT_AUDIO);
         n = inited && SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &dev, NULL) && dev.channels >= 6 ? 6 : 2;
         if (inited) SDL_QuitSubSystem(SDL_INIT_AUDIO);   // balance the count; the real open initialises it again
-        rt_log("audio: TOTK_AUDIO_CHANNELS=auto: the default device has %d channels, output %s", dev.channels,
+        rt_log("audio: DKB_AUDIO_CHANNELS=auto: the default device has %d channels, output %s", dev.channels,
                n == 6 ? "5.1" : "stereo");
     }
     int expected = 0;
@@ -203,9 +203,9 @@ static void SDLCALL sdl_pull(void *user, SDL_AudioStream *stream, int additional
 }
 
 static void output_open(Mixer *m, int rate) {
-    const char *mode = cfg_get("TOTK_AUDIO");
-    if ((mode && !strcmp(mode, "none")) || cfg_get("TOTK_AUDIO_OFF")) {
-        rt_log("audio: TOTK_AUDIO=none: mixing without a device");
+    const char *mode = cfg_get("DKB_AUDIO");
+    if ((mode && !strcmp(mode, "none")) || cfg_get("DKB_AUDIO_OFF")) {
+        rt_log("audio: DKB_AUDIO=none: mixing without a device");
         return;
     }
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
@@ -299,7 +299,7 @@ static void output_push(Mixer *m, const float *out, int frames) {
     if (!m->device_ok) atomic_store(&m->rd, wr + (uint64_t)frames);   // no device: the ring only keeps the latest frames
 }
 
-// Level meter (TOTK_TRACE=audio): one line per 5 s of output, and the first nonzero frame.
+// Level meter (DKB_TRACE=audio): one line per 5 s of output, and the first nonzero frame.
 static void level_note(AudioRenderer *r, Mixer *m, const float *lr, int frames) {
     if (!(rt_trace & RT_TRACE_AUDIO)) return;
     int sound = 0;
@@ -358,10 +358,10 @@ void audio_mixer_open(AudioRenderer *r) {
     m->sink_written = calloc(sinks, sizeof(uint32_t));
     if (!m->sink_address || !m->sink_size || !m->sink_offset || !m->sink_old || !m->sink_written)
         rt_fatal("audio sink state allocation");
-    const char *pe = cfg_get("TOTK_AUDIO_PREFILL_MS");
+    const char *pe = cfg_get("DKB_AUDIO_PREFILL_MS");
     m->prefill = prefill_blocks_for(pe);
     if (m->prefill < 0) {
-        rt_log("audio: TOTK_AUDIO_PREFILL_MS=%s is not 0..500 ms: using 20", pe);
+        rt_log("audio: DKB_AUDIO_PREFILL_MS=%s is not 0..500 ms: using 20", pe);
         m->prefill = 4;
     }
     m->channels = output_channels();

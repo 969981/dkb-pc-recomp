@@ -13,7 +13,7 @@ seconds = 75                                 # game time to run; the last frame 
 warp = "HillLevelStage"                      # optional: start in this stage (tools/save_warp.py)
 
 [env]                                        # optional: settings for every run of this scenario
-# TOTK_FIX_VS_FAULT = "0"
+# DKB_FIX_VS_FAULT = "0"
 
 [checks]
 min_fps = 50          # a 60-frame window under this is slow
@@ -49,9 +49,9 @@ Without its save a scenario is skipped (exit 77, SKIP in `tools/test.py`), never
 
 ## The input
 
-`tools/input/*.txt`: one step per line, `<frame> <buttons> <frames held>`, for `TOTK_INPUT_SCRIPT`. Frames count from
+`tools/input/*.txt`: one step per line, `<frame> <buttons> <frames held>`, for `DKB_INPUT_SCRIPT`. Frames count from
 the start of the process, so a slow start (a cold shader cache, a busy machine) shifts where they land. Record a session
-with `TOTK_INPUT_RECORD` (see `tools/run_game.py`) to get one from real play.
+with `DKB_INPUT_RECORD` (see `tools/run_game.py`) to get one from real play.
 
 `[checks.reference_frame]` supports `reference` (an image under `build/`), `region` (normalized
 left, top, right, bottom), and `max_mean_error` (0..255, mean absolute RGB error after resizing the region). Test both
@@ -64,5 +64,5 @@ Calibrate on a known-good and a known-bad run: run the scenario with `--repeat 2
 measured values in a comment, as `tutorial-cave.toml` does.
 
 For a NaN check, add `dump_frame = 500` and `max_nan = 0` under `[checks]`. The runner sums the NaN counts in the dumped
-images (`TOTK_DUMP`) and fails if the sum exceeds `max_nan` or the dump is missing. The frame number can change between
+images (`DKB_DUMP`) and fails if the sum exceeds `max_nan` or the dump is missing. The frame number can change between
 runs, so inspect the dump and calibrate it for the scene.

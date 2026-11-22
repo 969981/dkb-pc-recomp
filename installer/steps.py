@@ -5,8 +5,8 @@ compile and prepare run the bundled Python on recomp/gen.py, tools/build_game.py
 tools/prepare_shaders.py, whose output goes to <temp>/logs/<step>-<tool>.log and is read for progress. No Win32 call
 here: the host check is a small C program built with the bundled clang (hostcheck.c).
 
-Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, totk.exe and its DLLs, romfs-index.bin,
-romfs-patches/, romfs-patches-xbox/, totk_xlate.exe, the shader state of totk.exe --prepare-shaders, totk.ini,
+Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, dkb.exe and its DLLs, romfs-index.bin,
+romfs-patches/, romfs-patches-xbox/, dkb_xlate.exe, the shader state of dkb.exe --prepare-shaders, dkb.ini,
 totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
@@ -34,7 +34,7 @@ from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr
                            program_nca)
 
 GiB = 1 << 30
-DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, totk.exe, seed files
+DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, dkb.exe, seed files
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
@@ -583,7 +583,7 @@ class Compile(Step):
                            layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
 
     def current(self, ctx, record):
-        exe = ctx.dest / ('totk' + EXE)
+        exe = ctx.dest / ('dkb' + EXE)
         if not exe.is_file() or not (ctx.dest / 'romfs-index.bin').is_file():
             return False
         if not all((ctx.dest / d.name).is_file() for d in ctx.layout.dlls):
@@ -611,7 +611,7 @@ class Compile(Step):
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
-        exe = build / ('totk' + EXE)
+        exe = build / ('dkb' + EXE)
         if code or not exe.is_file():
             raise InstallError('compile.failed', code=code, log=str(log))
         try:
@@ -714,7 +714,7 @@ class Prepare(Step):
         if code or not (dest / 'shader-prepared.bin').is_file():
             raise InstallError('prepare.shaders_failed', code=code, log=str(log))
 
-        # One shader-cache.pack instead of four files per shader (~117,000): totk.exe reads the pack first.
+        # One shader-cache.pack instead of four files per shader (~117,000): dkb.exe reads the pack first.
         rep.progress('prepare', 'pack', force=True)
         code, log = run_tool(ctx, 'prepare', layout.tools / 'pack_shader_cache.py', [dest / 'shader-cache'])
         if code:
@@ -732,7 +732,7 @@ class Cleanup(Step):
         rep, dest = ctx.reporter, ctx.dest
         rep.progress('cleanup', 'ini', force=True)
         try:
-            ini.write(dest, ctx.lang, ctx.layout.ini_example)
+            ini.write(dest, ctx.lang, ctx.layout.ini_example, fallback='totk.ini')
         except OSError as e:
             raise InstallError('cleanup.ini_failed', detail=str(e)) from None
         ctx.state['lang'] = ctx.lang

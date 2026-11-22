@@ -28,7 +28,7 @@
 static int g_wanted = -1;
 
 int vk_hdr_wanted(void) {
-    if (g_wanted < 0) g_wanted = cfg_bool("TOTK_HDR");
+    if (g_wanted < 0) g_wanted = cfg_bool("DKB_HDR");
     return g_wanted;
 }
 
@@ -44,9 +44,9 @@ static Nits nits(void) {
         plat_mutex_lock(&N.lock);
         if (N.seen != v) {
             Nits *n = &N.snap[!N.cur];
-            n->peak = fmaxf((float)cfg_double("TOTK_HDR_PEAK_NITS"), 80.0f);
-            n->game = fmaxf((float)cfg_double("TOTK_HDR_GAME_NITS"), 80.0f);
-            n->ui = fmaxf((float)cfg_double("TOTK_HDR_UI_NITS"), 80.0f);
+            n->peak = fmaxf((float)cfg_double("DKB_HDR_PEAK_NITS"), 80.0f);
+            n->game = fmaxf((float)cfg_double("DKB_HDR_GAME_NITS"), 80.0f);
+            n->ui = fmaxf((float)cfg_double("DKB_HDR_UI_NITS"), 80.0f);
             __atomic_store_n(&N.cur, !N.cur, __ATOMIC_RELEASE);
             __atomic_store_n(&N.seen, v, __ATOMIC_RELEASE);
         }

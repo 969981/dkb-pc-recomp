@@ -50,7 +50,7 @@ static int stop;
 static Pending *queue;            // side effects in the order they were added
 static int qhead, qn, qcap;
 
-// ---- GPU time (TOTK_TRACE=perf): each submission part (vk_sync_split) writes a timestamp when it starts and when it
+// ---- GPU time (DKB_TRACE=perf): each submission part (vk_sync_split) writes a timestamp when it starts and when it
 // ends, into a ring of query pairs. The completion thread reads a pair once the part's value is reached and adds the
 // part's interval to the busy time, counting overlap with the previous part once. Off (one log line) when the queue
 // family has no timestamp bits or the period is 0. Upload batches (vk_memory.c) are not timed.
@@ -65,7 +65,7 @@ static int ts_cur = -1;                    // the pair of the part being recorde
 static uint64_t ts_last_end;               // completion thread: end of the latest part read (ticks)
 static volatile int64_t ts_busy_ns, ts_parts, ts_missed;
 
-// On the first submission that wants timing (perf_gpu_timing: TOTK_TRACE=perf or the full performance overlay).
+// On the first submission that wants timing (perf_gpu_timing: DKB_TRACE=perf or the full performance overlay).
 static void ts_setup(VkCtx *c) {
     ts_state = -1;
     uint32_t nq = 0;
@@ -93,14 +93,14 @@ static void ts_setup(VkCtx *c) {
 }
 
 // What the replay part being timed draws and dispatches (vk_sync_note), kept with its pair: a part that runs on the GPU
-// for at least TOTK_PERF_SLOW_GPU_MS (default 100) gets a line naming its work, at most 200 lines. A respawn in the
+// for at least DKB_PERF_SLOW_GPU_MS (default 100) gets a line naming its work, at most 200 lines. A respawn in the
 // Ingot Isle Cave-In section (#10) spent about 16.8 s of GPU time per frame inside the replay's parts.
 #define NOTE_PAIRS 6
 #define NOTE_ARGS 65536   // indirect argument addresses and storage writes kept per part
 // size 0: an indirect draw's arguments at addr, drawn by stages a/b; else a storage write of [addr, addr+size) by
 // stage a, in recording order with the draws.
 typedef struct { uint64_t addr, a, b, size; } NoteArg;
-typedef struct PassMark { uint32_t q; uint64_t key; } PassMark;   // TOTK_PASS_GPU (vk_sync_mark)
+typedef struct PassMark { uint32_t q; uint64_t key; } PassMark;   // DKB_PASS_GPU (vk_sync_mark)
 typedef struct VkSyncNote {
     uint32_t draws, draws_ind, dispatches, dispatches_ind, pairs;
     uint64_t max_work, max_a, max_b;               // the largest direct draw (vertices x instances) or dispatch (groups)
@@ -108,7 +108,7 @@ typedef struct VkSyncNote {
     uint64_t last_a, last_b;                       // the stages of the last noted draw or dispatch
     NoteArg *args;                                 // indirect draws whose arguments the host can read (malloc'd)
     uint32_t nargs, cap;
-    struct PassMark *marks;                        // TOTK_PASS_GPU: timestamps at the pass edges (malloc'd)
+    struct PassMark *marks;                        // DKB_PASS_GPU: timestamps at the pass edges (malloc'd)
     uint32_t nmarks, mcap;
 } PartNote;
 static PartNote note;   // the part being recorded (sub_lock, like ts_cur)
@@ -153,7 +153,7 @@ static void note_pair(PartNote *n, uint64_t a, uint64_t b) {
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work) {
     PartNote *n = note_cur();
     if (!n) return;
-    if (kind >= 2 && n == &note && n->nmarks) {   // TOTK_PASS_GPU: a dispatch's mark takes its compute stage's name
+    if (kind >= 2 && n == &note && n->nmarks) {   // DKB_PASS_GPU: a dispatch's mark takes its compute stage's name
         uint64_t *k = &n->marks[n->nmarks - 1].key;
         if (*k == (2 | 251 << 2)) *k = a << 10 | 252 << 2 | 2;   // vk_exec.c walk marks a dispatch with 251
     }
@@ -187,7 +187,7 @@ static void note_fold(PartNote *to, const PartNote *n) {
 
 typedef struct { uint32_t pair, noted, prologue; uint64_t fence; PartNote note; } TsRead;
 
-// TOTK_PASS_GPU=1 with the perf trace: the replay thread writes a timestamp where each of its render passes begins
+// DKB_PASS_GPU=1 with the perf trace: the replay thread writes a timestamp where each of its render passes begins
 // (after the barrier before it) and ends (vk_sync_mark), and the GPU time between two marks of a part goes to the key
 // of the first: the pass's targets (vk_exec.c vk_exec_pass_begin), or 0 for what runs outside passes (barriers,
 // dispatches, copies, clears). Every 600 frames the perf trace lists the costliest keys. Marks of a part that the
@@ -305,7 +305,7 @@ static void slow_part(const TsRead *t, double ms) {
     static double slow_ms = -1;
     static int lines;
     if (slow_ms < 0) {
-        const char *e = cfg_get("TOTK_PERF_SLOW_GPU_MS");
+        const char *e = cfg_get("DKB_PERF_SLOW_GPU_MS");
         slow_ms = e && atof(e) > 0 ? atof(e) : 100;
     }
     if (!t->noted || ms < slow_ms || lines >= 200) return;
@@ -430,7 +430,7 @@ static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence, PartNote *n) 
     vk_completion_add(fence, ts_read_cb, t);
 }
 
-// Begins the part: vkBeginCommandBuffer, the submit crumb, the start timestamp, then rec_begin. TOTK_REC_BEGIN=1 has
+// Begins the part: vkBeginCommandBuffer, the submit crumb, the start timestamp, then rec_begin. DKB_REC_BEGIN=1 has
 // the recorder thread make the first three (rec_begin_part).
 static void part_begin(VkCommandBuffer cb, uint64_t fence) {
     ts_cur = ts_pick();
@@ -479,10 +479,10 @@ WEAK int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint
 }
 
 // How many 100 ms waits in a row may time out with the timeline standing still before the GPU counts as hung: 30 s, or
-// TOTK_GPU_HANG_S seconds (0: never). Timeouts are counted, not wall time, so a suspended PC or a process stopped in a
+// DKB_GPU_HANG_S seconds (0: never). Timeouts are counted, not wall time, so a suspended PC or a process stopped in a
 // debugger adds nothing.
 static unsigned hang_limit(void) {
-    const char *e = cfg_get("TOTK_GPU_HANG_S");
+    const char *e = cfg_get("DKB_GPU_HANG_S");
     long s = e && *e ? strtol(e, NULL, 10) : 30;
     return s <= 0 ? 0 : s > 3600 ? 36000u : (unsigned)s * 10u;
 }
@@ -497,7 +497,7 @@ static void gpu_hang(uint64_t want, uint64_t newest, unsigned waits) {
     rt_log("vk: GPU hang: submission %llu of %llu issued has not finished after %u s without the device reporting a loss",
            (unsigned long long)want, (unsigned long long)newest, waits / 10);
     vk_device_fault_report(VK_ERROR_DEVICE_LOST);
-    rt_fatal("vk: the GPU stopped answering (no submission finished for %u s; TOTK_GPU_HANG_S=0 turns this check off)",
+    rt_fatal("vk: the GPU stopped answering (no submission finished for %u s; DKB_GPU_HANG_S=0 turns this check off)",
              waits / 10);
 }
 
@@ -550,7 +550,7 @@ void vk_sync_start(void) {
     if (__atomic_load_n(&started, __ATOMIC_ACQUIRE)) return;
     plat_mutex_lock(&start_lock);
     if (!started) {
-        if (!vk_init()) rt_fatal("vk: no usable Vulkan device (see the vk: lines above; TOTK_GPU=null runs without a GPU)");
+        if (!vk_init()) rt_fatal("vk: no usable Vulkan device (see the vk: lines above; DKB_GPU=null runs without a GPU)");
         VkCtx *c = vk_ctx();
         VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                       .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -575,7 +575,7 @@ void vk_sync_start(void) {
         completion_thread = plat_thread_new(completion_main, c, "vk completion");
         if (!completion_thread) rt_fatal("vk: cannot start the completion thread");
         __atomic_store_n(&started, 1, __ATOMIC_RELEASE);
-        vk_astc_mode();   // decides TOTK_ASTC and builds the ASTC decoder now, not at the first ASTC upload
+        vk_astc_mode();   // decides DKB_ASTC and builds the ASTC decoder now, not at the first ASTC upload
     }
     plat_mutex_unlock(&start_lock);
 }
@@ -612,7 +612,7 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // residency work for it there (#397).
 VkResult vk_sync_queue_submit(const VkSubmitInfo2 *si, VkFence fence, uint64_t value) {
     static int32_t slow;
-    uint64_t ph = perf_ph_begin_cpu();   // a part submitted from inside the replay (split_impl), TOTK_TRACE=perf
+    uint64_t ph = perf_ph_begin_cpu();   // a part submitted from inside the replay (split_impl), DKB_TRACE=perf
     uint64_t t0 = kern_now_ns();
     vk_queue_lock();
     uint64_t t1 = kern_now_ns();
@@ -634,10 +634,10 @@ VkResult vk_sync_queue_submit(const VkSubmitInfo2 *si, VkFence fence, uint64_t v
 // submitted right before the part that needs them and timed like a part; VK_NULL_HANDLE when there are none. After the
 // part was recorded, sub_lock held; may move slots[].
 // First brings the shadow storage up to date with the CPU's writes, which needs no command buffer.
-// cmd_pool is externally synchronised and the recorder thread may be using it: with TOTK_REC_BEGIN=1, part_begin queues
+// cmd_pool is externally synchronised and the recorder thread may be using it: with DKB_REC_BEGIN=1, part_begin queues
 // the next part's vkBeginCommandBuffer into the ring, and vk_sync_split_insert comes after that. The ring is drained
 // before the pool is touched here (a no-op after rec_end_cb, which drains it already).
-// TOTK_TRACE=perf: a part of the replay (perf.c ph_frame) when the recording calls it (a split part's); the
+// DKB_TRACE=perf: a part of the replay (perf.c ph_frame) when the recording calls it (a split part's); the
 // submission's last prologue comes after the recording and is counted only in the mirror line's prologue time.
 static VkCommandBuffer prologue_impl(VkCtx *c, uint64_t fence);
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
@@ -783,7 +783,7 @@ void vk_sync_split_finish(void (*tail)(VkCommandBuffer cb, void *arg), void *arg
 
 // A part recorded by the helper thread (vk_spec.h) goes into the queue between two of the replay thread's: the caller
 // has just split, so the part before is ended and on its way, and nothing of the part after is recorded yet. The ring
-// may still hold that part's submit and, with TOTK_REC_BEGIN=1, the next part's begin, so prologue drains it before it
+// may still hold that part's submit and, with DKB_REC_BEGIN=1, the next part's begin, so prologue drains it before it
 // records the mirror copies from the same command pool.
 // The recorder submits it in ring order, behind that part; without the recorder it is submitted here, once the
 // recorder's own submits are through. Not timed (ts_open): the perf trace's GPU figure leaves a helper part out.
@@ -831,7 +831,7 @@ static uint64_t submit_record(VkSyncRecordFn record, void *context, uint64_t sub
     plat_mutex_lock(&sub_lock);
     // Keep texture freshness stable while another guest submission is recording.
     if (guest) vk_texture_new_submit();
-    vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
+    vk_mem_dirty_submit();   // DKB_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
     // A texture alias can retire an image or view used earlier in this recording. Collection must wait for this
@@ -839,7 +839,7 @@ static uint64_t submit_record(VkSyncRecordFn record, void *context, uint64_t sub
     vk_mem_protect_until(fence);
     CmdSlot *s = take_slot(c, fence);
     uint64_t t0 = perf_begin();
-    int ph = perf_ph_replay_begin();   // TOTK_TRACE=perf: the parts of the replay (perf.c ph_frame)
+    int ph = perf_ph_replay_begin();   // DKB_TRACE=perf: the parts of the replay (perf.c ph_frame)
     part_begin(s->cb, fence);
     int recorded = record(s->cb, fence, submitted_ticks, context);
     held_none("the end of a submission");
@@ -987,7 +987,7 @@ void vk_sync_shutdown(void) {
         perf_gpu_stats = NULL;
         if (c && ts_pool) vkDestroyQueryPool(c->device, ts_pool, NULL);
         ts_pool = VK_NULL_HANDLE;
-        if (c && mk_pool) vkDestroyQueryPool(c->device, mk_pool, NULL);   // TOTK_PASS_GPU marks
+        if (c && mk_pool) vkDestroyQueryPool(c->device, mk_pool, NULL);   // DKB_PASS_GPU marks
         mk_pool = VK_NULL_HANDLE;
         ts_state = 0;
         ts_last_end = 0;

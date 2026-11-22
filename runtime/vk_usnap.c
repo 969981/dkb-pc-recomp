@@ -15,13 +15,13 @@
 // The design follows MacNativeGames' TOTK_UBO_SNAPSHOT (games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m usnap_take,
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
-// with TOTK_REPLAY_ASYNC. TOTK_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (TOTK_AB).
-// TOTK_USNAP_FAST=0 runs collect, sort, drop and copy as they were; by default each step takes a shortcut (repeated
+// with DKB_REPLAY_ASYNC. DKB_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (DKB_AB).
+// DKB_USNAP_FAST=0 runs collect, sort, drop and copy as they were; by default each step takes a shortcut (repeated
 // ranges skipped, fewer radix passes, repeated GPU writes merged, and with a CPU copy one copy into the arena), and its
 // comment says why the result is the same.
-// TOTK_USNAP_LIST=1 (on by default; "0" turns it off, "ab" alternates per submission) takes each recording's ranges
+// DKB_USNAP_LIST=1 (on by default; "0" turns it off, "ab" alternates per submission) takes each recording's ranges
 // from a merged list built at EndRecording (nvn_api_cmd.c take_recording, nvn_ubo_list_build below, composing callee
-// lists across OP_CALL) instead of walking every op here; TOTK_USNAP_LIST_CHECK=1 also walks the full op tree and logs
+// lists across OP_CALL) instead of walking every op here; DKB_USNAP_LIST_CHECK=1 also walks the full op tree and logs
 // any list that differs.
 #include <stdlib.h>
 #include <string.h>
@@ -81,7 +81,7 @@ static void gen_bump(void) { __atomic_add_fetch(&U.gen, 1, __ATOMIC_RELEASE); }
 
 // The arena is written once, in order, and lives in device-local memory through the BAR where the device has it: for
 // the CPU it is uncached, and reading a 256-byte block back takes microseconds. A caller that reads many copied blocks
-// (vk_exec_draw.c merge_pick, TOTK_DRAW_MERGE) asks for a second copy in cached host memory, made from the first
+// (vk_exec_draw.c merge_pick, DKB_DRAW_MERGE) asks for a second copy in cached host memory, made from the first
 // submission that begins after the call; vk_usnap_bytes reads that one. One submission records at a time
 // (vk_exec_record), so the one buffer, grown as needed, serves every submission.
 static int cpu_reads;
@@ -219,9 +219,9 @@ static int radix_passes(uint64_t span) {
     return p;
 }
 
-// ---- per-recording lists (TOTK_USNAP_LIST)
+// ---- per-recording lists (DKB_USNAP_LIST)
 // A recording's uniform ranges are known when the game ends it: EndRecording (nvn_api_cmd.c take_recording) gathers
-// its normalized uniform bindings (and composes OP_CALL callees' merged lists under TOTK_CALL_REF) and calls
+// its normalized uniform bindings (and composes OP_CALL callees' merged lists under DKB_CALL_REF) and calls
 // nvn_ubo_list_build on the recording thread, which sorts them by lo and merges those that overlap or touch.
 // vk_usnap_begin then appends each handle's list to U.col instead of walking its ops. Only the bindings' addresses are
 // needed, and no uniform binding changes between EndRecording and the submit (deferred binds are textures, samplers,
@@ -317,7 +317,7 @@ static void sort_col(void) {
     static Rng *tmp;
     static int ctmp;
     int n = U.ncol, s = 1;
-    // In order already (one recording's list, TOTK_USNAP_LIST): a stable sort would leave it as it is.
+    // In order already (one recording's list, DKB_USNAP_LIST): a stable sort would leave it as it is.
     while (s < n && U.col[s].lo >= U.col[s - 1].lo) s++;
     if (s >= n) return;
     uint64_t lo = UINT64_MAX, hi = 0;
@@ -457,7 +457,7 @@ static void summary(void) {
     U.handles = U.lhandles = U.list_bad = 0;
 }
 
-// TOTK_USNAP_LIST_CHECK: each handle's list against its full op tree (walking through OP_CALL without callee lists),
+// DKB_USNAP_LIST_CHECK: each handle's list against its full op tree (walking through OP_CALL without callee lists),
 // sorted and merged the same way. Uses U.col, which usnap_begin fills afterwards.
 static void list_check(const uint64_t *handles, int n) {
     uint64_t cols = U.cols, repeats = U.repeats;
@@ -484,7 +484,7 @@ static void list_check(const uint64_t *handles, int n) {
     U.ncol = 0, U.cols = cols, U.repeats = repeats;
 }
 
-static int drop_local;    // TOTK_USNAP_DROP_LOCAL, for this submission (wr_local)
+static int drop_local;    // DKB_USNAP_DROP_LOCAL, for this submission (wr_local)
 static void wr_take(void);
 
 static void usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
@@ -497,7 +497,7 @@ static void usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     static int fast_mode;   // stored +1: 0 is "not read yet"
     if (!fast_mode) fast_mode = rt_knob("USNAP_FAST", "1") + 1;
     U.fast = RT_KNOB_ON(fast_mode - 1);
-    static int local_mode;   // the same for TOTK_USNAP_DROP_LOCAL
+    static int local_mode;   // the same for DKB_USNAP_DROP_LOCAL
     if (!local_mode) local_mode = rt_knob("USNAP_DROP_LOCAL", "1") + 1;
     drop_local = RT_KNOB_ON(local_mode - 1);
     if (!RT_KNOB_ON(U.mode - 1)) {
@@ -517,7 +517,7 @@ static void usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
         U.handles++;
         if (l) {
             static int told;
-            if (!told++) rt_log("vk_usnap: uniform ranges taken from a recording's list (TOTK_USNAP_LIST)");
+            if (!told++) rt_log("vk_usnap: uniform ranges taken from a recording's list (DKB_USNAP_LIST)");
             col_append(l), U.lhandles++;
         } else {
             if (U.fast && !seen_clear) memset(seen, 0, sizeof seen), seen_clear = 1;
@@ -581,7 +581,7 @@ static void usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.copy_ns += t4 - t0;
 }
 
-// TOTK_TRACE=perf: a part of the replay (perf.c ph_frame).
+// DKB_TRACE=perf: a part of the replay (perf.c ph_frame).
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     uint64_t ph = perf_ph_begin();
     usnap_begin(handles, n, fence);
@@ -657,7 +657,7 @@ int vk_usnap_covers(uint64_t addr, uint64_t n) {
     return i < U.nreg && U.reg[i].lo < addr + n;
 }
 
-// TOTK_USNAP_DROP_LOCAL (on by default; 0 as before; "ab" decides per submission, in vk_usnap_begin): a GPU write
+// DKB_USNAP_DROP_LOCAL (on by default; 0 as before; "ab" decides per submission, in vk_usnap_begin): a GPU write
 // goes into a list of the noting thread's own instead of U.wr, and drop_lock is taken only when the write drops a copy
 // (vk_usnap_covers). With every GPU-written binding of the slices (about 5,700 ranges a submission in the Hilltop Layer
 // of Surf Hills, 3.2.0, one per terrain record) appended to U.wr under the lock, the slice workers queued for it.
@@ -760,9 +760,9 @@ static void drop_locked(uint64_t addr, uint64_t n, uint64_t fence) {   // drop_l
 
 void vk_usnap_drop(uint64_t addr, uint64_t n) { drop(addr, n, U.fence); }
 
-// vk_usnap_drop of each range [r[i][0], r[i][1]) (vk_exec_draw.c reset_batch, TOTK_RESET_BATCH): one take of drop_lock
+// vk_usnap_drop of each range [r[i][0], r[i][1]) (vk_exec_draw.c reset_batch, DKB_RESET_BATCH): one take of drop_lock
 // for them all instead of one each, while the slice threads take it for their own drops. The ranges go into U.wr and
-// mark their copies under that one hold whatever TOTK_USNAP_DROP_LOCAL says: wr_local is not called here, because a
+// mark their copies under that one hold whatever DKB_USNAP_DROP_LOCAL says: wr_local is not called here, because a
 // thread's first wr_local takes drop_lock to link its list and would deadlock under it. U.wr and the threads' lists
 // may hold a submission's writes side by side (wr_take appends the lists in any order; wr_prune sorts what was added).
 void vk_usnap_drop_many(const uint64_t (*r)[2], uint32_t n) {
@@ -776,7 +776,7 @@ void vk_usnap_drop_many(const uint64_t (*r)[2], uint32_t n) {
 // Whether a GPU write noted here (vk_usnap_drop: shader stores, copies, fills, reports, uniform updates, indirect
 // resets) whose fence is not done overlaps [addr, addr+n): guest memory there may not hold the GPU's bytes yet. The
 // sorted prefix of the last prune and the unsorted tail are both looked at, under drop_lock as the slices add to them,
-// and with TOTK_USNAP_DROP_LOCAL the threads' own lists, each under its lock (wr_local).
+// and with DKB_USNAP_DROP_LOCAL the threads' own lists, each under its lock (wr_local).
 int vk_usnap_gpu_writing(uint64_t addr, uint64_t n) {
     if (!n) return 0;
     const uint64_t done = vk_sync_fence_done(), hi = addr + n;

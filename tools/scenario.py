@@ -4,11 +4,11 @@
     python tools/scenario.py tutorial-cave                  one run with the default build (build/dkb100)
     python tools/scenario.py tutorial-cave --repeat 3       three runs
     python tools/scenario.py tutorial-cave --ab native_gs   variants of the scenario, alternating: off, on, off, on, ...
-    python tools/scenario.py tutorial-cave --build build/dkb100-pr67 --env TOTK_VK_VALIDATION=1
+    python tools/scenario.py tutorial-cave --build build/dkb100-pr67 --env DKB_VK_VALIDATION=1
     python tools/scenario.py tutorial-cave --warp HillLevelStage    start in another stage (tools/save_warp.py)
     python tools/scenario.py tutorial-cave --sweep 'LevelStage$'    once per matching stage (the 20 layers)
     python tools/scenario.py tutorial-cave --sweep 'LevelStage$' --jobs 3   three games at once (timings unreliable)
-    python tools/scenario.py tutorial-cave --repeat 2 --env TOTK_DUMP=4300 --env TOTK_DUMP_DIR={run}/dump
+    python tools/scenario.py tutorial-cave --repeat 2 --env DKB_DUMP=4300 --env DKB_DUMP_DIR={run}/dump
                                                          {run} in a value: that run's own folder
 
 A scenario is tests/scenarios/<name>.toml: which private save to start from, the scripted input that gets from the title
@@ -29,7 +29,7 @@ How a run ended is one of:
                    overflow, 0xC0000409 fast fail)
   device lost      Vulkan lost the device; the log has the VK_EXT_device_fault report when the driver gives one
   hung             no exit within the time limit (seconds x 6 + 180 s), or, while the run was not over, STALL_S without
-                   a frame (the stall watchdog's "stall: no frame" lines, TOTK_STALL_DUMP) or without any other log
+                   a frame (the stall watchdog's "stall: no frame" lines, DKB_STALL_DUMP) or without any other log
                    line; before the kill, hang-stacks.txt gets every thread's stack (gdb attached, when installed)
   warp failed      tools/save_warp.py could not move the profile copy to the stage (unknown save layout, a stage name
                    too long for its field); no game was started and the batch goes on
@@ -64,7 +64,7 @@ SCENARIOS = ROOT / 'tests' / 'scenarios'
 SAVES = ROOT / 'build' / 'saves'
 RUNS = ROOT / 'build' / 'scenarios'
 WIN = os.name == 'nt'
-GAME_EXES = ('dkb.exe', 'totk.exe') if WIN else ('dkb', 'totk')
+GAME_EXES = ('dkb.exe',) if WIN else ('dkb',)
 sys.path.insert(0, str(ROOT / 'tools'))
 import perf_check  # noqa: E402
 import save_warp  # noqa: E402
@@ -155,7 +155,7 @@ STALL_S = 120   # the game logs perf lines every second while it runs; this long
 
 def hang_stacks(pid, out):
     """Every thread's stack of the hung process into out (gdb attached in batch mode; host addresses, no symbols:
-    tools/hang_stacks.py names them from totk.map). Best effort: no gdb, or gdb failing, leaves a note."""
+    tools/hang_stacks.py names them from dkb.map). Best effort: no gdb, or gdb failing, leaves a note."""
     gdb = shutil.which('gdb')
     if not gdb:
         out.write_text('no gdb on PATH: no stacks\n', encoding='utf-8')
@@ -186,7 +186,7 @@ def safe_gpu_env():
     if not (layer / 'VkLayer_khronos_validation.json').is_file():
         raise SystemExit(f'scenario: --safe-gpu needs the Vulkan validation layer in {layer} '
                          '(pacman -S mingw-w64-ucrt-x86_64-vulkan-validation-layers)')
-    return ['TOTK_VK_VALIDATION=1', f'VK_LAYER_PATH={layer}', f'VK_LAYER_SETTINGS_PATH={GPUAV_SETTINGS}']
+    return ['DKB_VK_VALIDATION=1', f'VK_LAYER_PATH={layer}', f'VK_LAYER_SETTINGS_PATH={GPUAV_SETTINGS}']
 
 
 def gpuav_reports(text):
@@ -234,7 +234,7 @@ def ending(code, text, timed_out):
         return 'completed', f'finished the run, then did not exit within {EXIT_GRACE_S} s; killed'
     if code == 0:
         if 'frametime: exit' not in text and 'perf: frame' not in text:
-            return 'completed', 'exited 0 without perf output (TOTK_TRACE=perf missing?)'
+            return 'completed', 'exited 0 without perf output (DKB_TRACE=perf missing?)'
         return 'completed', ''
     u = code & 0xFFFFFFFF
     name = NTSTATUS.get(u)
@@ -316,17 +316,17 @@ def reference_check(png, spec):
 
 def run_env(s, env_extra, out, base):
     """The environment of one run: base, the scenario's [env], then env_extra (--env and the variant). {run} in a value
-    is the run's folder, so repeated runs do not overwrite each other's outputs (TOTK_DUMP_DIR={run}/dump). perf is
-    always traced, because the perf verdict needs it; other TOTK_TRACE categories asked for are added to it. Runs are
-    muted (TOTK_VOLUME=0) unless the caller's environment, the scenario or --env sets a volume."""
+    is the run's folder, so repeated runs do not overwrite each other's outputs (DKB_DUMP_DIR={run}/dump). perf is
+    always traced, because the perf verdict needs it; other DKB_TRACE categories asked for are added to it. Runs are
+    muted (DKB_VOLUME=0) unless the caller's environment, the scenario or --env sets a volume."""
     env = dict(base)
-    env.setdefault('TOTK_VOLUME', '0')
-    env['TOTK_INPUT_SCRIPT'] = str(ROOT / s['input'])
+    env.setdefault('DKB_VOLUME', '0')
+    env['DKB_INPUT_SCRIPT'] = str(ROOT / s['input'])
     env.update({k: str(v) for k, v in s['env'].items()})
     env.update({k: str(v) for k, v in env_extra.items()})
     for k in set(s['env']) | set(env_extra):
         env[k] = env[k].replace('{run}', str(out))
-    env['TOTK_TRACE'] = ','.join(sorted(set(filter(None, env.get('TOTK_TRACE', '').split(',') + ['perf']))))
+    env['DKB_TRACE'] = ','.join(sorted(set(filter(None, env.get('DKB_TRACE', '').split(',') + ['perf']))))
     return env
 
 
@@ -342,7 +342,7 @@ def dump_env(checks):
     --env overrides it."""
     if 'dump_frame' not in checks:
         return {}
-    env = {'TOTK_DUMP': str(checks['dump_frame']), 'TOTK_DUMP_DIR': '{run}/dump'}
+    env = {'DKB_DUMP': str(checks['dump_frame']), 'DKB_DUMP_DIR': '{run}/dump'}
     return env
 
 
@@ -449,7 +449,7 @@ def run_once(s, exe, out, env_extra, args, warp=None):
                     if tail.progress is not None:
                         last_write = max(last_write, tail.progress)
                     stall_limit = STALL_S * (5 if args.safe_gpu else 1)
-                    # The stall watchdog (TOTK_STALL_DUMP, runtime/kernel.c stall_main) keeps logging while no frame
+                    # The stall watchdog (DKB_STALL_DUMP, runtime/kernel.c stall_main) keeps logging while no frame
                     # comes, so its lines are not progress: a hang is either a log silent apart from them, or a
                     # "stall: no frame" that lasted the limit.
                     stalled = finished is None and (now - last_write > stall_limit or
@@ -598,10 +598,10 @@ def main(argv=None):
         extra[k] = v
     if not 1 <= a.jobs <= MAX_JOBS:
         ap.error(f'--jobs takes 1 to {MAX_JOBS}')
-    faulting = {e.partition('=')[0]: e.partition('=')[2] for e in a.env}.get('TOTK_FIX_VS_FAULT') == '0'
+    faulting = {e.partition('=')[0]: e.partition('=')[2] for e in a.env}.get('DKB_FIX_VS_FAULT') == '0'
     if a.jobs > 1 and faulting and not a.force:
-        # TOTK_FIX_VS_FAULT=0 makes known stages lose the GPU; several of those at once crashed Windows (bugcheck 0x119).
-        ap.error('--jobs > 1 with TOTK_FIX_VS_FAULT=0 runs GPU faults in parallel, which crashed Windows on an RTX 5060; '
+        # DKB_FIX_VS_FAULT=0 makes known stages lose the GPU; several of those at once crashed Windows (bugcheck 0x119).
+        ap.error('--jobs > 1 with DKB_FIX_VS_FAULT=0 runs GPU faults in parallel, which crashed Windows on an RTX 5060; '
                  'use --jobs 1 (or --force if you accept the risk)')
     if a.ab:
         table = s['variants'].get(a.ab)

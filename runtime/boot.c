@@ -154,7 +154,7 @@ void rt_boot_event(const char *what, Cpu *c, const char *detail) {
 
 // ---- --seconds S
 // A PNG with stored (uncompressed) deflate blocks: no compression library, and the shot is only read by tools.
-// rt_write_png (declared in host.h) is shared with the TOTK_DUMP frame dump (vk_dump.c).
+// rt_write_png (declared in host.h) is shared with the DKB_DUMP frame dump (vk_dump.c).
 static uint32_t crc32_update(uint32_t crc, const uint8_t *p, size_t n) {
     static uint32_t table[256];
     if (!table[1])
@@ -234,7 +234,7 @@ static uint8_t srgb_byte(float x) {
 // The presented texture t as 8-bit RGBA, box-filtered to ow x oh (the full size when they are its own), into out.
 // Returns 0, reading nothing, for a format it does not convert. 8-bit RGBA and BGRA are taken as they are. RGB10A2
 // (NVN_FORMAT_RGB10A2, an A2B10G10R10 image: red in the low 10 bits) is what Bananza 3.2.0 presents with its own HDR
-// output (TOTK_HDR_NATIVE on an HDR10 swapchain, ov_gfx.c hdr_native_on; a Hilltop bench log has "fg: frame generation
+// output (DKB_HDR_NATIVE on an HDR10 swapchain, ov_gfx.c hdr_native_on; a Hilltop bench log has "fg: frame generation
 // 2x on ... history RGB10A2 (the game's own HDR picture, PQ)"): Rec. 2020 PQ code values, so they are decoded to light,
 // averaged as light, taken to Rec. 709 and tone mapped to sRGB with the paper white at 203 nits, the game's own (its
 // "hdr: metadata" line). An RGB10A2 picture without the game's HDR output has its codes taken as display values. A
@@ -310,9 +310,9 @@ static void save_shot(const tex_t *t, const char *path) {
     rt_logf("boot: shot %s (%ux%u)\n", path, w, h);
 }
 
-// TOTK_SHOTS=lo-hi:step [TOTK_SHOTS_DIR=dir]: every step-th present in [lo, hi] saved as <dir>/f<n>.png (n the
-// present), box-filtered to 480x270; TOTK_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
-// present at or after each step (full size with TOTK_SHOTS_FULL=1), for finding short glitches. Pipeline builds stay asynchronous, so the
+// DKB_SHOTS=lo-hi:step [DKB_SHOTS_DIR=dir]: every step-th present in [lo, hi] saved as <dir>/f<n>.png (n the
+// present), box-filtered to 480x270; DKB_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
+// present at or after each step (full size with DKB_SHOTS_FULL=1), for finding short glitches. Pipeline builds stay asynchronous, so the
 // pictures show what a player sees. The presented formats shot_pixels converts are saved; another gets one line.
 static void series_shot(const tex_t *t, uint64_t n) {
     static int parsed;
@@ -320,14 +320,14 @@ static void series_shot(const tex_t *t, uint64_t n) {
     static const char *dir;
     static int full, world;
     if (!parsed) {
-        full = cfg_get("TOTK_SHOTS_FULL") != NULL;
-        const char *e = cfg_get("TOTK_SHOTS");
+        full = cfg_get("DKB_SHOTS_FULL") != NULL;
+        const char *e = cfg_get("DKB_SHOTS");
         double wl, wh, ws;
         if (e && e[0] == 'w' && sscanf(e + 1, "%lf-%lf:%lf", &wl, &wh, &ws) == 3 && ws > 0)   // world-clock seconds
             world = 1, lo = (unsigned long long)(wl * 1e6), hi = (unsigned long long)(wh * 1e6),
             step = (unsigned long long)(ws * 1e6), next = lo;
         else if (!e || sscanf(e, "%llu-%llu:%llu", &lo, &hi, &step) != 3 || !step) hi = 0;
-        dir = cfg_get("TOTK_SHOTS_DIR") ? cfg_get("TOTK_SHOTS_DIR") : ".";
+        dir = cfg_get("DKB_SHOTS_DIR") ? cfg_get("DKB_SHOTS_DIR") : ".";
         if (hi) plat_file_mkdir_p(dir);
         parsed = 1;
     }
@@ -340,11 +340,11 @@ static void series_shot(const tex_t *t, uint64_t n) {
     }
     uint32_t ow = full ? t->d.width : 480, oh = full ? t->d.height : 270;
     uint8_t *out = malloc(4ull * ow * oh);
-    if (!out) rt_fatal("boot: out of memory for a TOTK_SHOTS frame");
+    if (!out) rt_fatal("boot: out of memory for a DKB_SHOTS frame");
     if (!shot_pixels(t, ow, oh, out, 0)) {   // a format shot_pixels does not convert: said once, no file
         static int told;
         if (!told++)
-            rt_log("boot: TOTK_SHOTS: the presented texture has NVN format %#x, which the shots do not convert; none "
+            rt_log("boot: DKB_SHOTS: the presented texture has NVN format %#x, which the shots do not convert; none "
                    "is saved", t->d.format);
         free(out);
         return;
@@ -400,7 +400,7 @@ static void guest_main(Cpu *c) {
 static void prewarm_main(void *arg) {
     (void)arg;
     gfx_backend()->boot_prewarm();
-    const char *prep = cfg_get("TOTK_TEST_PREPARE_SHADERS");   // Task 2.3 test hook; Task 2.6 builds the preparation
+    const char *prep = cfg_get("DKB_TEST_PREPARE_SHADERS");   // Task 2.3 test hook; Task 2.6 builds the preparation
     if (prep && !strcmp(prep, "1")) {
         int cpus = (int)plat_cpu_usable();
         gfx_shader_prepare_recorded(cpus, cpus / 2 > 16 ? 16 : cpus / 2 < 1 ? 1 : cpus / 2);

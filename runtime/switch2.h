@@ -7,13 +7,13 @@
 // mkw-recomp) and shows the controller to the rest of the input as a virtual SDL gamepad: selection, button layout and
 // gyro then work as for any other gamepad. Rumble goes to the controller as the game's own HD values (amplitude and
 // frequency of each band, both sides, 5 ms samples) through switch2_rumble_hd; a plain SDL_RumbleGamepad on the virtual
-// pad still works, played at 160 / 320 Hz. TOTK_SWITCH2=1 (Settings > Controls, read at start) turns it on; it runs on
+// pad still works, played at 160 / 320 Hz. DKB_SWITCH2=1 (Settings > Controls, read at start) turns it on; it runs on
 // the transport's own thread, never the game's.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
 
-void switch2_start(void);   // input.c's start: the transport's thread, when TOTK_SWITCH2=1
+void switch2_start(void);   // input.c's start: the transport's thread, when DKB_SWITCH2=1
 // The battery of the virtual gamepad with this SDL joystick id (SDL keeps no power state for a virtual one): its band
 // (S2_BATTERY_*, switch2_proto.h; 0 not ours or none reported yet) and *mv its voltage. Any thread.
 int switch2_battery(uint32_t sdl_id, int *mv);

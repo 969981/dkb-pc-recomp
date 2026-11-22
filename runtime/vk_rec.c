@@ -2,7 +2,7 @@
 // consumer (the recorder) share a ring of 64-bit words. A packet is a header word (op, length in words) and the
 // call's arguments; its pointers point into the packet itself, so the recorder passes the payload to the driver as
 // it is. A packet never wraps: one that does not fit before the end is preceded by a pad. The producer publishes head
-// after each packet, or every TOTK_REC_BATCH packets when that is set; the recorder makes the calls and advances tail, which the producer waits on when the ring is
+// after each packet, or every DKB_REC_BATCH packets when that is set; the recorder makes the calls and advances tail, which the producer waits on when the ring is
 // full and in rec_drain. While a part is recorded the recorder spins on head; idle, it sleeps on an event.
 // Design: Savage Wind Recomp #189 and LAS Recomp runtime/nvn/vulkan/record.c (https://github.com/peiikai/LASRecomp
 // @ a4b53a3, MIT, Copyright (c) 2026 Peiikai); the code is ours.
@@ -100,7 +100,7 @@ static void rec_main(void *arg) {
 
 // ---- producer
 
-// TOTK_REC_BATCH=N (0 off): head is published every N packets, not after each, so the recorder's spin does not read a
+// DKB_REC_BATCH=N (0 off): head is published every N packets, not after each, so the recorder's spin does not read a
 // cache line the producer rewrites constantly. Every wait or handoff (wait_space, rec_drain) publishes the rest.
 static int rec_batch;     // read once in rec_begin
 static int unpub;         // producer: packets written since head was last stored
@@ -153,7 +153,7 @@ uint32_t rec_capture_begin(void) {
 // same wrappers, and rec_capture_play makes them on this thread, which recorded the rest of the part. vk_sync.c
 // vk_sync_split_defer and vk_sync_split_finish need no recorder (rec_call declines and the end is made here).
 // Only without a recorder thread at all: vk_sync_split_finish hands the held part's end to rec_call, which takes any
-// recorder thread there is, so with TOTK_VK_RECORDER=ab a part the submitting thread recorded in a B block would be
+// recorder thread there is, so with DKB_VK_RECORDER=ab a part the submitting thread recorded in a B block would be
 // ended on the recorder, the pattern of issue #5.
 int rec_capture_alone(VkCommandBuffer cb) { return cb && !rec_thread; }
 uint32_t rec_capture_begin_for(VkCommandBuffer cb) {
@@ -253,15 +253,15 @@ void rec_begin(VkCommandBuffer cb) {
         // Default on, except on AMD's own Windows driver. AMD drivers once lost the device with the recorder (issues
         // #5 and #40); after vk_mem_note_recording kept objects alive until their submission completed and the
         // recorder began ending its own parts (rec_end_cb), RDNA 1 and 2 cards ran with it on and off without a loss.
-        // Bananza still lost the device on AMD's proprietary driver, and TOTK_VK_RECORDER=0 stopped it for three
+        // Bananza still lost the device on AMD's proprietary driver, and DKB_VK_RECORDER=0 stopped it for three
         // players on three GPU generations: a Radeon 610M (#84), a ROG Xbox Ally X (#155) and an RX 9070 XT (#142).
         // RADV keeps the recorder: its hangs (#122, #204) were not tested with it off.
         mode = rt_knob("VK_RECORDER", vk_caps.amd && !vk_caps.radv ? "0" : "1");
         if (mode) {
-            rec_batch = cfg_int("TOTK_REC_BATCH");
+            rec_batch = cfg_int("DKB_REC_BATCH");
             if (rec_batch < 0) rec_batch = 0;
             if (rec_batch > 64) rec_batch = 64;
-            if (rec_batch) rt_log("vk_rec: batched head publish every %d packets (TOTK_REC_BATCH=%d)", rec_batch, rec_batch);
+            if (rec_batch) rt_log("vk_rec: batched head publish every %d packets (DKB_REC_BATCH=%d)", rec_batch, rec_batch);
             plat_event_init(&wake_ev, 0, 0);
             rec_thread = plat_thread_new(rec_main, NULL, "vk recorder");
             if (!rec_thread) {
@@ -269,7 +269,7 @@ void rec_begin(VkCommandBuffer cb) {
                 mode = 0;
             } else {
                 rt_log("vk_rec: the replay's Vulkan commands are made by a recorder thread%s",
-                       mode == 2 ? " in the B blocks (TOTK_AB)" : "");
+                       mode == 2 ? " in the B blocks (DKB_AB)" : "");
             }
         }
     }
@@ -287,17 +287,17 @@ void rec_end(void) {
     __atomic_store_n(&rec_live, 0, __ATOMIC_RELAXED);
 }
 
-// TOTK_REC_END (default 1): the thread that recorded the part also ends it, after the breadcrumb crumb (kind 0: none)
+// DKB_REC_END (default 1): the thread that recorded the part also ends it, after the breadcrumb crumb (kind 0: none)
 // that vk_sync.c writes at the end of a submission. On an RX 6700 XT (driver 26.10.1, issue #5) parts the recorder
 // recorded and the submitting thread ended broke when a submission was split (vk_sync.c vk_sync_split): the GPU hung
 // or the scene turned green, then white. The handoff in rec_drain orders the two threads, so Vulkan allows the old
-// split; the driver did not cope with it. TOTK_REC_END=0 brings the old split back.
+// split; the driver did not cope with it. DKB_REC_END=0 brings the old split back.
 typedef struct { int kind; uint64_t n; } A_EndCb;
 int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     static int mode = -1;
     if (mode < 0) {
         mode = rt_knob("REC_END", "1");
-        rt_log("vk_rec: a part the recorder records is ended by %s (TOTK_REC_END=%d)",
+        rt_log("vk_rec: a part the recorder records is ended by %s (DKB_REC_END=%d)",
                mode ? "the recorder" : "the submitting thread", mode);
     }
     if (!rec_live || cb != rec_cb || !mode) {
@@ -313,7 +313,7 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     return 1;
 }
 
-// TOTK_REC_SUBMIT=1 (default 0): the recorder also submits a part it ended when more of the submission follows
+// DKB_REC_SUBMIT=1 (default 0): the recorder also submits a part it ended when more of the submission follows
 // (vk_sync.c split_impl), and the replay goes on with the next part meanwhile. vkQueueSubmit2 was 37 us of the 77 us a
 // split cost the replaying thread on an RTX 3060 Ti (Bananza, 7 to 8 parts a frame), and that thread is what the guest's
 // fence wait is waiting for. Queue order is as before: the packet follows the part's last call, the end of every later
@@ -342,14 +342,14 @@ int rec_submit(VkCommandBuffer pro, VkCommandBuffer cb, uint64_t fence) {
     static int mode = -1;
     if (mode < 0) {
         mode = rt_knob("REC_SUBMIT", "0");
-        rt_log("vk_rec: a part the recorder ended is submitted by %s (TOTK_REC_SUBMIT=%s)",
+        rt_log("vk_rec: a part the recorder ended is submitted by %s (DKB_REC_SUBMIT=%s)",
                mode ? "the recorder" : "the replaying thread", mode == 2 ? "ab" : mode ? "1" : "0");
     }
     if (!rec_thread || !RT_KNOB_ON(mode)) return 0;
     A_Submit *a = put(R_Submit, sizeof *a);
     *a = (A_Submit){pro, cb, fence};
     __atomic_store_n(&sub_put, sub_put + 1, __ATOMIC_RELEASE);
-    unpub = 0;   // at once, whatever TOTK_REC_BATCH says: the GPU waits for this packet
+    unpub = 0;   // at once, whatever DKB_REC_BATCH says: the GPU waits for this packet
     __atomic_store_n(&head, put_h, __ATOMIC_RELEASE);
     wake();
     return 1;
@@ -362,9 +362,9 @@ void rec_submit_wait(void) {
         else plat_yield();
 }
 
-// TOTK_REC_BEGIN (default 0): the thread that records a part also begins it: vkBeginCommandBuffer, the submission crumb
+// DKB_REC_BEGIN (default 0): the thread that records a part also begins it: vkBeginCommandBuffer, the submission crumb
 // and the start timestamp pair go into the ring ahead of the part's commands, so on the AMD proprietary driver on
-// Windows no call into the buffer is made by the submitting thread (the same class as TOTK_REC_END, issue #5).
+// Windows no call into the buffer is made by the submitting thread (the same class as DKB_REC_END, issue #5).
 // The timestamp pair (ts_pair, -1 none) is picked by the submitting thread, which owns that state.
 typedef struct { uint64_t fence; VkQueryPool pool; int pair; } A_BeginCb;
 static void begin_cb(VkCommandBuffer cb, const A_BeginCb *a) {
@@ -381,7 +381,7 @@ int rec_begin_part(VkCommandBuffer cb, uint64_t fence, int ts_pair, VkQueryPool 
     static int mode = -1;
     if (mode < 0) {
         mode = rt_knob("REC_BEGIN", "0");
-        rt_log("vk_rec: a part the recorder records is begun by %s (TOTK_REC_BEGIN=%d)",
+        rt_log("vk_rec: a part the recorder records is begun by %s (DKB_REC_BEGIN=%d)",
                mode ? "the recorder" : "the submitting thread", mode);
     }
     if (!mode) return 0;

@@ -1,9 +1,9 @@
 // The Win32 back end of the window (gfx_wsys.h): the window and its message loop on a thread of their own, F11
-// fullscreen, the settings TOTK_WINDOW_SIZE and TOTK_FULLSCREEN, the monitor's refresh rate, focus, the Vulkan surface.
+// fullscreen, the settings DKB_WINDOW_SIZE and DKB_FULLSCREEN, the monitor's refresh rate, focus, the Vulkan surface.
 // The swapchain and the present are vk_present.c's. The in-game menu's keyboard and mouse come from the window
 // procedure (ui/menu_win.cpp), and so do the game's (input_win.c).
 //
-// The process is per-monitor DPI aware (totk.manifest): every size here is physical pixels, TOTK_WINDOW_SIZE included,
+// The process is per-monitor DPI aware (dkb.manifest): every size here is physical pixels, DKB_WINDOW_SIZE included,
 // and the swapchain matches the screen pixel for pixel. A window moved to a monitor at another display scale keeps its
 // client size (WM_GETDPISCALEDSIZE); the menu takes its text size floor from the window's DPI (gfx_window_dpi).
 #include <stdio.h>
@@ -29,8 +29,8 @@
 static HWND g_hwnd;
 static PlatEvent g_wnd_ready;   // manual-reset: the window thread made the window or gave up
 static int g_wnd_failed;
-static int g_background;                   // TOTK_BACKGROUND_WINDOW: the window stays behind the user's windows
-static int g_fs_pending;                   // window thread: TOTK_FULLSCREEN waits for the first activation
+static int g_background;                   // DKB_BACKGROUND_WINDOW: the window stays behind the user's windows
+static int g_fs_pending;                   // window thread: DKB_FULLSCREEN waits for the first activation
 static volatile int32_t g_dpi = USER_DEFAULT_SCREEN_DPI;   // the window's DPI, set by the window thread
 
 HWND gfx_window_handle(void) { return g_hwnd; }
@@ -125,14 +125,14 @@ static char g_applied_size[32];
 static int g_applied_mode;
 
 static void note_applied(void) {
-    snprintf(g_applied_size, sizeof g_applied_size, "%s", cfg_value("TOTK_WINDOW_SIZE"));
+    snprintf(g_applied_size, sizeof g_applied_size, "%s", cfg_value("DKB_WINDOW_SIZE"));
     g_applied_mode = gfx_cfg_window_mode();
 }
 
 // Window thread: the window takes the size and fullscreen state of the settings when they changed. In fullscreen the
 // size goes into the placement restored when fullscreen ends.
 static void apply_settings(HWND h) {
-    int size_changed = strcmp(cfg_value("TOTK_WINDOW_SIZE"), g_applied_size) != 0, mode = gfx_cfg_window_mode(),
+    int size_changed = strcmp(cfg_value("DKB_WINDOW_SIZE"), g_applied_size) != 0, mode = gfx_cfg_window_mode(),
         mode_changed = mode != g_applied_mode;
     note_applied();
     if (size_changed) {
@@ -168,7 +168,7 @@ void gfx_window_request_close(void) {
     if (g_hwnd) PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
 }
 
-// ---- refresh rate of the window's monitor (TOTK_FPS_LIMIT=display), measured when the window opens, lands on another
+// ---- refresh rate of the window's monitor (DKB_FPS_LIMIT=display), measured when the window opens, lands on another
 // monitor or the display mode changes (gfx_window_set_refresh keeps it). QueryDisplayConfig gives the exact rational
 // rate (59.94, 143.998); EnumDisplaySettings' whole hertz is the fallback.
 static HMONITOR g_rate_mon;
@@ -223,8 +223,8 @@ static void toggle_window_mode(HWND h) {
     int cur = is_fullscreen(h) ? (g_applied_mode ? g_applied_mode : 1) : 0, mode = cur ? 0 : last_fs;
     set_mode(h, mode);
     // the menu shows these; the next start keeps them
-    cfg_set("TOTK_WINDOW_MODE", mode == 2 ? "fullscreen" : mode == 1 ? "borderless" : "windowed");
-    cfg_set("TOTK_FULLSCREEN", mode ? "1" : "0");
+    cfg_set("DKB_WINDOW_MODE", mode == 2 ? "fullscreen" : mode == 1 ? "borderless" : "windowed");
+    cfg_set("DKB_FULLSCREEN", mode ? "1" : "0");
     cfg_save();
     note_applied();   // what cfg_get reads now (the environment may still override it)
 }
@@ -235,7 +235,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (menu_window_msg(h, m, w, l, &input_res)) return input_res;
     switch (m) {
     case WM_KEYDOWN:
-        if (w == VK_F9 && !(l & (1 << 30))) gfx_backend()->dump_request();   // TOTK_DUMP=key; F10 is the system menu key
+        if (w == VK_F9 && !(l & (1 << 30))) gfx_backend()->dump_request();   // DKB_DUMP=key; F10 is the system menu key
         if (w == VK_F11 && !(l & (1 << 30))) {   // bit 30: auto-repeat
             toggle_window_mode(h);
         }
@@ -309,13 +309,13 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 static void window_main(void *arg) {
     (void)arg;
     HINSTANCE inst = GetModuleHandleW(NULL);
-    // Icon resource 1 of totk.rc (runtime/dkb.ico): the title bar, the taskbar button and Alt+Tab.
+    // Icon resource 1 of dkb.rc (runtime/dkb.ico): the title bar, the taskbar button and Alt+Tab.
     WNDCLASSEXW wc = {.cbSize = sizeof wc, .lpfnWndProc = wnd_proc, .hInstance = inst,
                       .hIcon = LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON),
                                           GetSystemMetrics(SM_CYICON), LR_SHARED),
                       .hIconSm = LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
                                             GetSystemMetrics(SM_CYSMICON), LR_SHARED),
-                      .hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW), .lpszClassName = L"TotKRecompWindow"};
+                      .hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW), .lpszClassName = L"DKBRecompWindow"};
     RegisterClassExW(&wc);
     int cw, ch, ow, oh;
     cfg_window_size(&cw, &ch);
@@ -323,9 +323,9 @@ static void window_main(void *arg) {
     // The window opens behind the user's windows without taking focus: it shows the game's blank loading frames for a
     // while, and must not cover what the player works on meanwhile. The game still counts itself in focus until the
     // first WM_ACTIVATEAPP, so loading goes on, and keyboard input waits for the foreground (input_win.c). Its taskbar
-    // button flashes until it is brought up, and TOTK_FULLSCREEN waits for that first activation.
-    // TOTK_BACKGROUND_WINDOW=1 (test runs): no flashing, never fullscreen at start, and F11 keeps the window's place.
-    int background = g_background = cfg_get("TOTK_BACKGROUND_WINDOW") && atoi(cfg_get("TOTK_BACKGROUND_WINDOW"));
+    // button flashes until it is brought up, and DKB_FULLSCREEN waits for that first activation.
+    // DKB_BACKGROUND_WINDOW=1 (test runs): no flashing, never fullscreen at start, and F11 keeps the window's place.
+    int background = g_background = cfg_get("DKB_BACKGROUND_WINDOW") && atoi(cfg_get("DKB_BACKGROUND_WINDOW"));
     g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"DKB Recomp", WND_STYLE, CW_USEDEFAULT, CW_USEDEFAULT, ow, oh, NULL,
                              NULL, inst, NULL);
     if (!g_hwnd) {

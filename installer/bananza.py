@@ -105,7 +105,7 @@ def plain_destination(dest, dlls=()):
     # profile/ and caches belong to the player and are never traversed or written by setup.
     files = (STATE, STATE + '.tmp', DEST_OWNER, DEST_OWNER + '.tmp', SAVES_OWNER, '.dkb-setup.lock', 'dkb.ini',
              'dkb.ini.tmp', 'totk.ini',
-             'totk.ini.tmp', 'romfs-index.bin', 'seed-nvn2.bin', 'dkb' + EXE, 'totk_xlate' + EXE, 'totk_xlate.id', *(p.name for p in dlls))
+             'totk.ini.tmp', 'romfs-index.bin', 'seed-nvn2.bin', 'dkb' + EXE, 'dkb_xlate' + EXE, 'dkb_xlate.id', *(p.name for p in dlls))
     for name in ('exefs', 'romfs', *WIDE_FOLDERS, *files, *(name + '.setup-part' for name in files)):
         plain_tree(dest / name)
 
@@ -229,7 +229,7 @@ def tree_key(base):
 
 
 def prebuilt_runtime(layout):
-    """The release's runtime/libtotkrt.a, built with the folder's toolchain and sysroot, or None: a checkout compiles
+    """The release's runtime/libdkbrt.a, built with the folder's toolchain and sysroot, or None: a checkout compiles
     runtime/ from source, and so does a source package that carries no library."""
     return layout.runtime_lib if not layout.dev and layout.runtime_lib.is_file() else None
 
@@ -436,7 +436,7 @@ def preflight(layout, options, dest, temp, rep):
                            layout.tools / 'dkb_wide_layout.py', layout.tools / 'ultrawide_layout.py',
                            layout.tools / 'dkb_ps_prompts.py', layout.tools / 'data' / f'expected-{game}.json')
                if not p.is_file()]
-    # The release compiles nvn2_lower.cpp into libtotkrt.a, so it is not needed when the library is present.
+    # The release compiles nvn2_lower.cpp into libdkbrt.a, so it is not needed when the library is present.
     if prebuilt_runtime(layout) is None and not (layout.runtime / 'nvn2_lower.cpp').is_file():
         missing.append(layout.runtime / 'nvn2_lower.cpp')
     if layout.deps:
@@ -453,7 +453,7 @@ def preflight(layout, options, dest, temp, rep):
     if missing:
         raise InstallError('dkb.tools_missing', paths='; '.join(map(str, missing)))
     identity = translator_identity(layout)
-    candidates = [options.translator] if options.translator else [layout.xlate, dest / ('totk_xlate' + EXE)]
+    candidates = [options.translator] if options.translator else [layout.xlate, dest / ('dkb_xlate' + EXE)]
     translator = None
     for candidate in candidates:
         if candidate.is_file() and candidate.with_suffix('.id').is_file():
@@ -788,7 +788,7 @@ class Translator(Step):
         return digest(ctx.info['identity'], sha256(ctx.info['translator']) if ctx.info['translator'] else 'build')
 
     def current(self, ctx, record):
-        exe = ctx.dest / ('totk_xlate' + EXE)
+        exe = ctx.dest / ('dkb_xlate' + EXE)
         return (exe.is_file() and sha256(exe) == record.get('sha256') and exe.with_suffix('.id').is_file() and
                 exe.with_suffix('.id').read_text(encoding='ascii').strip() == ctx.info['identity'])
 
@@ -820,10 +820,10 @@ class Translator(Step):
             finally:
                 if nuget.parent != ctx.temp:
                     shutil.rmtree(nuget, ignore_errors=True)
-            source = out / ('totk_xlate' + EXE)
+            source = out / ('dkb_xlate' + EXE)
         if source.with_suffix('.id').read_text(encoding='ascii').strip() != ctx.info['identity']:
             raise InstallError('dkb.translator_mismatch')
-        target = ctx.dest / ('totk_xlate' + EXE)
+        target = ctx.dest / ('dkb_xlate' + EXE)
         copy_file(source, target)
         copy_file(source.with_suffix('.id'), target.with_suffix('.id'))
         return {'sha256': sha256(target)}

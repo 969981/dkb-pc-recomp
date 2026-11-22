@@ -8,7 +8,7 @@ Writes evidence.txt and evidence.json into the bundle and prints evidence.txt. S
 Frame times: measure=flight runs read flight/*/frames.tsv, one row per present (interval_ms, and the render thread's
 blocked time per kind). Dumps overlap at their edges; a frame number seen twice keeps its first row. Frames after the
 last dump are not in any dump (no dump fires at exit), so the coverage line compares the row count with the game's
-own frame count from logs/dkb.log (logs/totk.log for a TotK build).
+own frame count from logs/dkb.log.
 
 measure=summary runs have no flight rows; their frame statistics come from the game's frametime lines in the log
 (always on, one per 60 s and one at exit: mean, 1% low, counts over 25/50/100 ms, the five worst frames). Those are
@@ -245,20 +245,10 @@ DIAGNOSTIC_SWITCHES = ('FLIGHT', 'TRACE', 'PROFILE', 'PROFILE_SLOW', 'PROFILE_RE
 OFF_VALUES = ('', '0', 'off', 'false', 'no')
 
 
-def effective_settings(settings):
-    """The run's own settings as the game sees them: a DKB_X variable wins over TOTK_X (runtime/cfg.c dkb_alias), so
-    map every DKB_X to TOTK_X before looking for a switch."""
-    out = {k: v for k, v in settings.items() if not k.startswith('DKB_')}
-    for k, v in settings.items():
-        if k.startswith('DKB_'):
-            out['TOTK_' + k[4:]] = v
-    return out
-
-
 def ini_diagnostics(text):
-    """The diagnostic switches a copied dkb.ini or totk.ini would turn on, as runtime/cfg.c reads it: "key = value"
+    """The diagnostic switches a copied dkb.ini would turn on, as runtime/cfg.c reads it: "key = value"
     lines, a line starting with '#' or ';' is a comment and '[...]' only groups, the key is the variable name in capitals
-    with an optional TOTK_ prefix (a DKB_ prefix is not accepted by the file), the value is the rest of the line,
+    with an optional DKB_ prefix, the value is the rest of the line,
     trimmed, optionally in double quotes. An empty value leaves an earlier line standing; otherwise the later line wins."""
     values = {}
     for line in (text or '').splitlines():
@@ -267,8 +257,8 @@ def ini_diagnostics(text):
             continue
         key, value = (part.strip() for part in line.split('=', 1))
         key = key.upper()
-        if key.startswith('TOTK_'):
-            key = key[len('TOTK_'):]
+        if key.startswith('DKB_'):
+            key = key[len('DKB_'):]
         if len(value) >= 2 and value[0] == value[-1] == '"':
             value = value[1:-1]
         if value:
@@ -278,13 +268,13 @@ def ini_diagnostics(text):
 
 def build(bundle, warm_after):
     run = json.loads((bundle / 'run.json').read_text(encoding='utf-8-sig'))
-    settings = effective_settings(run.get('settings', {}))
+    settings = run.get('settings', {})
     measure = run.get('measure', 'flight')
     frames, dumps, skipped = read_flight(bundle) if measure == 'flight' else ({}, [], 0)
     # The game writes its log lines to stderr (runtime/main.c log_open puts the log beside the stderr file only when a
     # log file is opened); the stderr file is the complete record, so it is the fallback.
-    log_path = next((p for p in (bundle / 'bin' / 'logs' / 'dkb.log', bundle / 'bin' / 'logs' / 'totk.log',
-                                  bundle / 'logs' / 'dkb.log', bundle / 'logs' / 'totk.log', bundle / 'stderr.txt')
+    log_path = next((p for p in (bundle / 'bin' / 'logs' / 'dkb.log',
+                                  bundle / 'logs' / 'dkb.log', bundle / 'stderr.txt')
                      if p.exists()), bundle / 'stderr.txt')
     log = parse_log(log_path)
     res_log_source = str(log_path.relative_to(bundle))
@@ -318,7 +308,7 @@ def build(bundle, warm_after):
         v.append(verdict('run', 'NOT-MEASURED', f"run status is {run.get('status')!r} (stop: {run.get('stop')}); thresholds below use what exists"))
     v.append(verdict('10 first- and repeat-visit coverage checked separately', 'NOT-MEASURED',
                      f"visit={run.get('visit')}: this bundle is one visit; coverage of content is not computed by this tool"))
-    want = settings.get('TOTK_WINDOW_SIZE', '')
+    want = settings.get('DKB_WINDOW_SIZE', '')
     if log['size_line']:
         got = log['size_line'][1]
         v.append(verdict('11 fixed 1080p', 'PASS' if got == want == '1920x1080' else 'FAIL',
@@ -373,19 +363,19 @@ def build(bundle, warm_after):
     else:
         v.append(verdict('12 no multi-second compile freeze entering content', 'NOT-MEASURED', 'no frame records'))
 
-    on = [k for k in ('TOTK_FLIGHT', 'TOTK_TRACE', 'TOTK_PROFILE', 'TOTK_PROFILE_SLOW', 'TOTK_PROFILE_RENDER',
-                      'TOTK_PROFILE_CHAINS', 'TOTK_VK_VALIDATION') if settings.get(k) not in (None, '', '0')]
-    # The run's environment is cleared of TOTK_/DKB_ variables, but the settings file copied next to the exe is still
+    on = [k for k in ('DKB_FLIGHT', 'DKB_TRACE', 'DKB_PROFILE', 'DKB_PROFILE_SLOW', 'DKB_PROFILE_RENDER',
+                      'DKB_PROFILE_CHAINS', 'DKB_VK_VALIDATION') if settings.get(k) not in (None, '', '0')]
+    # The run's environment is cleared of DKB_ variables, but the settings file copied next to the exe is still
     # read by the game: a switch it turns on counts unless the run's own settings override it.
     ini = run.get('settings_ini') or {}
     for key in ini_diagnostics(ini.get('text', '') if ini.get('present') else ''):
-        if f'TOTK_{key}' not in settings:
+        if f'DKB_{key}' not in settings:
             on.append(f'{key} (in the copied settings file)')
     v.append(verdict('14 controlled settings, detailed diagnostic logging off',
                      'FAIL' if on else 'PASS',
                      (f"diagnostics on: {', '.join(on)} (cfg.c files these under 'diagnostics'); an acceptance-style run "
                       f"uses -Measure summary and no profiler" if on else
-                      'diagnostics off: TOTK_TRACE, TOTK_PROFILE, validation, telemetry and overlay unset; frametime summaries only')))
+                      'diagnostics off: DKB_TRACE, DKB_PROFILE, validation, telemetry and overlay unset; frametime summaries only')))
     res['verdicts'] = v
     return res
 
@@ -400,7 +390,7 @@ def render(res):
     add(f"machine: {m.get('cpu')}; {m.get('ram_gb')} GB; gpu {m.get('gpu')}; power plan {m.get('power_plan')}; "
         f"line at start {m.get('power_line_at_start')}")
     add(f"exe sha256 {res['exe_sha256']}")
-    add('settings: ' + ' '.join(f'{k}={v}' for k, v in res['settings'].items() if not k.endswith('DIR') and k != 'TOTK_FLIGHT_AT'))
+    add('settings: ' + ' '.join(f'{k}={v}' for k, v in res['settings'].items() if not k.endswith('DIR') and k != 'DKB_FLIGHT_AT'))
     add(f"warmed = frames at least {res['warm_after_s']} s after the first present")
     for label, s in (('whole run', res['frames_flight']), (f"warmed (>= {res['warm_after_s']} s)", res['frames_flight_warm'])):
         if not s:
@@ -414,7 +404,7 @@ def render(res):
             f"longest {s['longest_ms']} ms at frame {s['longest_frame']} (t {s['longest_t_s']} s)")
     if res['frames_flight'] is None:
         add('FRAMES: ' + ('summary mode: no per-frame rows, see the frametime lines below' if res['measure'] == 'summary'
-                          else 'no flight rows were read (check flight/ and the TOTK_FLIGHT settings)'))
+                          else 'no flight rows were read (check flight/ and the DKB_FLIGHT settings)'))
     add(f"COVERAGE flight rows / game frames: {res['coverage_flight_rows_over_game_frames']} "
         f"({len(res['flight_dumps'])} dumps, {res['flight_rows_skipped']} malformed rows skipped; game frames from its "
         f"frametime lines: {res['frames_in_game_log']})")

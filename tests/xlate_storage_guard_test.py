@@ -6,7 +6,7 @@ repository. If the translator, the packets or spirv-val are missing, the whole c
 names what is missing. With all of them present, both tests run.
 
 Environment:
-  XLATE_TRANSLATOR  translator under test (default: build/xlate/totk_xlate.exe)
+  XLATE_TRANSLATOR  translator under test (default: build/xlate/dkb_xlate.exe)
   XLATE_PACKETS     folder that holds run-63399/ and run-d0762/ (default: build/packets)
   SPIRV_VAL         spirv-val executable (default: spirv-val on PATH)
 
@@ -29,7 +29,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKET_ROOT = pathlib.Path(os.environ.get("XLATE_PACKETS", ROOT / "build" / "packets"))
-TRANSLATOR = pathlib.Path(os.environ.get("XLATE_TRANSLATOR", ROOT / "build" / "xlate" / "totk_xlate.exe"))
+TRANSLATOR = pathlib.Path(os.environ.get("XLATE_TRANSLATOR", ROOT / "build" / "xlate" / "dkb_xlate.exe"))
 SPIRV_VAL = os.environ.get("SPIRV_VAL", "spirv-val")
 REPLAY = ROOT / "tools" / "replay_shader_failure.py"
 

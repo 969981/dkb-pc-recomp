@@ -17,7 +17,7 @@
 
 // ---- logging and results
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));   // "[host] <msg>\n" to the log, one write
-// The log is stderr plus, in a game run whose stderr is not a file, logs\totk.log next to totk.exe (main.c log_open).
+// The log is stderr plus, in a game run whose stderr is not a file, logs\dkb.log next to dkb.exe (main.c log_open).
 // rt_logf and rt_log_raw write to both without the prefix and the newline: crash reports, fatal errors, guest output.
 void rt_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void rt_vlogf(const char *fmt, va_list ap);
@@ -25,8 +25,8 @@ void rt_log_raw(const char *p, size_t n);
 const char *rt_log_path(void);                  // the log file, NULL when this run writes none
 enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
        RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256, RT_TRACE_CODEC = 512 };
-extern unsigned rt_trace;                       // from TOTK_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present,codec (or all)
-// prof_win.c: TOTK_PROFILE=<path> sampling profiler; TOTK_TRACE=perf frame timing (waits of the render thread)
+extern unsigned rt_trace;                       // from DKB_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present,codec (or all)
+// prof_win.c: DKB_PROFILE=<path> sampling profiler; DKB_TRACE=perf frame timing (waits of the render thread)
 // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
 enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_ASTC, PERF_N };
 void prof_start(void);
@@ -34,7 +34,7 @@ void prof_write(void);                          // idempotent; boot.c calls it b
 uint64_t perf_begin(void);                      // start time of a wait; pair with perf_end
 void perf_end(int kind, uint64_t t0);           // counts render-thread time only
 void perf_replay(uint64_t t0);                  // replay (NVN -> Vulkan recording) time on any thread, waits inside it included
-// TOTK_TRACE=perf: the replay of a slow frame by part (perf.c, "replay by part"). submit_record (vk_sync.c) brackets its
+// DKB_TRACE=perf: the replay of a slow frame by part (perf.c, "replay by part"). submit_record (vk_sync.c) brackets its
 // recording with perf_ph_replay_begin/end; inside, each part named here is timed on the recording thread, every
 // perf_begin/perf_end pair among them (the PERF_ kinds above keep their numbers), and each part's time is its own, the
 // named parts inside it taken out. The rest of the replay is printed as such. perf_ph_begin returns 0 on a thread that is
@@ -55,10 +55,10 @@ void perf_ph_end(int part, uint64_t t0);
 // with the parts inside it, for the same line.
 void perf_ph_unsliced(uint64_t ns, uint32_t draws);
 // Running totals after a replay: draws and dispatches recorded, descriptor pools taken and created (the per-draw cost
-// and pool line of TOTK_TRACE=perf).
+// and pool line of DKB_TRACE=perf).
 void perf_replay_totals(uint64_t draws, uint64_t pools_taken, uint64_t pools_created);
 void perf_replay_thread(void);                  // the calling thread replays for the render thread: perf_end counts its waits
-void perf_main_thread(void);                    // the calling thread is the guest main thread (TOTK_PROFILE_MAIN)
+void perf_main_thread(void);                    // the calling thread is the guest main thread (DKB_PROFILE_MAIN)
 // Events per 60-frame window: graphics pipelines finished by the background workers, draws skipped while pending,
 // first texture uploads and re-uploads after CPU writes, draws skipped while a shader translates in the background,
 // draws that waited for their pending pipeline and got it, draws into a target the previous frame did not render that
@@ -70,7 +70,7 @@ enum { PERF_CNT_PIPE_ASYNC, PERF_CNT_PIPE_SKIP, PERF_CNT_TEX_UP, PERF_CNT_TEX_RE
        PERF_CNT_PIPE_WAIT, PERF_CNT_ONESHOT_WAIT, PERF_CNT_PIPE_BUILT, PERF_CNT_TEX_NEW, PERF_CNT_TEX_ALIAS,
        PERF_CNT_WB, PERF_CNT_WB_SKIP, PERF_CNT_N };
 void perf_count(int kind);
-// TOTK_TRACE=perf: a contended acquire of one of the replay's shared locks waited ns (callers time only after a failed
+// DKB_TRACE=perf: a contended acquire of one of the replay's shared locks waited ns (callers time only after a failed
 // try). The perf line counts the waits over 100 us per lock and the longest: slices of parallel passes stalled for
 // milliseconds now and then, and a lock held by another thread is one cause.
 enum { PERF_LOCK_TEXTURE, PERF_LOCK_POOL, PERF_LOCK_MIRROR, PERF_LOCK_GEN, PERF_LOCK_N };
@@ -90,9 +90,9 @@ typedef struct {
 } PerfGpu;
 extern void (*perf_gpu_stats)(PerfGpu *out);
 // The performance overlay (perfmon.c): mode 0 off, 1 fps, 2 full. While it is on, perf_present hands every frame to
-// perfmon_frame; full also takes the event counts (perf_count) and the GPU timestamps as TOTK_TRACE=perf does.
+// perfmon_frame; full also takes the event counts (perf_count) and the GPU timestamps as DKB_TRACE=perf does.
 void perf_set_overlay(int mode);
-int perf_gpu_timing(void);                      // GPU timestamps wanted: TOTK_TRACE=perf or the full overlay
+int perf_gpu_timing(void);                      // GPU timestamps wanted: DKB_TRACE=perf or the full overlay
 void perf_gpu_busy(uint64_t ns);                // GPU busy time of a timed submission part (vk_sync.c, any thread)
 void perf_present_gpu(uint64_t ns);             // GPU time of one present submission (vk_present.c), for the perf line
 uint64_t perf_gpu_busy_total(void);             // its running total (the overlay's GPU time per frame)
@@ -127,15 +127,15 @@ typedef struct { const char *name; GuestFn fn; } RtHostEntry;
 #define RT_CAT(a, b) RT_CAT2(a, b)
 // File-scope declarations; fn must be declared before. The loader binds them by symbol name. The entries of every
 // object file meet in one section per kind, which hostfn.c walks: on PE/COFF ".ovr$m", which the linker sorts between
-// hostfn.c's ".ovr$a" and ".ovr$z" markers; on ELF "totk_ovr", which the linker brackets with __start_totk_ovr and
-// __stop_totk_ovr; on Mach-O "__DATA,__totk_ovr", which ld64 brackets with section$start$__DATA$__totk_ovr and
-// section$end$__DATA$__totk_ovr.
+// hostfn.c's ".ovr$a" and ".ovr$z" markers; on ELF "dkb_ovr", which the linker brackets with __start_dkb_ovr and
+// __stop_dkb_ovr; on Mach-O "__DATA,__dkb_ovr", which ld64 brackets with section$start$__DATA$__dkb_ovr and
+// section$end$__DATA$__dkb_ovr.
 #ifdef _WIN32
 #define RT_HOST_SECTION(kind) section("." #kind "$m")
 #elif defined(__APPLE__)
-#define RT_HOST_SECTION(kind) section("__DATA,__totk_" #kind)
+#define RT_HOST_SECTION(kind) section("__DATA,__dkb_" #kind)
 #else
-#define RT_HOST_SECTION(kind) section("totk_" #kind)
+#define RT_HOST_SECTION(kind) section("dkb_" #kind)
 #endif
 #define HOST_OVERRIDE(sym, fn) /* replaces sym in every GOT/GLOB_DAT/ABS64 of every module */                  \
     __attribute__((used, RT_HOST_SECTION(ovr))) static const RtHostEntry RT_CAT(rt_ovr_, __COUNTER__) = {sym, fn}
@@ -169,7 +169,7 @@ typedef struct { uint64_t base, size; } RtRange;
 typedef struct { RtRange aslr, stack, heap, alias, kernel, hostfn; uint64_t pool; } RtGuestLayout;
 typedef struct { uint64_t base, size; uint32_t state, attr, perm, ipc, device, pad; } RtMemoryInfo;   // Horizon layout
 void mem_init(void);                                       // reserve every region; on a collision re-run the process
-                                                           // (up to 20 times, TOTK_REEXEC), then fatal
+                                                           // (up to 20 times, DKB_REEXEC), then fatal
 const RtGuestLayout *mem_layout(void);
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr);                      // 0x01
 uint32_t mem_set_permission(uint64_t a, uint64_t n, uint32_t perm);             // 0x02
@@ -209,10 +209,10 @@ int mem_guest_readable(uint64_t a, uint64_t n);            // 1 a read of [a, a+
                                                            // not, -1 not guest heap or alias memory; from memory.c's
                                                            // own map, no system call
 void mem_touch_stats(uint64_t out[4]);                     // mem_touch totals: calls, 64 KiB chunks the commit map
-                                                           // answered, chunks queried, map errors (TOTK_TOUCH_MAP=verify)
-void mem_touch(uint64_t a, uint64_t n);                    // commits the lazy guest heap (TOTK_HEAP_LAZY) over [a, a+n)
+                                                           // answered, chunks queried, map errors (DKB_TOUCH_MAP=verify)
+void mem_touch(uint64_t a, uint64_t n);                    // commits the lazy guest heap (DKB_HEAP_LAZY) over [a, a+n)
                                                            // before a kernel or driver access; no-op otherwise
-// Read probe (memory.c, TOTK_STAGED_READ_PROBE, Windows only): mem_probe_on reads the switch once; mem_probe_protect
+// Read probe (memory.c, DKB_STAGED_READ_PROBE, Windows only): mem_probe_on reads the switch once; mem_probe_protect
 // makes the pages of a range PAGE_NOACCESS until their first access, which is counted; mem_probe_release lifts it
 // uncounted; mem_probe_copy copies guest memory without lifting it; mem_probe_log logs the counts (final: the totals).
 int mem_probe_on(void);
@@ -221,7 +221,7 @@ void mem_probe_release(uint64_t a, uint64_t n);
 void mem_probe_copy(void *dst, uint64_t src, uint64_t n);
 void mem_probe_log(uint64_t frame, int final);
 extern volatile uint64_t mem_probe_frame;                  // the present being made (vk_mem_census)
-// GPU-owned pages (memory.c, vk_memory.c staged mirror with TOTK_STAGED_WB=fault, Windows only): mem_guard_own makes a
+// GPU-owned pages (memory.c, vk_memory.c staged mirror with DKB_STAGED_WB=fault, Windows only): mem_guard_own makes a
 // page PAGE_NOACCESS (1 when it changed the protection); its first access, or a kernel-path release (mem_thaw,
 // mem_touch, plat_mem_read), calls the hook with the page read-write and claimed, and the hook fetches the GPU's bytes
 // and calls mem_guard_clear. mem_guard_tryclaim claims another owned page the same way (0: not owned or busy).
@@ -239,9 +239,9 @@ void mem_thaw_keep(uint64_t a, uint64_t n);
 void mem_touch_keep(uint64_t a, uint64_t n);               // mem_touch without settling guarded pages
 void mem_commit_later(uint64_t a, uint64_t n);             // mem_touch_keep over [a, a+n) on a thread of its own, about
                                                            // 2 s later (a staged pool, never imported); no-op without
-                                                           // TOTK_HEAP_LAZY
+                                                           // DKB_HEAP_LAZY
 void mem_commit_later_stats(uint64_t out[4]);              // since the last call: ranges, bytes, ns, ranges dropped
-void mem_commit_report(const char *when);                  // logs where the process's commit goes (TOTK_MEM_REPORT)
+void mem_commit_report(const char *when);                  // logs where the process's commit goes (DKB_MEM_REPORT)
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws);
                                                            // regions frozen now; freezes and thaws since the last call
 #define MEM_FRZ_NO_N 4
@@ -302,26 +302,26 @@ void kern_run_on_guest_main(void (*fn)(Cpu *c));           // start the guest ma
 int kern_core_away(void);                                  // give the virtual core up around a blocking host wait
 void kern_core_back(int *away);
 void kern_checkpoint(void);                                // preemption point, at every SVC and indirect call
-// TOTK_SCHED_HANDOFF (kernel.c, "directed core hand-off"): rt_svc calls kern_svc_return after each SVC while it is
+// DKB_SCHED_HANDOFF (kernel.c, "directed core hand-off"): rt_svc calls kern_svc_return after each SVC while it is
 // nonzero. Off unless set; with "ab" the present switches it with the A/B blocks.
 extern int kern_sched_handoff;
 void kern_svc_return(void);
 // A preempt request is pending for the thread (Cpu.thread): its RtThread starts with the flag (kernel.c).
 static inline int kern_preempt_pending(const void *thread) { return __atomic_load_n((const int *)thread, __ATOMIC_RELAXED); }
-// Set once before guest threads start (TOTK_CORE_DIAG, TOTK_ASYNC_PREEMPT): host calls (hostfn.c) and SVCs (svc.c) count their depth in
+// Set once before guest threads start (DKB_CORE_DIAG, DKB_ASYNC_PREEMPT): host calls (hostfn.c) and SVCs (svc.c) count their depth in
 // the thread's second int, so the kernel knows whether a core owner runs game code at the top level.
 extern int kern_host_track;
 static inline int *kern_host_depth(void *thread) { return (int *)thread + 1; }
 void kern_host_left(void *thread);                         // back at depth 0 with a preempt request pending
-int kern_core_diag_on(void);                               // TOTK_CORE_DIAG
+int kern_core_diag_on(void);                               // DKB_CORE_DIAG
 void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns);   // perf_present, every present (also logs the
                                                            // asynchronous preemption counters)
 // perf_present, every present: closes the frame's core wait counters (kernel.c); log bit 0 logs this frame, bit 1 the
 // window since the previous bit-1 call.
 void kern_core_waits_frame(uint64_t frame, uint64_t interval_ns, int log);
-void kern_core_waits_exit(void);                           // the run's core wait counters (TOTK_TRACE=perf, at exit)
+void kern_core_waits_exit(void);                           // the run's core wait counters (DKB_TRACE=perf, at exit)
 void kern_ap_exit(void);                                   // asynchronous preemption counters at exit
-void kern_sched_report(uint64_t frame);                    // TOTK_TRACE=sched: per-thread time split, on present
+void kern_sched_report(uint64_t frame);                    // DKB_TRACE=sched: per-thread time split, on present
 uint32_t kern_handle_new(int kind, void *obj);             // kind: KERN_SESSION or KERN_TMEM (ipc.c)
 void *kern_handle_get(uint32_t h, int kind);
 struct IpcSession;
@@ -355,7 +355,7 @@ void account_uid(uint64_t out[2]);                         // the local user's n
 // ---- movies (ov_movie.c)
 void movie_tick(Cpu *c);                                   // at every present, on the presenting guest thread: hands
                                                            // decoded movie frames over when due, signals their events
-// ---- game resolution (resolution.c): TOTK_OUTPUT_RES, TOTK_RENDER_SCALE
+// ---- game resolution (resolution.c): DKB_OUTPUT_RES, DKB_RENDER_SCALE
 uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
 uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   // the HeapDef table (.byml.zs) with
@@ -369,7 +369,7 @@ uint64_t dkb_wide_heap_extra_kib(void);                    // Bananza: what the 
 int dkb_native_aa(void);                                   // Bananza: the game's upscale step runs at full size now
 int dkb_native_aa_issued_by(uint64_t caller);              // ... and a dispatch issued at that guest address is it
 void dkb_native_aa_live(void);                             // re-read the Upscaler setting (frame_step_present)
-// The 3D scene ratio TOTK_DLSS_MODE names (dlaa 1.0, quality 1.5, balanced 1.724, performance 2.0, ultra_performance
+// The 3D scene ratio DKB_DLSS_MODE names (dlaa 1.0, quality 1.5, balanced 1.724, performance 2.0, ultra_performance
 // 3.0); 0 for auto or a word that is none of them.
 float dkb_dlss_mode_ratio(const char *mode);
 int dkb_ui_overlay(void);                                  // wider than 16:9, or taller with Vert+
@@ -383,8 +383,8 @@ void res_note_upscaler(unsigned in_w, unsigned in_h, unsigned out_w, unsigned ou
                                                            // game's upscaler (vk_exec_draw.c op_dispatch)
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
-void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
-void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
+void res_wanted(unsigned out[2]);                          // the output size DKB_OUTPUT_RES asks for
+void res_fov_live(void);                                   // DKB_FOV to the camera (set fov); on a settings change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
                                                            // page committed; logs the sets
@@ -402,12 +402,12 @@ int frame_step_realtime(void);                             // the real-time step
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns
 double frame_step_limit_hz(void);                         // the frame rate the limit gives (overlay); 0 unknown
 int64_t frame_step_world_us(void);                         // game time since the loaded save's first frame, -1 before
-                                                           // (TOTK_FPS_LIMIT, live)
+                                                           // (DKB_FPS_LIMIT, live)
 uint64_t frame_step_ticks(void);                           // game time since the first present in 60 Hz ticks (input scripts)
-// In-launch A/B measurement: TOTK_AB=<seconds> splits the world clock (frame_step_world_us) into blocks of that much
+// In-launch A/B measurement: DKB_AB=<seconds> splits the world clock (frame_step_world_us) into blocks of that much
 // game time in the order A B B A (repeated); rt_ab() is 1 in the B blocks, 0 in A blocks, before the world clock and
-// without TOTK_AB. rt_knob(name, def) reads the switch
-// TOTK_<name> once per call (def when unset): 0 off, 2 for "ab" (on in the B blocks only), 1 for anything else;
+// without DKB_AB. rt_knob(name, def) reads the switch
+// DKB_<name> once per call (def when unset): 0 off, 2 for "ab" (on in the B blocks only), 1 for anything else;
 // callers keep it and test it with RT_KNOB_ON. The perf line counts the B frames of its window (tools/ab_summary.py
 // compares the windows that are wholly A or wholly B).
 int rt_ab(void);
@@ -419,13 +419,13 @@ void frame_step_present(uint64_t display_ns, int interval); // nvnQueuePresentTe
 typedef struct { const char *exefs, *romfs, *profile; int boot; double seconds; const char *shot, *gpu; } RtConfig;
                                                            // romfs: directory with romfs.bin and index.json;
                                                            // frames: --frames N (0 = no limit); shot: --shot
-                                                           // PATH; gpu: TOTK_GPU
+                                                           // PATH; gpu: DKB_GPU
 const RtConfig *rt_config(void);
 // 8-bit RGBA PNG with stored deflate blocks (boot.c); stops with rt_fatal when the file cannot be written.
 void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
 void rt_boot_event(const char *what, Cpu *c, const char *detail);   // checkpoint log; "nvn" ends --boot
 void rt_boot(void);                                        // boot.c
-// Modes of totk.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the
+// Modes of dkb.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the
 // modules, registers its host functions, then seals (hostfn_seal, or implicitly at the first rt_call). Return the
 // process exit code.
 int probe_cfg(void);                                       // cfg_probe.c

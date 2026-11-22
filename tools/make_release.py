@@ -6,7 +6,7 @@
 For Donkey Kong Bananza add --game dkb (needs generated/dkb100 and build/xlate): --out defaults to build/release/DKB-Setup and a
 bare --zip writes DKB-Setup-<version>-windows.zip beside it, and with it DKB-Launcher.exe and dkb-release.txt, the
 manifest the launcher updates from (write_launcher_release). The folder carries every runtime source instead of
-libtotkrt.a, has no hactool, and --prove does not apply. The TotK description below is otherwise the same.
+libdkbrt.a, has no hactool, and --prove does not apply. The TotK description below is otherwise the same.
 
 Needs Python 3.14 (tarfile reads the MSYS2 .zst packages), uv on PATH and network access on the first run. Downloads are
 cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismatch stops the build. The folder holds:
@@ -14,16 +14,16 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     python/    python.org embeddable 3.14.9 + the packages of tools/requirements-installer.txt + tkinter (the Tcl/Tk 9.0
                files come out of the python.org installer's own component MSI, unpacked with msiexec /a and expand.exe;
                the installer is never run)
-    llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link totk.exe
-    runtime/   libtotkrt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
+    llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link dkb.exe
+    runtime/   libdkbrt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
                ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
-    bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
-    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, LICENSE, LICENSE-MIT, totk.ini.example
+    bin/       dkb_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
+    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, LICENSE, LICENSE-MIT, dkb.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
     TotK-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
                     with its own arguments (for Bananza it is also the launcher, docs/installer.md)
 
---prove compiles the generated C and links build/release-check/totk.exe with nothing but the folder's python/, llvm/,
+--prove compiles the generated C and links build/release-check/dkb.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there.
 
 Both need one game version extracted and lifted first (tools/extract.py, recomp/gen.py): generated/v121 or, without
@@ -98,7 +98,7 @@ PINS = {
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
 SDL3_DLL_SHA256 = '2b4b128d8d510cc2d442693cf848c050d700d43dc667afe9e5fd82b0570d667e'   # SDL3.dll inside the SDL zip
 
-# llvm-mingw: what clang and lld need to compile and link totk.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
+# llvm-mingw: what clang and lld need to compile and link dkb.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
 LLVM_BIN = {'clang.exe', 'clang++.exe', 'clang-23.exe', 'ld.lld.exe', 'llvm-ar.exe', 'llvm-ranlib.exe', 'llvm-nm.exe',
             'llvm-objdump.exe', 'llvm-objcopy.exe', 'llvm-strip.exe', 'llvm-readobj.exe', 'llvm-dlltool.exe',
             'llvm-rc.exe', 'llvm-cvtres.exe', 'llvm-windres.exe', 'llvm-wrapper.exe', 'mingw32-common.cfg',
@@ -116,7 +116,7 @@ TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 
 # --game dkb: Bananza builds the whole runtime from source at install time (installer/bananza.py, build_game.py
-# --full-build), so the folder carries every runtime source and the translator's inputs instead of libtotkrt.a.
+# --full-build), so the folder carries every runtime source and the translator's inputs instead of libdkbrt.a.
 GAME = 'totk'
 GAMES = {'totk': dict(lifted=('v121', 'v143'), name='TotK-Setup'), 'dkb': dict(lifted=('dkb100',), name='DKB-Setup')}
 DKB_TOOLS_FILES = ['build_xlate.py', 'dkb_pack_romfs.py', 'dkb_shader_census.py', 'dkb_wide_layout.py',
@@ -311,7 +311,7 @@ def build_llvm(out):
 def build_bin(out):
     b = out / 'bin'
     b.mkdir(parents=True, exist_ok=True)
-    for f in ('totk_xlate.exe', 'totk_xlate.id'):
+    for f in ('dkb_xlate.exe', 'dkb_xlate.id'):
         src = MAIN_ROOT / 'build' / 'xlate' / f
         if not src.is_file():
             sys.exit(f'{src}: missing; build the shader translator with: .venv\\Scripts\\python tools\\build_xlate.py')
@@ -384,7 +384,7 @@ def lifted_version():
 
 
 def runtime_lib(out, llvm):
-    """Build libtotkrt.a with the folder's llvm/ and copy it, the headers and the install-side sources into runtime/."""
+    """Build libdkbrt.a with the folder's llvm/ and copy it, the headers and the install-side sources into runtime/."""
     if GAME == 'dkb':   # no prebuilt library: the installer compiles the full runtime sources
         copy_tree(ROOT / 'runtime', out / 'runtime', lambda r: '__pycache__' in r)
         # build_game.runtime_sources() keeps only these files, so a release unpacked over an older one cannot
@@ -402,7 +402,7 @@ def runtime_lib(out, llvm):
          '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja.exe', '--gen', gen, '--out', build],
         env=clean_env(llvm / 'bin', out / 'bin'))
     rt = out / 'runtime'
-    shutil.copy2(build / 'libtotkrt.a', rt / 'libtotkrt.a')
+    shutil.copy2(build / 'libdkbrt.a', rt / 'libdkbrt.a')
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
@@ -427,7 +427,7 @@ def build_sources(out, *, setup_program=None):
         text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
         (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
     copy_tree(ROOT / 'installer', out / 'installer', lambda r: '__pycache__' in r or r.startswith('launcher/'))
-    shutil.copy2(ROOT / 'totk.ini.example', out / ('dkb.ini.example' if GAME == 'dkb' else 'totk.ini.example'))
+    shutil.copy2(ROOT / 'dkb.ini.example', out / 'dkb.ini.example')
     if GAME == 'dkb':
         profile = json.loads((ROOT / 'tools' / 'release' / 'recomplauncher.json').read_text(encoding='utf-8'))
         if setup_program:   # The bundled installers can both prepare and play. Source packages use play.sh.
@@ -640,7 +640,7 @@ def write_zip(out, path):
 
 
 def prove(out):
-    """Compile the generated C and link totk.exe with the folder's tools only, then run the probes next to it."""
+    """Compile the generated C and link dkb.exe with the folder's tools only, then run the probes next to it."""
     out = out.resolve()
     version = lifted_version()
     gen = MAIN_ROOT / 'generated' / version
@@ -649,7 +649,7 @@ def prove(out):
     env = clean_env(out / 'python', out / 'llvm' / 'bin', out / 'bin')
     t0 = time.time()
     run([out / 'python' / 'python.exe', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm',
-         '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime', '--runtime-lib', out / 'runtime' / 'libtotkrt.a',
+         '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime', '--runtime-lib', out / 'runtime' / 'libdkbrt.a',
          '--ninja', out / 'bin' / 'ninja.exe', '--version', version, '--gen', gen, '--out', chk, '--exefs', ext / 'exefs',
          '--romfs', ext / 'romfs', '--profile', chk / 'profile'], env=env)
     print(f'prove: build {time.time() - t0:.0f} s')
@@ -657,7 +657,7 @@ def prove(out):
         shutil.copy2(out / 'bin' / dll, chk / dll)
     failed = []
     for probe in PROBES:
-        r = subprocess.run([str(chk / 'totk.exe'), probe], cwd=chk, env=clean_env(chk), capture_output=True, text=True,
+        r = subprocess.run([str(chk / 'dkb.exe'), probe], cwd=chk, env=clean_env(chk), capture_output=True, text=True,
                            timeout=900)
         tail = (r.stdout.strip().splitlines() or [''])[-1]
         print(f'{probe}: exit {r.returncode}: {tail}')
@@ -687,7 +687,7 @@ def main():
         args.zip = out.parent / f'{GAMES[GAME]["name"]}-{version()}-windows.zip'
     if args.prove:
         if GAME == 'dkb':
-            sys.exit('--prove needs libtotkrt.a, which the dkb folder does not carry (it compiles the runtime at install)')
+            sys.exit('--prove needs libdkbrt.a, which the dkb folder does not carry (it compiles the runtime at install)')
         prove(out)
         return
     if out.exists():

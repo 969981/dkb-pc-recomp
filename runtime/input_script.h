@@ -1,4 +1,4 @@
-// Scripted input (TOTK_INPUT_SCRIPT, docs/controls.md "Scripted input"): the line parser and the scheduler, free of any
+// Scripted input (DKB_INPUT_SCRIPT, docs/controls.md "Scripted input"): the line parser and the scheduler, free of any
 // window system or game state so tests/input_script_test.c runs them alone. runtime/input.c reads the file, feeds the
 // clocks (frame_rate.c frame_step_ticks, frame_step_world_us), tests the wait conditions and logs.
 #pragma once

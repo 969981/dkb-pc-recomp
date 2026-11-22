@@ -3,25 +3,25 @@
 // Read-only game RomFS backed by the player's extracted image.
 //
 // Input: <romfs>/romfs.bin (rt_config()->romfs), whose six IVFC levels and SHA-256 tools/extract.py verified, and
-// romfs-index.bin next to totk.exe (TOTK_ROMFS_INDEX overrides), which tools/romfs_index.py wrote together with
+// romfs-index.bin next to dkb.exe (DKB_ROMFS_INDEX overrides), which tools/romfs_index.py wrote together with
 // romfs_config.h. fs_init checks the index's SHA-256 and layout and the image size. The full 17 GB hash runs only with
-// TOTK_ROMFS_VERIFY=full; a proof file (.romfs-verified-v1 next to the index, or in TOTK_ROMFS_PROOF_DIR) keyed by
-// the file's volume, file id, size and times skips it on later starts, TOTK_ROMFS_VERIFY=force ignores the proof.
+// DKB_ROMFS_VERIFY=full; a proof file (.romfs-verified-v1 next to the index, or in DKB_ROMFS_PROOF_DIR) keyed by
+// the file's volume, file id, size and times skips it on later starts, DKB_ROMFS_VERIFY=force ignores the proof.
 //
 // Reads are positional (platform.h plat_file_pread), so threads read the image in parallel without a file-pointer
-// lock. TOTK_ROMFS_MMAP=1 maps the image instead.
+// lock. DKB_ROMFS_MMAP=1 maps the image instead.
 //
 // Overlays: files listed in a directory's manifest.tsv are served in place of the originals. Each line names a RomFS
 // path, the overlay's size and SHA-256 and the original's SHA-256 ("-" adds a file the RomFS lacks; it is numbered
-// after the RomFS's own files, file_count + k in path order). The directories, in this order: TOTK_ROMFS_PATCHES and
-// TOTK_ROMFS_MODS; "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
+// after the RomFS's own files, file_count + k in path order). The directories, in this order: DKB_ROMFS_PATCHES and
+// DKB_ROMFS_MODS; "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
 // A folder without manifest.tsv is read as loose files (mods_scan.h): each file's path below the folder is its RomFS
-// path, a known one replaces the original and an unknown one is added; nothing is hashed. TOTK_ROMFS_MODS unset =
+// path, a known one replaces the original and an unknown one is added; nothing is hashed. DKB_ROMFS_MODS unset =
 // the "mods" folder next to the executable.
 // An overlay file is opened when the game opens it; its identity (volume, file id, size, last write) is kept from the
 // start check, and an open that finds another file there stops the game.
 //
-// Loose mode (TOTK_ROMFS_DIR, ini key romfs_dir, which the setup's "use the RomFS where it is" option writes): no
+// Loose mode (DKB_ROMFS_DIR, ini key romfs_dir, which the setup's "use the RomFS where it is" option writes): no
 // romfs.bin; each index row is the file <romfs_dir>/<path>, opened when the game opens it. The index still decides
 // what exists, so no folder is listed at start. A missing file, or one whose size differs from the index, stops the
 // game with its path.
@@ -57,7 +57,7 @@ static uint64_t file_count, strings_offset;
 static PlatFile *image;
 static const uint8_t *image_map;
 static char image_file[2048];
-static char loose_dir[2048];         // TOTK_ROMFS_DIR: the extracted RomFS folder read in place of romfs.bin; "" = image
+static char loose_dir[2048];         // DKB_ROMFS_DIR: the extracted RomFS folder read in place of romfs.bin; "" = image
 static char index_dir[2048];         // the directory of romfs-index.bin: the proof file's default place
 static char mount_name[32];
 static PlatMutex lock = PLAT_MUTEX_INIT;
@@ -149,9 +149,9 @@ static void sha_range(PlatFile *f, uint64_t offset, uint64_t size, char hex[65],
 typedef struct { char magic[16], sha256[65]; uint8_t pad[7]; Identity id; } RomfsProof;
 
 static void verify_image(const char *dir) {
-    const char *mode = cfg_get("TOTK_ROMFS_VERIFY");
+    const char *mode = cfg_get("DKB_ROMFS_VERIFY");
     if (!mode || (strcmp(mode, "full") && strcmp(mode, "force"))) return;
-    const char *pdir = cfg_get("TOTK_ROMFS_PROOF_DIR");
+    const char *pdir = cfg_get("DKB_ROMFS_PROOF_DIR");
     if (pdir && *pdir) dir = pdir;
     RomfsProof want = {0}, saved;
     memcpy(want.magic, "TOTKRFS-PROOF-1", 16);
@@ -498,10 +498,10 @@ static int font_overlay_load(const char *dir) {
 }
 
 static void ps_prompts_init(void) {
-    const char *want = cfg_value("TOTK_PAD_PROMPTS");
+    const char *want = cfg_value("DKB_PAD_PROMPTS");
     int always = !strcasecmp(want, "playstation");
     if (!always && strcasecmp(want, "auto")) return;
-    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
+    const char *layout = cfg_value("DKB_PAD_LAYOUT");
     int nintendo = input_pad_layout_pick(layout, 0) == PAD_LAYOUT_NINTENDO;   // auto: a Sony pad has no A on the right
     char spec[5], dir[2100], manifest[2200];
     input_map_face_spec_cfg(nintendo ? PAD_LAYOUT_NINTENDO : PAD_LAYOUT_XBOX, spec);
@@ -545,7 +545,7 @@ static void ps_prompts_init(void) {
 // (input_map_face_keys). Runs only when the PlayStation prompts did not load; ABXY loads nothing.
 static void keys_prompts_init(void) {
     if (ps_prompts_active) return;
-    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
+    const char *layout = cfg_value("DKB_PAD_LAYOUT");
     char spec[5], keys[5], dir[2100], manifest[2200];
     input_map_face_spec_cfg(input_pad_layout_pick(layout, 0), spec);
     input_map_face_keys(spec, !strcasecmp(layout, "nintendo"), keys);
@@ -570,7 +570,7 @@ static void keys_prompts_init(void) {
 }
 
 static void overlay_init(void) {
-    // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
+    // DKB_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
     // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there: the same overlay with
     // the UI laid out for that shape (make_romfs_patches.py --aspect), when the game version has the camera aspect patch
     // the layout goes with (res_wants_wide_overlay).
@@ -579,14 +579,14 @@ static void overlay_init(void) {
     // until restart even though the layout itself changes live. Each folder replaces romfs-patches as a whole and the
     // setup builds no wide folder with Xbox prompts, so a wide game resolution keeps the Switch prompts.
     char def[2100], xbox[2100];
-    const char *patches = cfg_get("TOTK_ROMFS_PATCHES");
+    const char *patches = cfg_get("DKB_ROMFS_PATCHES");
     int wide = 0;
     unsigned out[2];
     res_wanted(out);
     // Bananza's edge HUD is a complete overlay, selected at boot just like the
     // centered layout. Fall back to the centered overlay when it is not installed.
     if (!patches && !rt_game_version && dkb_wide_output(NULL) &&   // a taller display has no edge HUD
-        !strcmp(cfg_value("TOTK_HUD_POSITION"), "edges")) {
+        !strcmp(cfg_value("DKB_HUD_POSITION"), "edges")) {
         if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u-hud-edges/manifest.tsv", index_dir, out[0], out[1]) <
                 (int)sizeof def && plat_file_exists(def)) {
             def[strlen(def) - strlen("/manifest.tsv")] = 0;
@@ -609,7 +609,7 @@ static void overlay_init(void) {
     xbox_prompts_ready =
         snprintf(xbox, sizeof xbox, "%s/romfs-patches-xbox/manifest.tsv", index_dir) < (int)sizeof xbox &&
         plat_file_exists(xbox);
-    int want_xbox = !strcasecmp(cfg_value("TOTK_PAD_LAYOUT"), "xbox_prompts");
+    int want_xbox = !strcasecmp(cfg_value("DKB_PAD_LAYOUT"), "xbox_prompts");
     if (!patches && want_xbox && xbox_prompts_ready) {
         xbox[strlen(xbox) - strlen("/manifest.tsv")] = 0;
         xbox_prompts_active = overlay_load(xbox, 1);
@@ -618,7 +618,7 @@ static void overlay_init(void) {
     } else if (want_xbox) {
         rt_log("RomFS overlay: pad_layout = xbox_prompts, but %s; Switch prompts stay",
                wide      ? "the game resolution takes the wide UI layout"
-               : patches ? "TOTK_ROMFS_PATCHES is set"
+               : patches ? "DKB_ROMFS_PATCHES is set"
                          : "romfs-patches-xbox has no manifest.tsv (run the setup again)");
     }
     if (!patches && !xbox_prompts_active && snprintf(def, sizeof def, "%s/romfs-patches/manifest.tsv", index_dir) < (int)sizeof def &&
@@ -626,7 +626,7 @@ static void overlay_init(void) {
         def[strlen(def) - strlen("/manifest.tsv")] = 0;
         patches = def;
     }
-    const char *mods = cfg_get("TOTK_ROMFS_MODS");
+    const char *mods = cfg_get("DKB_ROMFS_MODS");
     char mods_def[PLAT_PATH_MAX + 8], *cut;
     if (!mods || !*mods) {   // unset: the mods folder next to the executable
         int len = plat_exe_path(mods_def, PLAT_PATH_MAX);
@@ -663,9 +663,9 @@ static void overlay_init(void) {
 }
 
 // ---- start
-// romfs-index.bin next to totk.exe, or TOTK_ROMFS_INDEX.
+// romfs-index.bin next to dkb.exe, or DKB_ROMFS_INDEX.
 static void index_path(char *out, size_t cap) {
-    const char *e = cfg_get("TOTK_ROMFS_INDEX");
+    const char *e = cfg_get("DKB_ROMFS_INDEX");
     if (e && *e) {
         need(snprintf(out, cap, "%s", e) < (int)cap, "index path");
         return;
@@ -686,7 +686,7 @@ static void load_index(void) {
     else strcpy(index_dir, ".");
     uint64_t sz = 0;
     index_bytes = plat_file_read(path, &sz);
-    if (!index_bytes) rt_fatal("RomFS index %s missing (tools/build_game.py writes it next to totk.exe)", path);
+    if (!index_bytes) rt_fatal("RomFS index %s missing (tools/build_game.py writes it next to dkb.exe)", path);
     need(sz >= 24 && sz < (128 << 20), "index size");
     index_size = (size_t)sz;
     uint8_t d[32];
@@ -722,7 +722,7 @@ static void init_once(void *param) {
 #else
     double t0 = now_s();
     load_index();
-    const char *ld = cfg_get("TOTK_ROMFS_DIR");
+    const char *ld = cfg_get("DKB_ROMFS_DIR");
     if (ld && *ld) {
         need(snprintf(loose_dir, sizeof loose_dir, "%s", ld) < (int)sizeof loose_dir, "romfs_dir path");
         snprintf(image_file, sizeof image_file, "%s", loose_dir);
@@ -739,7 +739,7 @@ static void init_once(void *param) {
     const char *dir = rt_config()->romfs;
     need(snprintf(image_file, sizeof image_file, "%s/romfs.bin", dir) < (int)sizeof image_file, "image path");
     image = open_read(image_file);
-    if (!image) rt_fatal("RomFS image %s missing; put romfs.bin into the romfs folder next to totk or set TOTK_ROMFS",
+    if (!image) rt_fatal("RomFS image %s missing; put romfs.bin into the romfs folder next to dkb or set DKB_ROMFS",
                          image_file);
     PlatFileId sz;
     need(plat_file_id(image, &sz), "image size");
@@ -748,7 +748,7 @@ static void init_once(void *param) {
                  (unsigned long long)sz.size, (unsigned long long)ROMFS_IMAGE_SIZE);
     rt_log("RomFS image %s: size ok (%llu bytes)", image_file, (unsigned long long)ROMFS_IMAGE_SIZE);
     verify_image(index_dir);
-    const char *mm = cfg_get("TOTK_ROMFS_MMAP");
+    const char *mm = cfg_get("DKB_ROMFS_MMAP");
     if (mm && strcmp(mm, "0")) {
         const void *v = plat_file_map(image);
         if (v) {

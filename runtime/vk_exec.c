@@ -70,7 +70,7 @@ static int par_mode = -1;                       // DKB_REPLAY_THREADS: 0 off, el
 static int par_threads(void);
 static void par_settle_all(VkExec *ex);    // every pass end par_defer held back goes to the queue
 static int par_settle_ready(VkExec *ex);   // the held pass ends whose slices are recorded go; 1 when none is held
-static uint64_t par_t_collect, par_t_own, par_t_wait, par_t_exec;   // ns on the submitting thread (TOTK_TRACE=perf)
+static uint64_t par_t_collect, par_t_own, par_t_wait, par_t_exec;   // ns on the submitting thread (DKB_TRACE=perf)
 static uint64_t par_wait_max, par_wait_long;   // the longest wait for the workers at a pass end, and waits over 200 us
 // Pass ends held back (par_defer): the held passes oldest first, as slice ranges with their captured pass end.
 #define PAR_DEFER_DEPTH 4
@@ -78,7 +78,7 @@ static uint64_t par_wait_max, par_wait_long;   // the longest wait for the worke
 static int par_defer_mode = -1;
 static struct { int s0, s1; ParTwins twin; uint64_t sig; uint32_t cap_lo, cap_hi, tag; } PDQ[PAR_DEFER_DEPTH];
 // The write-back tag of the walk's GPU writes (vk_mem_wb_tag): it moves past each held pass end, and once the part is
-// submitted, what is tagged up to the pass's own goes back (par_settle_front, TOTK_WB_EARLY). A slice tags its writes
+// submitted, what is tagged up to the pass's own goes back (par_settle_front, DKB_WB_EARLY). A slice tags its writes
 // with its pass's. It only grows, so a range the GPU writes again after its write-back carries a higher tag and is
 // noted again (vk_memory.c vk_mem_gpu_wrote); a submission's end takes every range, whatever its tag.
 static uint32_t wb_tag_walk;
@@ -116,7 +116,7 @@ static int pass_secondary;                      // the next vk_exec_pass_begin o
 static int pass_tried, pass_sliced;             // the open pass: par_start looked at it; it has secondary contents
 static int pass_why;                            // why par_start left the open pass alone (PAR_WHY_*), for the log
 static uint32_t pass_draws;                     // draws of the open pass, for par_hist
-static uint64_t pass_t0;                        // TOTK_TRACE=perf: when the open pass began (perf_ph_unsliced)
+static uint64_t pass_t0;                        // DKB_TRACE=perf: when the open pass began (perf_ph_unsliced)
 // Pass-invariant state of a sliced pass, captured once in par_start and indexed by PC.supd[i] (VK_EXEC_UPD_SNAPS).
 typedef struct {
     uint64_t fence, submitted_ticks;
@@ -181,7 +181,7 @@ static struct {
     int oq;                                      // an occlusion query spans the pass: the slices inherit it
     VkQueryControlFlags oq_flags;
     uint8_t dlss_done;                           // vk_dlss_scene_draw settled for this pass (captured or ineligible)
-    uint8_t inline_binds;                        // 1: par_bind_op handles binds inline (0 when TOTK_DRAW_PROFILE is on)
+    uint8_t inline_binds;                        // 1: par_bind_op handles binds inline (0 when DKB_DRAW_PROFILE is on)
 } PC;
 
 // A recording thread's secondary command buffers: its own pool (pools are used by one thread at a time) and the ones whose
@@ -266,7 +266,7 @@ static ParHist *par_find(uint64_t sig, int add) {
 }
 
 
-// ---- TOTK_TRACE=gfx frame counters
+// ---- DKB_TRACE=gfx frame counters
 
 VkExecFrame vk_exec_frame;
 static struct { const uint8_t *mem; uint32_t w, h, fmt, n; } fw[64];   // textures written this frame
@@ -382,7 +382,7 @@ static int view_format(const tex_t *t, const view_t *v, int blocks, VkFormat *ou
 }
 
 // ---- 3D BC render targets
-// A 3D BC texture has no block views (vk_texture.c create_tex, TOTK_BLOCK_VIEWS_3D): on RDNA2 cards such an image
+// A 3D BC texture has no block views (vk_texture.c create_tex, DKB_BLOCK_VIEWS_3D): on RDNA2 cards such an image
 // made BLOCK_TEXEL_VIEW_COMPATIBLE and 2D_ARRAY_COMPATIBLE took GPU writes past the end of its memory (issue #5). Draws
 // into it through an uncompressed view of its blocks (agl's BC4 encoder fills 32x32x32 and 64x64x64 volumes and their
 // levels at the logo) go to a stand-in: a 2D array of the blocks of one level in the view's format, one layer per
@@ -838,7 +838,7 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
-// Consecutive dispatches (TOTK_CS_BARRIER). Every dispatch gets a full barrier before it by default (0), as before.
+// Consecutive dispatches (DKB_CS_BARRIER). Every dispatch gets a full barrier before it by default (0), as before.
 // While terrain breaks, the game's compute work is long runs of one-wave dispatches (RGP on an RX 9070 XT: one
 // workgroup of 32 threads, about 22 us a wave, a compute pass of 3.7 ms), so with a barrier before each one compute
 // unit works at a time. Each full barrier also flushed and invalidated the colour, depth, L2 and scalar caches.
@@ -859,12 +859,12 @@ static int cs_mode = -1;   // 0 full barriers, 1 compute barriers, 2 the two in 
 static uint64_t cs_after_game, cs_after_none, cs_skipped;   // perf: dispatches after compute work
 static int cs_barrier_on(void) {
     if (cs_mode < 0) {
-        const char *e = cfg_get("TOTK_CS_BARRIER");
+        const char *e = cfg_get("DKB_CS_BARRIER");
         cs_mode = e && !strcmp(e, "game") ? 3 : rt_knob("CS_BARRIER", "0");
         static const char *const how[] = {"full barriers", "compute barriers", "compute or full barriers in the A/B blocks",
                                           "the game's barriers alone (experimental)"};
         static const char *const val[] = {"0", "1", "ab", "game"};
-        rt_log("vk: consecutive dispatches are ordered by %s (TOTK_CS_BARRIER=%s)", how[cs_mode], val[cs_mode]);
+        rt_log("vk: consecutive dispatches are ordered by %s (DKB_CS_BARRIER=%s)", how[cs_mode], val[cs_mode]);
     }
     return cs_mode == 3 ? 1 : RT_KNOB_ON(cs_mode);
 }
@@ -944,7 +944,7 @@ void vk_exec_pass_begin(VkExec *ex) {
                           .pDepthAttachment = ex->pass_depth ? &da : NULL,
                           .pStencilAttachment = ex->pass_stencil ? &sa : NULL,
                           .flags = pass_secondary ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT : 0};
-    if (ex == &X) {   // TOTK_PASS_GPU: the pass's size, attachments, formats and samples as its key
+    if (ex == &X) {   // DKB_PASS_GPU: the pass's size, attachments, formats and samples as its key
         const VkExecTarget *c0 = &ex->color[0];
         uint64_t cf = ex->pass_ncolor && c0->image ? (uint64_t)c0->format : 0;
         uint64_t df = d->image && (ex->pass_depth || ex->pass_stencil) ? (uint64_t)d->format : 0;
@@ -987,7 +987,7 @@ void vk_exec_pass_end(VkExec *ex) {
         if (!pass_sliced && par_mode > 0)
             par_unsliced[pass_draws < 64 ? 0 : pass_draws < 256 ? 1 : pass_draws < 1024 ? 2 : 3] += pass_draws;
         // A layer's first frame draws into render targets made for it: their passes have no history, so all of them
-        // are recorded here, unsliced (par_start, PAR_WHY_NEW). TOTK_TRACE=perf adds up their time for a slow frame.
+        // are recorded here, unsliced (par_start, PAR_WHY_NEW). DKB_TRACE=perf adds up their time for a slow frame.
         if (pass_t0 && !pass_sliced && pass_why == PAR_WHY_NEW && pass_draws >= PAR_MIN_DRAWS)
             perf_ph_unsliced(kern_now_ns() - pass_t0, pass_draws);
         ParHist *e = par_find(sig, pass_draws >= PAR_MIN_DRAWS);
@@ -1185,30 +1185,30 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
 
 // ---- command buffer parts
 // NVN starts the GPU as soon as commands are submitted; one Vulkan command buffer per submission starts it only after
-// the whole replay. Between passes, once TOTK_SPLIT_DRAWS (64; 0 off) draws and dispatches were recorded since the
+// the whole replay. Between passes, once DKB_SPLIT_DRAWS (64; 0 off) draws and dispatches were recorded since the
 // last part, the part goes to the queue (vk_sync_split) and the replay continues in a new command buffer. Only
 // command-buffer state is lost there (bindings and dynamic state: vk_exec_draw_new_cb, ex->dirty); barriers, layouts and
 // queries are not: a barrier's first scope is everything earlier in submission order, image layouts belong to the image,
 // and occlusion queries end with their pass. Fences, completion callbacks and reports stay per submission: only the last
 // part signals the value. nxnative commits every 64 draws between passes; MacNativeGames after 30, then every 40.
-// A part also spans at least TOTK_SPLIT_US (1000) of replay time: a split costs about 40 us of the render thread
+// A part also spans at least DKB_SPLIT_US (1000) of replay time: a split costs about 40 us of the render thread
 // (the wait for the recorder, a command buffer, the mirror prologue; vkQueueSubmit2, as much again, is the recorder's
-// with TOTK_REC_SUBMIT, vk_rec.c rec_submit), and a fight frame of 2,000 draws made 15 parts on the 7900X;
+// with DKB_REC_SUBMIT, vk_rec.c rec_submit), and a fight frame of 2,000 draws made 15 parts on the 7900X;
 // a millisecond of recording is a fraction of a millisecond of GPU work, so the GPU still starts early.
 static int split_n = -1, split_draws, part_start;
-static int par_no_split;   // TOTK_REPLAY_PAR=check: the draws being compared stay in one command buffer, as the helper's
+static int par_no_split;   // DKB_REPLAY_PAR=check: the draws being compared stay in one command buffer, as the helper's
 static uint64_t split_ns, part_t0;
 static uint64_t n_parts, n_subs;
 
 static void maybe_split(VkExec *ex) {
     if (split_n < 0) {
-        split_n = cfg_int("TOTK_SPLIT_DRAWS");
+        split_n = cfg_int("DKB_SPLIT_DRAWS");
         if (split_n < 0) split_n = 0;
-        int us = cfg_int("TOTK_SPLIT_US");
-        // With the replay recorded on several threads (TOTK_REPLAY_THREADS above 1) the default is 300 us: in the
+        int us = cfg_int("DKB_SPLIT_US");
+        // With the replay recorded on several threads (DKB_REPLAY_THREADS above 1) the default is 300 us: in the
         // hills region on eight threads, parts of at least 300 us gave 47-49 fps against 43-47 with 1000 us and 45-47
         // with none, since the GPU starts sooner on the big passes the game waits for within the frame.
-        if (!cfg_is_set("TOTK_SPLIT_US") && par_threads() > 1) us = 300;
+        if (!cfg_is_set("DKB_SPLIT_US") && par_threads() > 1) us = 300;
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
         rt_log("vk: replay command buffer split every %d draws between passes, parts of at least %d us%s", split_n,
                us > 0 ? us : 0, split_n ? "" : " (off)");
@@ -1347,7 +1347,7 @@ static void views_to_fence(VkExec *ex, uint64_t fence) {   // the views made for
     ex->nviews = 0;
 }
 
-// ---- a run shared with the helper threads (vk_spec.h, TOTK_REPLAY_PAR)
+// ---- a run shared with the helper threads (vk_spec.h, DKB_REPLAY_PAR)
 // A run is a stretch of the op stream made of state, binds, clears and draws only: nothing in it reads back what the
 // GPU wrote, signals the guest or changes the order of GPU writes into guest memory. At the start of a run the replay
 // thread looks ahead to its end (par_scan) and picks the draws it leaves to the helpers (par_plan): those from a cut
@@ -1429,7 +1429,7 @@ static struct {
     uint32_t ntaken;                    // parts of this run taken so far
     int planned;                        // every part of the plan was launched: the plan learns from this run
     uint64_t world, mirror, usnap;      // the generations at the launch
-    VkExecFrame chk_frame;              // TOTK_REPLAY_PAR=check: this thread's counters where the part begins
+    VkExecFrame chk_frame;              // DKB_REPLAY_PAR=check: this thread's counters where the part begins
     uint64_t chk_parts, chk_bad;        // parts compared, and those that differed
     uint64_t chk_word[VK_EXEC_DIG_W];   // by the first word of the digest that differed
     const op_hdr *draws[PAR_RUN_MAX];   // the run's draw ops
@@ -1850,7 +1850,7 @@ static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
     return p->hend;
 }
 
-// TOTK_REPLAY_PAR=check, at the end of a part its helper and this thread translated: the same draws bound and
+// DKB_REPLAY_PAR=check, at the end of a part its helper and this thread translated: the same draws bound and
 // recorded the same, and left the same replay state.
 static void par_check(VkExec *ex) {
     const ParPart *p = &P.part[P.ci];
@@ -2155,7 +2155,7 @@ static void par_wake_workers(void);
 static int par_nworkers;
 
 // At a draw outside a pass: 1 when the pass it opens is sliced (the pass is then open, with secondary contents).
-// TOTK_REPLAY_THREADS (0: off), read once. Unset, it is 6 when the process may run on 12 or more logical processors, 4
+// DKB_REPLAY_THREADS (0: off), read once. Unset, it is 6 when the process may run on 12 or more logical processors, 4
 // on 8 to 11, 3 on 4 to 7 and 0 below that. On 6 and 4 (a Ryzen 7 5700X held to its first 6 or 4 logical processors,
 // RTX 5060 Ti, the layer -200 recording at 1920x1080, 60 fps limit), 3 threads cut the first minute's frames over 50 ms
 // from 155 to 169 to 15 to 17 (6) and from 148 to 203 to 47 (4), at 43 against 40 fps and 41 against 38; 2 threads
@@ -2177,12 +2177,12 @@ static int par_nworkers;
 // issue #155) lost the device with them. AMDVLK and RADV stay at 0 until they are measured.
 static int par_threads(void) {
     if (par_mode < 0) {
-        const char *e = cfg_get("TOTK_REPLAY_THREADS");
+        const char *e = cfg_get("DKB_REPLAY_THREADS");
         uint32_t cpus = plat_cpu_usable();
         par_mode = e && *e ? atoi(e) : vk_caps.amd && !vk_caps.amd_slices ? 0 : cpus >= 12 ? 6 : cpus >= 8 ? 4 : cpus >= 4 ? 3 : 0;
         if (par_mode < 0) par_mode = 0;
         if (par_mode) rt_log("vk: passes of %d or more draws are recorded in slices of up to %d draws into secondary command buffers "
-                             "(TOTK_REPLAY_THREADS=%d%s: recorded by that many threads)", PAR_MIN_DRAWS, PAR_SLICE_DRAWS, par_mode,
+                             "(DKB_REPLAY_THREADS=%d%s: recorded by that many threads)", PAR_MIN_DRAWS, PAR_SLICE_DRAWS, par_mode,
                              e && *e ? "" : ", the default");
     }
     return par_mode;
@@ -2199,7 +2199,7 @@ static int par_start(VkExec *ex) {
     // (par_take), and the slices only read the jitter.
     if (vk_dump_armed) {   // the dump follows draws one by one, on one thread
         static int told;
-        if (!told++) rt_log("vk: TOTK_DUMP is armed: passes are not sliced while it dumps");
+        if (!told++) rt_log("vk: DKB_DUMP is armed: passes are not sliced while it dumps");
         return pass_why = PAR_WHY_DUMP, 0;
     }
     resolve_rt(ex);
@@ -2247,7 +2247,7 @@ static int par_start(VkExec *ex) {
         if (!PC.ops || !PC.snap) rt_fatal("vk: out of memory");
     }
     if (par_mode > 1 && par_nworkers < par_mode - 1) {
-        uint64_t ph = perf_ph_begin_cpu();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+        uint64_t ph = perf_ph_begin_cpu();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
         par_start_workers();
         perf_ph_end(PERF_PH_SLICE_START, ph);
     }
@@ -2292,7 +2292,7 @@ static int par_size(void) {
     return size < PAR_SLICE_MIN ? PAR_SLICE_MIN : size > PAR_SLICE_DRAWS ? PAR_SLICE_DRAWS : size;
 }
 
-// TOTK_PAR_INDIRECT (on by default): indexed indirect draws are collected into slices like the others. 0: the first
+// DKB_PAR_INDIRECT (on by default): indexed indirect draws are collected into slices like the others. 0: the first
 // one ends the collection, and the rest of its pass is recorded on the replay thread, as before; ab alternates the two
 // with the A/B blocks. Read on the replay thread only (par_take).
 static int par_indirect(void) {
@@ -2430,7 +2430,7 @@ static int par_take(VkExec *ex, const op_hdr *h, const void *a) {
     // the primary. A dispatch or copy that wrote them came before the pass, whose opening on the primary records a full
     // barrier (vk_exec_pass_begin, barrier_to); a barrier inside the pass ends the collection. Before they were taken,
     // the first one ended the collection and the rest of its pass was recorded on this thread: in Canyon Layer about
-    // 1,900 draws a frame, 92% of them indirect, at 2.1 us each (DKB_DRAW_PROFILE, 6 threads). TOTK_PAR_INDIRECT=0
+    // 1,900 draws a frame, 92% of them indirect, at 2.1 us each (DKB_DRAW_PROFILE, 6 threads). DKB_PAR_INDIRECT=0
     // (par_indirect) brings that back.
     case OP_DRAW: case OP_DRAW_IDX: case OP_DRAW_IDX_IND:
         if (h->op == OP_DRAW_IDX_IND && !par_indirect()) return 0;
@@ -2470,7 +2470,7 @@ typedef struct {
     int recorded, hazard;
     ViewEnt *views;      // views the slice made (freed with the submission)
     int nviews;
-    VkSyncNote *note;    // what the slice drew, for TOTK_PERF_SLOW_GPU_MS (par_notes), NULL when its part is untimed
+    VkSyncNote *note;    // what the slice drew, for DKB_PERF_SLOW_GPU_MS (par_notes), NULL when its part is untimed
     int ntw;             // the texture ids its draws needed a depth twin of that the pass had none of (par_tw)
     uint32_t tw[PAR_TWINS];
 } ParOut;
@@ -2478,7 +2478,7 @@ typedef struct {
 static ParOut par_out[PAR_MAX_SLICES];
 
 // Records slice i into a secondary command buffer of pp, from the slice's copy of the replay state, into w.
-static void par_rec_note(int worker, int i, uint64_t ns) {   // TOTK_TRACE=perf: who recorded slice i, and how long
+static void par_rec_note(int worker, int i, uint64_t ns) {   // DKB_TRACE=perf: who recorded slice i, and how long
     int end = PC.end[i], draws = 0;
     for (int k = PC.start[i]; k < end; k++) draws += par_run_op(PC.ops[k]->op) == 2;
     plat_add64(&par_rec[worker][0], 1), plat_add64(&par_rec[worker][1], draws), plat_add64(&par_rec[worker][2], (int64_t)ns);
@@ -2514,7 +2514,7 @@ static void par_record(int i, ParPool *pp, VkExec *w, struct DrawCtx *dc) {
     VkSyncNote *note = vk_sync_slice_note_begin(PC.snote[i]);   // not the part's note, which the replay keeps writing
     vk_mem_count_quiet(1), vk_usnap_quiet(1);
     uint32_t tag = vk_mem_wb_tag(PC.stag[i]);
-    int merge = vk_exec_draw_merge_on();   // TOTK_DRAW_MERGE: runs of draws that differ only in c4 go as instances
+    int merge = vk_exec_draw_merge_on();   // DKB_DRAW_MERGE: runs of draws that differ only in c4 go as instances
     for (int k = PC.start[i], end = PC.end[i]; k < end; k++) {
         int draws, used = merge && PC.ops[k]->op == OP_DRAW_IDX ? vk_exec_draw_merge(w, PC.ops + k, end - k, &draws) : 0;
         if (used) k += used - 1;   // the collection counted the run's draws (par_take)
@@ -2600,7 +2600,7 @@ static void par_worker(void *arg) {
         int i = pw_next++;
         plat_mutex_unlock(&pw_lock);
         uint64_t t = kern_now_ns();
-        int ph = perf_ph_worker_begin();   // TOTK_TRACE=perf: the workers' parts (perf.c ph_frame)
+        int ph = perf_ph_worker_begin();   // DKB_TRACE=perf: the workers' parts (perf.c ph_frame)
         par_record(i, &pw->pp, &pw->w, dc);
         perf_ph_worker_end(ph);
         par_rec_note(1, i, kern_now_ns() - t);
@@ -2641,9 +2641,9 @@ static void par_hazards(int hazard, uint64_t sig);
 static void par_notes(int s0, int s1, int front);
 
 static void par_flush(VkExec *ex) {
-    if (!ex) {   // TOTK_TRACE=perf (record_impl): what was sliced since the last line
+    if (!ex) {   // DKB_TRACE=perf (record_impl): what was sliced since the last line
         rt_log("perf: dispatches after compute work alone: %llu with a barrier of the game before them, %llu without one; "
-               "%llu recorded with no barrier (TOTK_CS_BARRIER=game)",
+               "%llu recorded with no barrier (DKB_CS_BARRIER=game)",
                (unsigned long long)cs_after_game, (unsigned long long)cs_after_none, (unsigned long long)cs_skipped);
         cs_after_game = cs_after_none = cs_skipped = 0;
         if (par_mode > 0)
@@ -2728,10 +2728,10 @@ static void par_flush(VkExec *ex) {
     par_hazards(hazard, PC.sig);
 }
 
-// ---- a pass end that does not wait for its slices (TOTK_PAR_DEFER)
+// ---- a pass end that does not wait for its slices (DKB_PAR_DEFER)
 // Waiting for the slices at the end of a sliced pass, the submitting thread recorded the slices left over itself and
 // then waited for the workers: about 2.4 ms of a 10.7 ms frame on the route's Lake Level (3.2.0, 4 threads), on the
-// frame's critical path. With TOTK_PAR_DEFER (on by default; 0 waits as before) the pass end is held back instead: its calls (the query end, the end of
+// frame's critical path. With DKB_PAR_DEFER (on by default; 0 waits as before) the pass end is held back instead: its calls (the query end, the end of
 // rendering, the BC stand-ins' copies) are captured (vk_rec.c rec_capture_begin), the part that holds the pass is left
 // open (vk_sync_split_defer), and the walk goes on in a new part while the workers record. par_settle waits for them
 // later, makes vkCmdExecuteCommands and the captured calls into the open part, and submits it ahead of the new one.
@@ -2759,14 +2759,14 @@ static void par_flush(VkExec *ex) {
 static int par_defer_ok(const VkExec *ex) {
     if (par_defer_mode < 0) {
         par_defer_mode = rt_knob("PAR_DEFER", "1");
-        rt_log("vk: the end of a sliced pass %s for its slices (TOTK_PAR_DEFER=%s)",
+        rt_log("vk: the end of a sliced pass %s for its slices (DKB_PAR_DEFER=%s)",
                par_defer_mode == 2 ? "does not wait in the B blocks" : par_defer_mode ? "does not wait" : "waits",
                par_defer_mode == 2 ? "ab" : par_defer_mode ? "1" : "0");
     }
-    // The pass end's calls are captured as packets: from the recorder's part, or, without the recorder (TOTK_VK_RECORDER=0,
+    // The pass end's calls are captured as packets: from the recorder's part, or, without the recorder (DKB_VK_RECORDER=0,
     // the default on AMD's proprietary driver), from the part this thread records itself (rec_capture_alone), which it
     // then also makes them into and ends (vk_sync_split_finish). A split leaves the part open; the replay thread of the
-    // TOTK_REPLAY_PAR check keeps everything in one command buffer. par_room left a place in PDQ before the pass was
+    // DKB_REPLAY_PAR check keeps everything in one command buffer. par_room left a place in PDQ before the pass was
     // collected.
     return RT_KNOB_ON(par_defer_mode) && !par_no_defer && PC.nslices > PC.s0 && par_nworkers && ex == &X && !par_no_split &&
            split_n > 0 && !vk_dump_armed && pd_n < PAR_DEFER_DEPTH && (rec_owns(ex->cb) || rec_capture_alone(ex->cb)) &&
@@ -2901,12 +2901,12 @@ static void par_settle_all(VkExec *ex) {
 // new batch when nothing is held (no slice is being recorded then).
 static void par_room(VkExec *ex) {
     static int depth;
-    // TOTK_PAR_DEFER_DEPTH: pass ends held at most (1 to PAR_DEFER_DEPTH), 2 by default. Within one run (TOTK_AB), the
+    // DKB_PAR_DEFER_DEPTH: pass ends held at most (1 to PAR_DEFER_DEPTH), 2 by default. Within one run (DKB_AB), the
     // route's Lake Level took 7.8% less time a frame with the pass ends held at 2 and 6 to 8% at 4; the Hilltop Layer of
     // Surf Hills (3.2.0, 28,500 draws a frame) 0.7% less at 2 but 9 to 10% more at 4, where the GPU got the frame's
     // work too late for the replay's gain (its wait for the GPU went from 4.1 to 6.1 ms a frame).
     if (!depth) {
-        const char *e = cfg_get("TOTK_PAR_DEFER_DEPTH");
+        const char *e = cfg_get("DKB_PAR_DEFER_DEPTH");
         depth = e && *e ? atoi(e) : 2;
         if (depth < 1 || depth > PAR_DEFER_DEPTH) depth = 2;
     }
@@ -2937,7 +2937,7 @@ static void par_wait_range(int s0, int s1, uint64_t t1) {
         plat_mutex_lock(&pw_lock);
         par_slice_done(i);
     }
-    uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+    uint64_t ph = perf_ph_begin();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
     uint64_t t2 = kern_now_ns();
     while (!par_range_done(s0, s1)) plat_cond_wait(&pw_idle, &pw_lock);
     uint64_t t3 = kern_now_ns();
@@ -3026,12 +3026,12 @@ static void par_hazards(int hazard, uint64_t sig) {
                PAR_BAN_AFTER);
 }
 
-// TOTK_DRAW_MERGE in a pass that is not sliced: the run of draws at *hp, when vk_exec_draw_merge replays it, with the
+// DKB_DRAW_MERGE in a pass that is not sliced: the run of draws at *hp, when vk_exec_draw_merge replays it, with the
 // walk's counts of its draws; *hp then is the op after it. Only in a pass par_start has looked at, so that no draw of
 // the run would have started a sliced pass, and without helper parts or their comparison, whose ranges are counted
 // in draws (par_watch). The ops looked at are those the run can hold: indexed draws and uniform block binds, up to the
 // first draw whose arguments differ from the first one's, which ends any run. A run also ends at an OP_CALL record and at the end of a
-// called recording (TOTK_CALL_REF), so identical draws in two called recordings are not merged into one run. Without that bound, a stretch of
+// called recording (DKB_CALL_REF), so identical draws in two called recordings are not merged into one run. Without that bound, a stretch of
 // different draws with only uniform binds between them would be gathered again from each of its draws.
 #define MERGE_OPS 2048
 static int merge_walk(VkExec *ex, const op_hdr **hp) {
@@ -3063,7 +3063,7 @@ static int merge_walk(VkExec *ex, const op_hdr **hp) {
 // submission's later command buffers, and stops after LOOKAHEAD_DRAWS draws, LOOKAHEAD_OPS ops or LOOKAHEAD_NS (the
 // replay waits meanwhile, and a stage not translated yet is read from the disk cache); it looks again once
 // the replay passed the draws it covered. A render target change sets the formats of the key from the textures and
-// views, as resolve_rt would derive them for a plain colour or depth target (la_set_rt). TOTK_LOOKAHEAD=0 turns it off.
+// views, as resolve_rt would derive them for a plain colour or depth target (la_set_rt). DKB_LOOKAHEAD=0 turns it off.
 #define LOOKAHEAD_DRAWS 256
 #define LOOKAHEAD_OPS 16384
 #define LOOKAHEAD_NS 20000000   // only a one-shot wait looks ahead, and it waits 60-90 ms for its own cold build: 3 ms
@@ -3140,7 +3140,7 @@ void vk_exec_lookahead(VkExec *ex) {
 static void walk(VkExec *ex, const op_hdr *h, int depth);
 static _Thread_local int par_skip_start;   // stop op after a mid-OP_CALL flush in par_collect_walk: replay it unsliced, as walk() does
 
-// TOTK_PAR_COLLECT_WALK (on by default): iterative single-switch collection loop (par_collect_walk) handles OP_BEGIN,
+// DKB_PAR_COLLECT_WALK (on by default): iterative single-switch collection loop (par_collect_walk) handles OP_BEGIN,
 // OP_JUMP, OP_CALL and binds without recursing walk() on every call. 0 falls back to walk() + par_take() for bisecting;
 // ab alternates the two with the A/B blocks. Read on the replay thread only.
 static int par_collect_walk_on(void) {
@@ -3301,7 +3301,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
                 }
             }
         }
-        if (ex == &X && !ex->in_pass)   // TOTK_PASS_GPU: the GPU work of ops outside passes, by op
+        if (ex == &X && !ex->in_pass)   // DKB_PASS_GPU: the GPU work of ops outside passes, by op
             switch (h->op) {
             case OP_CLEAR_COLOR: case OP_CLEAR_DS: case OP_DISPATCH: case OP_DISPATCH_IND: case OP_COPY_B2B: case OP_COPY_B2T:
             case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX: case OP_CLEAR_BUF:
@@ -3382,11 +3382,11 @@ static int record_impl(VkCommandBuffer cb, const uint64_t *handles, int n, uint6
     else {
         // Shadow storage notes every GPU write at record time, in order: no helper there.
         // Sliced passes and helper runs both record a submission's draws on other threads, from other copies of the
-        // draw path's state: with TOTK_REPLAY_THREADS set, the helpers of TOTK_REPLAY_PAR take no run.
+        // draw path's state: with DKB_REPLAY_THREADS set, the helpers of DKB_REPLAY_PAR take no run.
         int par = vk_spec_on() && !vk_mem_shadow_on() && !par_threads();
         if (vk_spec_on() && par_mode > 0) {
             static int told;
-            if (!told++) rt_log("vk: passes are recorded on several threads (TOTK_REPLAY_THREADS): the helper threads of TOTK_REPLAY_PAR take no run");
+            if (!told++) rt_log("vk: passes are recorded on several threads (DKB_REPLAY_THREADS): the helper threads of DKB_REPLAY_PAR take no run");
         }
         P.rec += par;
         for (int i = 0; i < n; i++) {
@@ -3409,7 +3409,7 @@ static int record_impl(VkCommandBuffer cb, const uint64_t *handles, int n, uint6
     x_here = 0;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (memory) {   // VRAM mirror bytes the GPU wrote go back to guest memory
-        uint64_t ph = perf_ph_begin_cpu();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+        uint64_t ph = perf_ph_begin_cpu();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
         ex->recorded += vk_mem_mirror_end(ex->cb, fence);
         perf_ph_end(PERF_PH_MIRROR_END, ph);
         vk_usnap_end(fence);

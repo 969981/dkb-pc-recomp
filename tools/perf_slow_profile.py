@@ -1,9 +1,9 @@
-"""Where the slow frames spend their CPU: the TOTK_PROFILE_SLOW dumps of a perf_run profiled bundle, against the whole run.
+"""Where the slow frames spend their CPU: the DKB_PROFILE_SLOW dumps of a perf_run profiled bundle, against the whole run.
 
     python tools/perf_slow_profile.py build/agent-perf/<bundle>/prof/profile.txt <link map of the same exe> [--slow-ms 100]
 
 Inputs: profile.txt (the whole-run profile: base, module ranges, rip counts) and profile.txt.f<frame> dumps, one per
-slow present (TOTK_PROFILE_SLOW=<ms>): `frame N interval_ms X` and `tstack <tid> <ms into the window> <rip>...` lines.
+slow present (DKB_PROFILE_SLOW=<ms>): `frame N interval_ms X` and `tstack <tid> <ms into the window> <rip>...` lines.
 Each sample's leaf Rip (the first address of the chain) is mapped to the nearest map symbol in the exe (the map is the
 link map of the same exe). Outside-exe leaves are grouped by module.
 

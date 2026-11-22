@@ -2,13 +2,13 @@
 
 Usage: python tests/staged_blocked_test.py --cc clang [--out DIR] [--cases N] [--seed S] [--source vk_memory.c]
 
-With TOTK_MIRROR_STAGED a staged upload leaves out the bytes of the VRAM mirror the GPU owns. Before commit ce4178e
+With DKB_MIRROR_STAGED a staged upload leaves out the bytes of the VRAM mirror the GPU owns. Before commit ce4178e
 staged_upload built one sorted union of the pools' own lists and the lists of every write-back job in flight
 (st_blk_update) and cut each upload range against it; since then st_blocked and st_job_blocked find the blocked
 pieces by binary search in each list and st_cut cuts the range against them. tests/staged_blocked.c runs the
 production lookup, cut, sort (st_sort_job) and own-list code from runtime/vk_memory.c, pasted in below, against the old
 union kept in the fixture, and requires the same blocked bytes, copied pieces and byte counts for every upload range
-of every case. The check TOTK_STAGED_BLK_CHECK makes in a game run (st_chk_union, st_chk_range) runs on the same ranges
+of every case. The check DKB_STAGED_BLK_CHECK makes in a game run (st_chk_union, st_chk_range) runs on the same ranges
 and must flag none. A mismatch prints the seed and a shrunk counterexample.
 """
 import argparse
@@ -71,8 +71,8 @@ def main():
         definition(src, 'static void st_blocked('),
         definition(src, 'static void st_cut('),
         line(src, '#define MRANGE_LESS('), line(src, 'MSORT_DEFINE(sort_ranges,'),
-        # TOTK_STAGED_BLK_CHECK: the union and the comparison as the game runs them
-        src[src.index('// ---- TOTK_STAGED_BLK_CHECK=1'):src.index('static void st_chk_log(')],
+        # DKB_STAGED_BLK_CHECK: the union and the comparison as the game runs them
+        src[src.index('// ---- DKB_STAGED_BLK_CHECK=1'):src.index('static void st_chk_log(')],
         definition(src, 'static void st_chk_log('),
     ])
     fixture = args.out / 'staged_blocked.c'

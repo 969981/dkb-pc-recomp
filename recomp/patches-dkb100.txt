@@ -13,7 +13,7 @@ site hidproxy main 73bea0 9404d9d0 2a1f03e0   # bl sub_71008725E0 -> mov w0, wzr
 # x8 is dead here: 1ead28 calls 1eaf30, whose first instruction writes w8 before
 # reading it. Keep the controller's present interval at +0x40 and its original
 # load at 1ead2c; nvn_api_obj.c present_period uses the host cap with realtime on.
-set realtime TOTK_REALTIME 0
+set realtime DKB_REALTIME 0
 site realtime main 1ead24 aa1303e0 @page:x8 b9400d01 b9005281 b9005681 aa1303e0
 
 # Clock producers divide 60 by the controller's integer FPS. Read the precise
@@ -97,7 +97,7 @@ set dkbtall DKB_TALL 0
 site dkbtall main 51ed5c 1e21080a 1e21080a 947cc545  # fmul s10, s0, s1 in the camera projection reset (3.2.0 45e244)
 site dkbtall main 44eac0 1e21080a 1e21080a 948005ec  # fmul s10, s0, s1 in the camera projection update (3.2.0 4db8b0)
 
-set mousecamera TOTK_MOUSE_CAMERA 0
+set mousecamera DKB_MOUSE_CAMERA 0
 
 # CameraPoserFollowLimit's manual yaw update and CameraAngleVerticalCtrl::exeUserCtrl.
 # Keep each original instruction, then call the host adapter in runtime/dkb_camera.c. The five
@@ -202,7 +202,7 @@ spin main 5803b4 5803c8   # recursive spin lock
 # The game's dynamic-resolution controller (the function at main 3c12b4) steps a ratio of the virtual display
 # to the 3D scene size by frame-time load, quantises it against a table (1.375, 1.5, 1.667 ... 3.0) and stores
 # it at 3c1628. Under emulation it settles at 1.5, so the 3D scene is 2/3 of the display on each side. Load the
-# ratio from page +0x118 instead (runtime/dkb_wide.c, TOTK_SCENE_RES, 1.0 draws the scene at the full display).
+# ratio from page +0x118 instead (runtime/dkb_wide.c, DKB_SCENE_RES, 1.0 draws the scene at the full display).
 # The next instruction overwrites x9, so it is free scratch. Off by default: the game's own control runs.
 # The controller also keeps the unquantised ratio in s8, which its hold test (fcmp s8, s9 at 3c154c) and two
 # per-view scales (3c1650, 3c172c) read: load the same ratio into s8 at the join 3c1548, whose own load

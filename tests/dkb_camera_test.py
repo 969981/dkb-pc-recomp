@@ -64,12 +64,12 @@ uint32_t plat_cpu_usable(void) {abort();}
 void plat_mem_info(float *u,float *t,float *p) {abort();}
 '''+functions+r'''
 int main(void) {
-    float d[2]; cfg_set("TOTK_DEVICE_PROFILE","desktop");cfg_set("TOTK_MOUSE_SENS","1");
+    float d[2]; cfg_set("DKB_DEVICE_PROFILE","desktop");cfg_set("DKB_MOUSE_SENS","1");
     mx=100;assert(!input_mouse_direct(d));assert(!patch_on && mx==100); // opt-in, no fallback counts lost
     assert(patch_lookups==1 && patch_switches==1);
     for (int i=0;i<1000;i++) assert(!mouse_direct_mode());
     assert(patch_lookups==1 && patch_switches==1); // idle polling must not touch the patch switch
-    cfg_set("TOTK_MOUSE_CAMERA","1");
+    cfg_set("DKB_MOUSE_CAMERA","1");
     mx=100; input_mouse_direct(d);assert(d[0]==0); // entering manual view drops old motion
     assert(patch_on && patch_switches==2);
     for (int i=0;i<1000;i++) assert(mouse_direct_mode());
@@ -80,23 +80,23 @@ int main(void) {
     int32_t stick[2];mx=100;mouse_camera(stick);
     assert(stick[0]==0 && stick[1]==0 && mx==100 && fallback_calls==0);
     input_mouse_direct(d);assert(fabsf(d[0]-6.4f)<.00001f && mx==0);
-    cfg_set("TOTK_MOUSE_SENS","5");mx=100;input_mouse_direct(d);assert(fabsf(d[0]-32)<.00001f);
-    cfg_set("TOTK_MOUSE_CAMERA","0");mx=100;assert(!input_mouse_direct(d));assert(!patch_on && mx==100);
+    cfg_set("DKB_MOUSE_SENS","5");mx=100;input_mouse_direct(d);assert(fabsf(d[0]-32)<.00001f);
+    cfg_set("DKB_MOUSE_CAMERA","0");mx=100;assert(!input_mouse_direct(d));assert(!patch_on && mx==100);
     mouse_camera(stick);assert(stick[0]==0 && mx==0 && fallback_calls==0); // discard the direct-camera backlog
     gfx_counters.frames++;now_ns+=16666667;mx=100;mouse_camera(stick);
     assert(stick[0]==100 && mx==0 && fallback_calls==1 && fabs(fallback_dt-1.0/60)<1e-8);
-    cfg_set("TOTK_MOUSE_CAMERA","1");input_mouse_direct(d);assert(patch_on && d[0]==0);
+    cfg_set("DKB_MOUSE_CAMERA","1");input_mouse_direct(d);assert(patch_on && d[0]==0);
     assert(patch_lookups==1 && patch_switches==5); // sensitivity change, off, then on
-    cfg_set("TOTK_MOUSE_SENS","0");mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);
-    cfg_set("TOTK_MOUSE_SENS","1");mx=2000;input_mouse_direct(d);assert(fabsf(d[0]-128)<.00001f);
+    cfg_set("DKB_MOUSE_SENS","0");mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);
+    cfg_set("DKB_MOUSE_SENS","1");mx=2000;input_mouse_direct(d);assert(fabsf(d[0]-128)<.00001f);
     gfx_counters.frames+=10;mx=100;input_mouse_direct(d);assert(d[0]==0);
     gfx_counters.frames++;mx=100;input_mouse_direct(d);assert(fabsf(d[0]-6.4f)<.00001f);
     captured=0;mx=100;assert(!input_mouse_direct(d));assert(d[0]==0 && mx==0);captured=1;
     foreground=0;mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);foreground=1;
     g_menu=1;mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);g_menu=0;
     g_block=1;mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);g_block=0;
-    cfg_set("TOTK_INPUT","none");mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);
-    cfg_set("TOTK_INPUT","auto");
+    cfg_set("DKB_INPUT","none");mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);
+    cfg_set("DKB_INPUT","auto");
     // Leaving follow mode: suppress up to two frames, then discard the accumulated batch exactly once.
     input_mouse_direct(d);int calls=fallback_calls;
     for (int i=0;i<3;i++) {

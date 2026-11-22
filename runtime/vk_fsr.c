@@ -1,6 +1,6 @@
 // The window scaling on the present path (vk_present.c present_image): how the picture, the crop rectangle of the
 // game's image, reaches the swapchain when the plain bilinear vkCmdBlitImage is not enough. The setting window_filter
-// (window_filter.h wf_resolve, wf_plan) picks, TOTK_SHARPNESS (0..100) sets the sharpen; both apply at the next frame.
+// (window_filter.h wf_resolve, wf_plan) picks, DKB_SHARPNESS (0..100) sets the sharpen; both apply at the next frame.
 //  - fsr1 (the default), with a window larger than an SDR picture: AMD FidelityFX Super Resolution 1, EASU to the
 //    swapchain size, then RCAS when the sharpness is above 0, as before; at any other size, and for the game's own HDR
 //    picture, nothing (the caller blits, as before). upscaler = bilinear with no filter chosen stays the plain blit.
@@ -203,8 +203,8 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
     // window_filter (the legacy upscaler = bilinear alias included) and the slider decide what runs, whichever
     // upscaler made the picture
-    int filter = wf_resolve(cfg_value("TOTK_WINDOW_FILTER"), cfg_is_set("TOTK_WINDOW_FILTER"), cfg_value("TOTK_UPSCALER"));
-    WfPlan plan = wf_plan(filter, cfg_int("TOTK_SHARPNESS"), pq, cw, ch, (int)dw, (int)dh);
+    int filter = wf_resolve(cfg_value("DKB_WINDOW_FILTER"), cfg_is_set("DKB_WINDOW_FILTER"), cfg_value("DKB_UPSCALER"));
+    WfPlan plan = wf_plan(filter, cfg_int("DKB_SHARPNESS"), pq, cw, ch, (int)dw, (int)dh);
     VkCtx *c = vk_ctx();
     if (!fmt || (!plan.fsr1 && !plan.pass)) {
         vk_fsr_idle();

@@ -69,7 +69,7 @@ void plat_mutex_unlock(PlatMutex *m) { if (!m->p) rt_fatal("unlock without lock\
 int plat_mutex_trylock(PlatMutex *m) { if (m->p) return 0; m->p = (void *)1; return 1; }
 uint64_t kern_now_ns(void) { return 0; }
 void perf_lock_wait(int lock, uint64_t ns) { (void)lock; (void)ns; }
-const char *cfg_get(const char *key) { (void)key; return NULL; }   // TOTK_LOCK_HOLDS: off
+const char *cfg_get(const char *key) { (void)key; return NULL; }   // DKB_LOCK_HOLDS: off
 void plat_cond_broadcast(PlatCond *c) { (void)c; }
 void plat_cond_wait(PlatCond *c, PlatMutex *m) { (void)c; (void)m; rt_fatal("unexpected fixture wait\n"); }
 // The replay side the marking reports to.
@@ -78,11 +78,11 @@ static unsigned world_changes, frames_written, rewritten;
 uint64_t vk_exec_recording_fence(void) { return fence; }
 void vk_exec_frame_written(const tex_t *t) { (void)t; frames_written++; }
 void vk_spec_world_changed(void) { world_changes++; }
-int cfg_bool(const char *name) { (void)name; return 1; }   // TOTK_WB_EXACT: on, its default
+int cfg_bool(const char *name) { (void)name; return 1; }   // DKB_WB_EXACT: on, its default
 '''
 
 STUBS = r'''
-int cfg_int(const char *name) { (void)name; return WB_SMALL_DEFAULT; }   // TOTK_WB_FENCE_LIMIT: its default
+int cfg_int(const char *name) { (void)name; return WB_SMALL_DEFAULT; }   // DKB_WB_FENCE_LIMIT: its default
 static void destroy_tex(Tex *e) { (void)e; rt_fatal("unexpected destroy: fewer than RELEASED_MAX are released\n"); }
 // The page-generation snapshot needs the write watch; the fixture only counts it.
 static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {

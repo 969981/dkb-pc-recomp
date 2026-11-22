@@ -3,15 +3,15 @@ sorted and merged (a write whose fence completed leaves, merged or not), and wr_
 submissions (ranges of 4 bytes to 4 KiB, half of them not 16-byte aligned, a completed fence that moves forward),
 every range a write still in flight overlaps must be found by wr_hits, and the kept list must stay sorted and disjoint.
 A first case puts two unaligned ranges in one 16-byte bucket of the radix sort, the higher one added first.
-Every case runs with U.fast 0 and 1 (TOTK_USNAP_FAST): the fast path sorts in as few 11-bit radix passes as the span
+Every case runs with U.fast 0 and 1 (DKB_USNAP_FAST): the fast path sorts in as few 11-bit radix passes as the span
 needs, so sort_new_writes must give the same array either way, checked at spans of 2047, 2048, 2^22 - 1 and 2^22
 buckets, where the pass count changes; sort_col, which has no insertion pass to repair a short sort, must sort its
 ranges at the same spans. add_range must keep exactly the distinct ranges it is given. The coalescing in drop() (a write equal to the newest unsorted entry raises its
 fence instead of adding one) must leave wr_prune with the same list as the separate entries do.
-TOTK_USNAP_DROP_LOCAL (drop_local_cases): writes noted by six threads into lists of their own (wr_local) and moved into
+DKB_USNAP_DROP_LOCAL (drop_local_cases): writes noted by six threads into lists of their own (wr_local) and moved into
 U.wr at the next submission's start (wr_take, the lists in a shuffled order) must leave wr_prune with the same list,
 and the summary with the same counts, as the same writes made in their global order into U.wr.
-vk_usnap_drop_many (drop_many_cases, TOTK_RESET_BATCH): an indirect reset's ranges added to U.wr under one take of
+vk_usnap_drop_many (drop_many_cases, DKB_RESET_BATCH): an indirect reset's ranges added to U.wr under one take of
 drop_lock while the threads note theirs in their own lists must give the same list and counts as the global order, and
 mark every range. The fixture's lock fails a second take while held, as a thread's first wr_local under drop_lock
 would deadlock.
@@ -253,7 +253,7 @@ static int seen_cases(void) {
     return fails;
 }
 
-// TOTK_USNAP_DROP_LOCAL: per submission, random writes (often repeating a thread's previous range, sometimes with an
+// DKB_USNAP_DROP_LOCAL: per submission, random writes (often repeating a thread's previous range, sometimes with an
 // older fence) noted by six threads. The reference makes them in their global order with drop_local 0 (into U.wr, under
 // the lock); the other with drop_local 1, each into its thread's list, then wr_take with the lists linked in a shuffled
 // order. After wr_prune both lists must be equal, and so must the counts the summary reports.
@@ -314,7 +314,7 @@ static int drop_local_cases(void) {
     return fails;
 }
 
-// vk_usnap_drop_many with TOTK_USNAP_DROP_LOCAL on: per submission, random writes of 20-byte records and runs of them,
+// vk_usnap_drop_many with DKB_USNAP_DROP_LOCAL on: per submission, random writes of 20-byte records and runs of them,
 // some noted by six threads into their lists, the rest by the indirect reset (thread THREADS) in one vk_usnap_drop_many
 // call that adds them to U.wr under drop_lock. The reference makes all of them in their global order into U.wr. After
 // wr_take and wr_prune both lists must be equal, so must the write counts, and every range of the reset is marked.
@@ -414,7 +414,7 @@ def main():
     start = source.index('typedef struct WrLocal')
     end = source.index('static _Thread_local WrLocal *wr_mine;', start) + len('static _Thread_local WrLocal *wr_mine;')
     parts += [source[start:end]] + [function(source, s) for s in ('static void wr_local(', 'static void wr_take(void) {')]
-    # drop_locked holds the body drop takes the lock around (TOTK_RESET_BATCH); the source declares it before drop
+    # drop_locked holds the body drop takes the lock around (DKB_RESET_BATCH); the source declares it before drop
     # and defines it after, so its definition is cut out by its full head and put first.
     parts += [function(source, s) for s in ('static void drop_locked(uint64_t addr, uint64_t n, uint64_t fence) {',
                                             'static void drop(', 'void vk_usnap_drop_many(')] + [CASES]

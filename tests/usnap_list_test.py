@@ -1,5 +1,5 @@
-"""Uniform range lists of TOTK_USNAP_LIST: runtime/nvn_api_cmd.c take_recording gathers each recording's normalized
-uniform bindings (composing OP_CALL callees' merged lists through an L1 dedup cache under TOTK_CALL_REF) and
+"""Uniform range lists of DKB_USNAP_LIST: runtime/nvn_api_cmd.c take_recording gathers each recording's normalized
+uniform bindings (composing OP_CALL callees' merged lists through an L1 dedup cache under DKB_CALL_REF) and
 runtime/vk_usnap.c nvn_ubo_list_build sorts (11-bit LSD radix sort / merge sort fallback) and merges them.
 tests/usnap_list.c records through the real recorder and checks leaf recordings, nested OP_CALL trees up to
 CALL_REF_DEPTH, repeated callees, >64 KiB merged callee spans, radix vs merge-sort parity, large spans (>33 bits),
@@ -64,7 +64,7 @@ def main():
                         '-ffunction-sections', '-fdata-sections', '-I', str(args.out), '-I', str(ROOT / 'runtime'),
                         str(ROOT / 'tests' / 'usnap_list.c'), str(ROOT / 'runtime' / 'nvn_api_cmd.c'),
                         '-Wl,--gc-sections', '-o', str(exe)], check=True, timeout=120)
-        for call_ref in ('0', '1'):   # TOTK_CALL_REF off: callees inlined; on: OP_CALL records compose callee lists
+        for call_ref in ('0', '1'):   # DKB_CALL_REF off: callees inlined; on: OP_CALL records compose callee lists
             env = dict(os.environ, USNAP_LIST_CALL_REF=call_ref)
             run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=300, env=env)
             print(opt, run.stdout.strip(), run.stderr.strip())

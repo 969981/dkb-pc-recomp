@@ -1,4 +1,4 @@
-// Frame generation (TOTK_FRAME_GEN = auto, 2x to 8x; off by default, experimental): frames made between each two of the
+// Frame generation (DKB_FRAME_GEN = auto, 2x to 8x; off by default, experimental): frames made between each two of the
 // game's, from their motion. A C rewrite of Hookshot's gpu/vk/vk_framegen.cpp (https://github.com/NotRexed/Hookshot @
 // fab8cb37641714bd839ae83c2a7bc582bedc4d70, GPL-3.0; Auto, the multipliers above 2x, the sets and the display thread from
 // https://git.notrexed.dev/Hookshot/Hookshot @ 7191250b7b0f8a4becd79ee086229a2620872fc7) with its shaders
@@ -12,7 +12,7 @@
 // (vk_backend.c present_main) calls vk_fg_record with the game's texture before its blit (it returns 1), then vk_fg_show
 // in place of the blit: the made frame goes through vk_present_image, the history copy of the game's frame through
 // vk_present_blit, and its flip waits until half an interval after the made one. With frame_gen_by = fsr3
-// (TOTK_FRAME_GEN_BY) the made frame comes from AMD FSR 3.1's frame interpolation instead of steps 2 and 3
+// (DKB_FRAME_GEN_BY) the made frame comes from AMD FSR 3.1's frame interpolation instead of steps 2 and 3
 // (vk_fsr3fi.c), over the depth and motion of the frame's temporal upscaler (vk_fg_record's fi); a frame it cannot
 // make gets the built-in one. AMD's passes are also given the game's frames without their HUD, so the HUD is not moved
 // with the scene: the upscaler's output is copied before the game draws its HUD into it (vk_fsr3fi_note_picture), and
@@ -326,9 +326,9 @@ static int init(VkCtx *c) {
     return 1;
 }
 
-// TOTK_FRAME_GEN: 0 off, 1 Auto, 2 to FG_MAX_MULT the fixed multiplier. Another value is off.
+// DKB_FRAME_GEN: 0 off, 1 Auto, 2 to FG_MAX_MULT the fixed multiplier. Another value is off.
 static int fg_mode(void) {
-    const char *v = cfg_value("TOTK_FRAME_GEN");
+    const char *v = cfg_value("DKB_FRAME_GEN");
     if (!strcmp(v, "auto")) return 1;
     if (v[0] >= '2' && v[0] <= '0' + FG_MAX_MULT && v[1] == 'x' && !v[2]) return v[0] - '0';
     return 0;

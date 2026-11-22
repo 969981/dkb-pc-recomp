@@ -25,7 +25,7 @@ GfxStats gfx_stats(void) {
     return s;
 }
 
-// TOTK_GPU=null|vulkan, default vulkan (rt_config); chosen once.
+// DKB_GPU=null|vulkan, default vulkan (rt_config); chosen once.
 const GfxBackend *gfx_backend(void) {
     static const GfxBackend *chosen;
     const GfxBackend *b = __atomic_load_n(&chosen, __ATOMIC_ACQUIRE);
@@ -72,7 +72,7 @@ static void null_replay(uint64_t handle) {
         const void *a = nvn_op_payload(h);
         switch (h->op) {
         case OP_END: return;
-        case OP_CALL: null_replay(((const p_jump *)a)->target); break;   // TOTK_CALL_REF: the called copy, in place
+        case OP_CALL: null_replay(((const p_jump *)a)->target); break;   // DKB_CALL_REF: the called copy, in place
         case OP_WAIT_SYNC: break;   // fulfilled by submit preparation; never reread its source here
         case OP_SIGNAL_EVENT: {
             const p_signal_event *e = a;
@@ -146,7 +146,7 @@ static void null_nothing(void) {}
 static int null_zero(void) { return 0; }
 static int null_shader_tool(int tool) {
     (void)tool;
-    rt_logf("the shader tools need a graphics device: TOTK_GPU=null has none\n");
+    rt_logf("the shader tools need a graphics device: DKB_GPU=null has none\n");
     return 1;
 }
 static void null_thumbs_enable(int n) { (void)n; }
@@ -158,7 +158,7 @@ static const GfxExecFrame *null_exec_frame(void) {
     return &none;
 }
 static int null_device_text(char *buf, size_t n) {
-    int k = snprintf(buf, n, "GPU: none (TOTK_GPU=null has no device)\n");
+    int k = snprintf(buf, n, "GPU: none (DKB_GPU=null has no device)\n");
     return k > 0 && (size_t)k < n;
 }
 

@@ -43,7 +43,7 @@ _Static_assert(O_EVENT_W < O_SESSION, "handle kinds");
 enum { W_NONE = KERN_WAIT_NONE, W_LOCK = KERN_WAIT_LOCK, W_CONDVAR = KERN_WAIT_CONDVAR, W_ADDRESS = KERN_WAIT_ADDRESS,
        W_SYNC = KERN_WAIT_SYNC };
 
-// Scheduler accounting states (TOTK_TRACE=sched).
+// Scheduler accounting states (DKB_TRACE=sched).
 enum { S_OFF, S_RUN, S_CORE, S_HOST, S_SLEEP, S_SYNC, S_CV, S_LOCK, S_ADDR, S_N };
 static const char *const s_name[S_N] = {"off", "run", "core", "host", "sleep", "sync", "cv", "lock", "addr"};
 
@@ -89,7 +89,7 @@ struct RtThread {
     Fiber *fiber;              // current guest fiber, NULL on the thread's own context
     Fiber *leaving;            // fiber just switched away from, released by whoever resumes next
     int exit_pending;          // ExitThread on a fiber: unwind once back on the thread's own context
-    // TOTK_TRACE=sched accounting (holding G)
+    // DKB_TRACE=sched accounting (holding G)
     uint32_t tid;              // host thread id
     int st;                    // S_* state since st_since
     uint64_t st_since, st_ns[S_N], nblk, npre, pre_since, cpu_last;
@@ -99,13 +99,13 @@ struct RtThread {
     uint64_t lw_ns, lw_n, lw_max, lg_ns, lg_n, lg_max, sl_n, sl_req, sl_act;   // those latencies; SleepThread asked/took
     uint64_t sp_n, sp_ho, sp_site;   // spin wait passes and core handoffs, the last loop head (the thread writes them)
     RtThread *target;          // as a core waiter: the owner core_kick asked to give its core up for it (holding G)
-    // TOTK_ASYNC_PREEMPT (holding G)
+    // DKB_ASYNC_PREEMPT (holding G)
     PlatIntr *hthr;            // the host thread, for plat_intr_stop / resume; open while it may own a core
     uint64_t ap_rip;           // the interrupted host rip kern_ap_stub returns to
     uint64_t ap_last;          // the last redirect attempt on this owner
     uint64_t ap_sent_at;       // when the pending redirect was sent
     int ap_pending;            // redirected to kern_ap_stub, which has not reached kern_ap_yield yet
-    // TOTK_CORE_DIAG (holding G, except dg_host_end, which only the thread itself writes)
+    // DKB_CORE_DIAG (holding G, except dg_host_end, which only the thread itself writes)
     uint64_t dg_since;         // as a waiter: core wait start
     int dg_cls;                // as a waiter: DG_* class at the start of the wait
     uint64_t dg_kick;          // as an owner: the preempt request
@@ -113,7 +113,7 @@ struct RtThread {
     uint64_t dg_pc, dg_lr;     // as an owner: guest pc and lr at the checkpoint that gave the core up
     uint64_t dg_hrip;          // as an owner: the host rip kern_ap_stub interrupted, when that gave the core up
     int dg_host_kick;          // as an owner: in a host call or SVC at the request
-    uint32_t dg_svc;           // the thread's latest SVC (TOTK_CORE_DIAG: what an owner in a host call is in)
+    uint32_t dg_svc;           // the thread's latest SVC (DKB_CORE_DIAG: what an owner in a host call is in)
     // as a waiter: the owner that released
     struct DgRel { uint64_t kick, host_end, pc, lr, hrip; int host, pre, prio; uint32_t h; } dg_rel;
     // core wait counters (holding G)
@@ -125,7 +125,7 @@ struct RtThread {
     int cw_rel;                // as a core waiter: how the core it got was given up (CW_REL_*)
     uint64_t cs_epoch;         // the main thread's wait the cs_ counts belong to (g_cw_epoch)
     uint64_t cs_ns[CW_N], cs_n[CW_N], cs_max[CW_N];   // this thread's waits during that wait of the main thread
-    // TOTK_SCHED_HANDOFF (holding G; see "directed core hand-off")
+    // DKB_SCHED_HANDOFF (holding G; see "directed core hand-off")
     int ho_transit;            // woken by wake() while it handed off, not yet back from block_inner (has not run)
     int ho_got;                // given a core in transit by its waker; core_take finishes the take
     RtThread *ho_cand;         // as a waker: the best thread woken since its last SVC return, never dereferenced
@@ -148,9 +148,9 @@ static void unlock(void) { plat_mutex_unlock(&G); }
 
 uint64_t kern_now_ns(void) { return plat_now_ns(); }
 
-// ---- TOTK_CRIT=<first>-<last frame> with TOTK_TRACE=sched: every state change and wake of the guest threads and
-// every present over those frames, written to TOTK_CRIT_OUT (default crit.bin) at the last one, for
-// tools/crit_path.py, which walks the chain of waits back from each present (holding G). TOTK_CRIT=w<lo>-<hi> takes
+// ---- DKB_CRIT=<first>-<last frame> with DKB_TRACE=sched: every state change and wake of the guest threads and
+// every present over those frames, written to DKB_CRIT_OUT (default crit.bin) at the last one, for
+// tools/crit_path.py, which walks the chain of waits back from each present (holding G). DKB_CRIT=w<lo>-<hi> takes
 // world-clock seconds instead (frame_step_world_us): from the first present at or after lo to the first after hi, so a
 // session covers the same game time at any frame rate.
 typedef struct { uint64_t ts, obj; uint32_t a, b; uint16_t kind, st; uint32_t pad; } CritEv;
@@ -166,15 +166,15 @@ static void crit_add(int kind, uint32_t a, uint32_t b, int st, uint64_t obj, uin
     if (g_crit_n < CRIT_N) g_crit[g_crit_n++] = (CritEv){ts, obj, a, b, (uint16_t)kind, (uint16_t)st, 0};
 }
 
-// ---- TOTK_TRACE=sched accounting (holding G)
+// ---- DKB_TRACE=sched accounting (holding G)
 #define RW_N 32
 static RtThread *g_render;                               // the thread that presents (sched trace, core diag)
 typedef struct { int st; uint32_t waker; uint64_t obj, ns; } WaitRec;
 static WaitRec g_rw[RW_N], g_mw[RW_N];                   // the render and main thread's waits by object and waker
 static uint64_t g_pre_req, g_pre_n, g_pre_ns, g_pre_max, g_pre_stale;  // preempt requests; releases after one and their latency
 static uint64_t g_sync_calls, g_sync_blocks;              // WaitSynchronization calls and the blocks inside them
-static int g_cw_on;       // core wait counters on (TOTK_CORE_WAITS, updated holding G: cw_init, kern_core_waits_frame)
-int kern_sched_handoff;   // TOTK_SCHED_HANDOFF on (written holding G: cores_enabled, then each present for "ab")
+static int g_cw_on;       // core wait counters on (DKB_CORE_WAITS, updated holding G: cw_init, kern_core_waits_frame)
+int kern_sched_handoff;   // DKB_SCHED_HANDOFF on (written holding G: cores_enabled, then each present for "ab")
 static int g_ho_mode;
 static void ho_note(RtThread *t);
 
@@ -280,7 +280,7 @@ static void wake_sync_waiters(void) {
     }
 }
 
-// TOTK_MUTEX_SPIN=<microseconds> (off unless set): a thread about to sleep in a guest mutex or condition variable wait,
+// DKB_MUTEX_SPIN=<microseconds> (off unless set): a thread about to sleep in a guest mutex or condition variable wait,
 // or in a wait for a virtual core, first polls for that long without the kernel lock, pausing the host core between
 // reads. A hand-off that comes within it (a mutex convoy passes the mutex every few microseconds) then costs no host
 // sleep and wake-up: a condition variable wake-up costs 3-4 us on Windows (--probe-kernel), twice per pass of a convoy
@@ -364,7 +364,7 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
 // and gives it up only where Horizon would switch threads (waits, sleep, yield, exit, blocking host calls); a free
 // core goes to the best waiting thread. A waiter better than a holder asks one holder to give its core up (core_kick),
 // which it does at its next SVC or indirect call (kern_checkpoint, rt_dispatch), as Horizon runs the better thread at
-// once; guest code without either keeps the core until it reaches one. TOTK_FREE_CORES=1 turns the gate off.
+// once; guest code without either keeps the core until it reaches one. DKB_FREE_CORES=1 turns the gate off.
 static RtThread *g_core_owner[NCORE], *g_core_wait;
 static int g_cores_on = -1, g_held_max;
 
@@ -374,9 +374,9 @@ static void cw_init(void);
 
 static int cores_enabled(void) {
     if (g_cores_on < 0) {
-        g_cores_on = !cfg_bool("TOTK_FREE_CORES");   // "0" keeps the gate, like unset
+        g_cores_on = !cfg_bool("DKB_FREE_CORES");   // "0" keeps the gate, like unset
         if (!g_cores_on)
-            rt_log("kernel: virtual core gate off (TOTK_FREE_CORES): guest threads run without the limit of one per "
+            rt_log("kernel: virtual core gate off (DKB_FREE_CORES): guest threads run without the limit of one per "
                    "core that the game's per-core data needs; for experiments only, the game can fail");
         diag_init();
         ap_init();
@@ -384,16 +384,16 @@ static int cores_enabled(void) {
         g_ho_mode = g_cores_on ? rt_knob("SCHED_HANDOFF", "0") : 0;
         kern_sched_handoff = RT_KNOB_ON(g_ho_mode);
         if (g_ho_mode)
-            rt_log("kernel: directed core hand-off at SVC return %s (TOTK_SCHED_HANDOFF)",
-                   g_ho_mode == 2 ? "in the B blocks of TOTK_AB" : "on");
-        const char *e = cfg_get("TOTK_MUTEX_SPIN");
+            rt_log("kernel: directed core hand-off at SVC return %s (DKB_SCHED_HANDOFF)",
+                   g_ho_mode == 2 ? "in the B blocks of DKB_AB" : "on");
+        const char *e = cfg_get("DKB_MUTEX_SPIN");
         long us = e && *e ? atol(e) : 0;
         uint32_t cpus = plat_cpu_usable();
         g_mspin_cap = cpus >= 2 ? (int32_t)(cpus / 2) : 0;
         g_mspin_ns = us > 0 && g_mspin_cap > 0 ? (uint64_t)(us > 1000 ? 1000 : us) * 1000 : 0;
         if (g_mspin_ns)
             rt_log("kernel: mutex, condition variable and core waits poll %llu us before they sleep "
-                   "(TOTK_MUTEX_SPIN, at most %d threads at once on %u logical processors)",
+                   "(DKB_MUTEX_SPIN, at most %d threads at once on %u logical processors)",
                    (unsigned long long)(g_mspin_ns / 1000), g_mspin_cap, cpus);
     }
     return g_cores_on;
@@ -401,7 +401,7 @@ static int cores_enabled(void) {
 
 static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) & 1); }
 
-// ---- core wait counters (off by default; TOTK_CORE_WAITS=1 turns them on, =ab on in the B blocks of TOTK_AB only)
+// ---- core wait counters (off by default; DKB_CORE_WAITS=1 turns them on, =ab on in the B blocks of DKB_AB only)
 // How long ready threads wait for a virtual core, by what holds the cores they may use (CW_*), and how much of it lies
 // on the frame's critical path, taken as the main thread and the threads whose signal ends its waits: a waker's own
 // core waits, wake-ups and mutex waits count when they fall inside the main thread's wait it ended (one level: the
@@ -409,8 +409,8 @@ static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) 
 // UpdateHighestPriorityThreads and the reschedule interrupt), so CW_WORSE_GAME on that path is time the console does
 // not spend; it leaves an equal-priority thread running until it blocks or yields, as core_kick does (CW_EQ). Two clock
 // reads per blocking wait (block start, return from the wake-up), one in wake(), two per core wait that does not find
-// a free core; everything else is additions under G. TOTK_TRACE=perf logs a line per slow frame
-// (TOTK_PERF_SLOW_MS), the totals every 60 presents and at exit.
+// a free core; everything else is additions under G. DKB_TRACE=perf logs a line per slow frame
+// (DKB_PERF_SLOW_MS), the totals every 60 presents and at exit.
 enum { CW_REL_YIELD, CW_REL_CHECKPOINT, CW_REL_ASYNC };   // how an owner gave its core up: blocked or yielded, at a
                                                           // checkpoint (SVC or indirect call), interrupted (kern_ap_yield)
 static const char *const cw_name[CW_N] = {"worse-game", "worse-host", "equal", "better", "nocore", "wake", "lock",
@@ -423,10 +423,10 @@ typedef struct {
                                                                           // pairs and their system calls, interruptions
                                                                           // sent, sent until the waiter got a core
     struct { uint32_t h; int prio; uint64_t ns; } wk[4];   // the main thread's wakers by the wait they ended
-    uint64_t ho_svc, ho_blk, ho_kept, ho_req;   // TOTK_SCHED_HANDOFF: cores given at SVC return, as the caller
+    uint64_t ho_svc, ho_blk, ho_kept, ho_req;   // DKB_SCHED_HANDOFF: cores given at SVC return, as the caller
                                                 // blocked; kept by a spin lock or deferred preemption; preempt
                                                 // requests pending at SVC return
-    uint64_t sp_n[2], sp_ok[2], sp_ns[2];       // TOTK_MUTEX_SPIN polls: [0] core waits, [1] mutex and condvar waits;
+    uint64_t sp_n[2], sp_ok[2], sp_ns[2];       // DKB_MUTEX_SPIN polls: [0] core waits, [1] mutex and condvar waits;
                                                 // those that ended with the core or the wake-up; their time
 } CwAcc;
 static CwAcc g_cwf, g_cww, g_cwr;   // this frame, this 60-present window, the run
@@ -439,7 +439,7 @@ static void cw_init(void) {   // holding G
     g_cw_mode = rt_knob("CORE_WAITS", "0");
     __atomic_store_n(&g_cw_on, RT_KNOB_ON(g_cw_mode), __ATOMIC_RELAXED);
     if (g_cw_mode)
-        rt_log("kernel: core wait counters %s (TOTK_CORE_WAITS)", g_cw_mode == 2 ? "in the B blocks of TOTK_AB" : "on");
+        rt_log("kernel: core wait counters %s (DKB_CORE_WAITS)", g_cw_mode == 2 ? "in the B blocks of DKB_AB" : "on");
 }
 
 static void mspin_count(int woke, int got, uint64_t ns) {   // holding G
@@ -618,7 +618,7 @@ void kern_core_waits_frame(uint64_t frame, uint64_t interval_ns, int log) {
         char what[64];
         snprintf(what, sizeof what, "frames to %llu", (unsigned long long)frame);
         cw_log(what, &w);
-        static uint64_t cpu0, up0;   // the process's CPU time over the window (TOTK_MUTEX_SPIN spends some)
+        static uint64_t cpu0, up0;   // the process's CPU time over the window (DKB_MUTEX_SPIN spends some)
         uint64_t cpu = plat_process_cpu_ns(), up = plat_process_uptime_ns();
         if (up0 && up > up0)
             rt_log("kernel: process cpu frames to %llu: %.3f s in %.3f s (%.2f host cores)", (unsigned long long)frame,
@@ -640,11 +640,11 @@ void kern_core_waits_exit(void) {   // on an exit path: a lock that stays held d
     rt_log("kernel: process cpu at exit: %.2f s in %.2f s", plat_process_cpu_ns() / 1e9, plat_process_uptime_ns() / 1e9);
 }
 
-// ---- asynchronous preemption (TOTK_ASYNC_PREEMPT, on unless 0)
+// ---- asynchronous preemption (DKB_ASYNC_PREEMPT, on unless 0)
 // Adapted from MacNativeGames games/totk/runtime/threads.c @ 33e8fa8 (8bf0893, PR #488; MIT, Copyright (c) 2026
 // MacNativeGames contributors): Horizon gives a core to a strictly better thread the moment that thread is ready.
 // Here a better waiter only marks the owner, which gives the core up at its next SVC or indirect call; an owner in a
-// stretch of game code with neither keeps it (TOTK_CORE_DIAG: 0.5-1.1 ms of thread-time per frame, waits to 16 ms and
+// stretch of game code with neither keeps it (DKB_CORE_DIAG: 0.5-1.1 ms of thread-time per frame, waits to 16 ms and
 // more). With it on, three parts, all of which MacNativeGames found necessary:
 // - The waiter interrupts the owner (plat_intr_stop) when it has waited AP_FIRST_NS, then every
 //   millisecond: if the owner's host rip is in the lifted modules' code (g_gen_lo..g_gen_hi) and its host depth is 0
@@ -659,11 +659,11 @@ void kern_core_waits_exit(void) {   // on an exit path: a lock that stays held d
 //   (interrupt_flag) is set. Such an owner is not preempted, at a checkpoint either: interrupt_flag is set and the
 //   switch happens at that SVC. Preempting it anyway hung MacNativeGames' game at "Continue" (the lock holder lost its
 //   core to a thread that then spun on that lock).
-// TOTK_ASYNC_PREEMPT=0 keeps the old scheduling exactly: raw priorities, no interruption, no disable_count; =2 keeps
+// DKB_ASYNC_PREEMPT=0 keeps the old scheduling exactly: raw priorities, no interruption, no disable_count; =2 keeps
 // inheritance and the preemption disable without interrupting owners.
 #define AP_FIRST_NS 250000ull   // the waiter spins this long before the first interruption (most waits end sooner)
 #define AP_GAP_NS 1000000ull    // and interrupts the same owner at most this often
-static int g_ap = -1, g_ap_int;   // g_ap_int: interrupt owners (TOTK_ASYNC_PREEMPT=2: inheritance and disable only)
+static int g_ap = -1, g_ap_int;   // g_ap_int: interrupt owners (DKB_ASYNC_PREEMPT=2: inheritance and disable only)
 static int g_ap_log;              // redirects logged so far (AP_LOG_N)
 #define AP_LOG_N 40
 static uintptr_t g_gen_lo, g_gen_hi;   // host code of the lifted modules: first and last function start
@@ -672,8 +672,8 @@ static uint64_t g_ap_sent, g_ap_taken, g_ap_host, g_ap_pc, g_ap_deferred, g_ap_f
 // redirects, pending ones found lost, and refusals because the owner was stopped inside an exception's dispatch,
 // inside a system call, or without the OS saying (platform.h plat_intr_stop).
 static uint64_t g_ap_reached, g_ap_lost, g_ap_exc, g_ap_svc, g_ap_unrep, g_ap_fault;
-// TOTK_AP_SAFE (on unless 0; ab for an in-run A/B): refuse a redirect the OS could lose and expire a pending one that
-// was lost. 0 redirects as before. TOTK_AP_FAULT (on unless 0; ab for an in-run A/B): when a guest thread has a
+// DKB_AP_SAFE (on unless 0; ab for an in-run A/B): refuse a redirect the OS could lose and expire a pending one that
+// was lost. 0 redirects as before. DKB_AP_FAULT (on unless 0; ab for an in-run A/B): when a guest thread has a
 // pending preemption while returning from a page fault, redirect it via the fault handler's saved context instead of
 // waiting for ap_try between faults.
 static int g_ap_safe_mode = 1, g_ap_fault_mode = 1;
@@ -689,7 +689,7 @@ static void kern_ap_fault(uint64_t *rip);
 
 static void ap_init(void) {
     if (g_ap >= 0) return;
-    const char *e = cfg_value("TOTK_ASYNC_PREEMPT");
+    const char *e = cfg_value("DKB_ASYNC_PREEMPT");
     g_ap = strcmp(e, "0") != 0;
     g_ap_int = g_ap && strcmp(e, "2") != 0;
     if (g_ap) {
@@ -722,18 +722,18 @@ static void ap_init(void) {
         }
         g_ap_safe_mode = rt_knob("AP_SAFE", "1");
         if (g_ap_safe_mode != 1)
-            rt_log("kernel: redirects the OS could lose are %s (TOTK_AP_SAFE)",
-                   g_ap_safe_mode ? "refused in the B blocks of TOTK_AB only" : "sent as before, and never expired");
+            rt_log("kernel: redirects the OS could lose are %s (DKB_AP_SAFE)",
+                   g_ap_safe_mode ? "refused in the B blocks of DKB_AB only" : "sent as before, and never expired");
         g_ap_fault_mode = rt_knob("AP_FAULT", "1");
         if (g_ap_fault_mode != 1)
-            rt_log("kernel: fault-handler preemption redirect %s (TOTK_AP_FAULT)",
-                   g_ap_fault_mode ? "in the B blocks of TOTK_AB only" : "off");
+            rt_log("kernel: fault-handler preemption redirect %s (DKB_AP_FAULT)",
+                   g_ap_fault_mode ? "in the B blocks of DKB_AB only" : "off");
 #if defined(_WIN32) && defined(__x86_64__)
         if (g_ap_int && g_ap_fault_mode != 0) plat_mem_fault_ret_hook(kern_ap_fault);
 #endif
     }
     rt_log("kernel: asynchronous preemption of virtual cores %s, priority inheritance and preemption disable %s; lifted "
-           "code exe+%#llx-exe+%#llx", g_ap_int ? "on" : "off", g_ap ? "on (TOTK_ASYNC_PREEMPT=0 turns all off)" : "off",
+           "code exe+%#llx-exe+%#llx", g_ap_int ? "on" : "off", g_ap ? "on (DKB_ASYNC_PREEMPT=0 turns all off)" : "off",
            (unsigned long long)(g_gen_lo ? g_gen_lo - plat_exe_base() : 0),
            (unsigned long long)(g_gen_hi ? g_gen_hi - plat_exe_base() : 0));
 }
@@ -749,7 +749,7 @@ static int eff_prio(const RtThread *o) {
     return p;
 }
 
-// The priority the virtual cores go by: raw with TOTK_ASYNC_PREEMPT=0, as before.
+// The priority the virtual cores go by: raw with DKB_ASYNC_PREEMPT=0, as before.
 static int prio_of(const RtThread *t) { return g_ap > 0 ? eff_prio(t) : t->prio; }
 
 // TLR+0x100 disable_count, +0x102 interrupt_flag (any thread may read them; the flag is set from outside as the
@@ -998,7 +998,7 @@ enum { AP_NONE, AP_RETRY, AP_SENT };
 
 // The waiter w interrupts its target owner if that runs top-level game code (holding G; the owner is stopped only
 // between plat_intr_stop and plat_intr_resume, during which nothing here takes a lock).
-// A redirect the OS can lose (TOTK_AP_SAFE): Windows reports an owner stopped inside an exception's dispatch, where a
+// A redirect the OS can lose (DKB_AP_SAFE): Windows reports an owner stopped inside an exception's dispatch, where a
 // context write is overwritten when the handler continues (platform/win32.c plat_intr_stop), and ap_pending is cleared
 // only in kern_ap_yield, so one lost redirect used to leave its owner uninterruptible for good: every later ap_try
 // returned at ap_pending, and its waiters woke each millisecond and gave up without a trace. Such stops are refused now
@@ -1092,7 +1092,7 @@ static int ap_try(RtThread *w) {
                (unsigned long long)(lost_cur_rip - plat_exe_base()));
     if (unrep_log)
         rt_log("kernel: asynchronous preemption redirect refused because the OS did not set "
-               "CONTEXT_EXCEPTION_REPORTING (e.g. Wine); set TOTK_AP_SAFE=0 to redirect anyway");
+               "CONTEXT_EXCEPTION_REPORTING (e.g. Wine); set DKB_AP_SAFE=0 to redirect anyway");
     if (g_cw_on) {   // core wait counters: the cost of a stop and resume, and when the first interruption went out
         uint64_t d = kern_now_ns() - now;
         g_cwf.stops++;
@@ -1111,13 +1111,13 @@ static int ap_try(RtThread *w) {
     return r;
 }
 
-// ---- TOTK_CORE_DIAG=1: why ready threads wait for a virtual core, and for how long
+// ---- DKB_CORE_DIAG=1: why ready threads wait for a virtual core, and for how long
 // Each core wait is split into classes: the owner asked to give the core up ran game code (DG_GAME, the part an
 // asynchronous preemption would remove), was in a host call or SVC that kept the core (DG_HOST), every owner the waiter
 // may displace was of better or equal priority (DG_EQ: Horizon waits too), or the worse owners were claimed by better
 // waiters (DG_NOCORE). Per 60 presents: time per frame and a wait-length histogram per class, the owners that cost
 // most; a line per present over 25 ms; a line per wait with over 2 ms of DG_GAME (where the owner reached its
-// checkpoint), and one host RIP sample of the owner per such wait (exe RVA, for totk.map).
+// checkpoint), and one host RIP sample of the owner per such wait (exe RVA, for dkb.map).
 enum { DG_GAME, DG_HOST, DG_EQ, DG_NOCORE, DG_N };
 static const char *const dg_name[DG_N] = {"game", "host", "eq", "nocore"};
 #define DG_NB 8   // wait lengths: < 0.05, 0.25, 1, 2, 4, 8, 16 ms, longer
@@ -1138,11 +1138,11 @@ static uint64_t g_dg_samples, g_dg_lines, g_sync36, g_sync36_flag;
 
 static void diag_init(void) {
     if (g_diag >= 0) return;
-    const char *e = cfg_get("TOTK_CORE_DIAG");
+    const char *e = cfg_get("DKB_CORE_DIAG");
     g_diag = e && *e && strcmp(e, "0");
     if (g_diag) {
         kern_host_track = 1;
-        rt_log("core-diag: on (TOTK_CORE_DIAG)");
+        rt_log("core-diag: on (DKB_CORE_DIAG)");
     }
 }
 
@@ -1249,7 +1249,7 @@ static void dg_sample(RtThread *t) {
 
 
 // perf_present, every present: a line for a present over 25 ms, the 60-present summary.
-// Stall dump (TOTK_STALL_DUMP=<seconds>, default 5; 0 turns it off): a watchdog thread logs the scheduler state when no
+// Stall dump (DKB_STALL_DUMP=<seconds>, default 5; 0 turns it off): a watchdog thread logs the scheduler state when no
 // frame has been presented for that long, then every 10 s while the stall lasts: who holds each virtual core and where
 // its host thread is, who waits for a core, and every other guest thread's wait, with priorities, core masks and
 // pending preempt requests. A hang then leaves in the log what each thread was doing, which a hung process killed from
@@ -1356,7 +1356,7 @@ void kern_cores_report(const char *tag) {
     }
 }
 
-// The TOTK_ASYNC_PREEMPT counters since the start: copied holding G (ap_snap), logged without it (ap_log), at every
+// The DKB_ASYNC_PREEMPT counters since the start: copied holding G (ap_snap), logged without it (ap_log), at every
 // 600th present and at exit.
 #define AP_SNAP_N 14
 static void ap_snap(uint64_t v[AP_SNAP_N]) {
@@ -1408,11 +1408,11 @@ void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns) {
     static int stall_started;
     if (!stall_started && frame >= 60) {   // after the first frames: the boot's long loads are not stalls
         stall_started = 1;
-        int sec = cfg_int("TOTK_STALL_DUMP");
+        int sec = cfg_int("DKB_STALL_DUMP");
         if (sec > 0 && !plat_thread_spawn(stall_main, (void *)(uintptr_t)sec, "stall watch", 0))
-            rt_log("kernel: TOTK_STALL_DUMP: the watchdog thread could not start");
+            rt_log("kernel: DKB_STALL_DUMP: the watchdog thread could not start");
     }
-    if (g_ap > 0 && frame && frame % 600 == 0) {   // TOTK_ASYNC_PREEMPT counters since the start
+    if (g_ap > 0 && frame && frame % 600 == 0) {   // DKB_ASYNC_PREEMPT counters since the start
         uint64_t v[AP_SNAP_N];
         char when[32];
         lock();
@@ -1480,7 +1480,7 @@ static void core_count(void) {
     if (n > g_held_max) g_held_max = n;
 }
 
-static struct DgRel g_dg_rel;   // TOTK_CORE_DIAG: the owner core_put is releasing, for core_grant
+static struct DgRel g_dg_rel;   // DKB_CORE_DIAG: the owner core_put is releasing, for core_grant
 
 static void core_grant(int c) {
     RtThread *b = NULL, **bp = NULL;
@@ -1688,7 +1688,7 @@ static void core_take(RtThread *t) {
     acct(t, S_RUN);
 }
 
-// ---- directed core hand-off (TOTK_SCHED_HANDOFF=1, off by default; "ab" switches it with the A/B blocks)
+// ---- directed core hand-off (DKB_SCHED_HANDOFF=1, off by default; "ab" switches it with the A/B blocks)
 // Horizon reschedules a core as an SVC that changed the scheduling state returns (Eglantine k_scheduler.cpp,
 // KScheduler::EnableScheduling and RescheduleCurrentCore when the scheduler lock is released): a thread the SVC made
 // runnable that is better than the caller runs at once. Here a woken thread only asks for a core once its host thread
@@ -1823,7 +1823,7 @@ int kern_core_away(void) {
     lock();
     core_put(t);
     acct(t, S_HOST);
-    if (rt_trace & RT_TRACE_SCHED)   // the caller as an exe RVA (totk.map)
+    if (rt_trace & RT_TRACE_SCHED)   // the caller as an exe RVA (dkb.map)
         t->wobj = (uintptr_t)__builtin_return_address(0) - plat_exe_base();
     unlock();
     return 1;
@@ -1845,10 +1845,10 @@ void kern_core_back(int *away) {
 // where a better thread pinned there preempts it; here it holds a virtual core and a host core, and pollers that take a
 // lock on every pass hand its cache line between their host cores so the thread whose item it is rarely gets it
 // (nxnative found this in Breath of the Wild's job queue). Every pass pauses the host core once. A wait is a run of
-// passes through the same loop at most SPIN_GAP_NS apart; once one has lasted TOTK_SPIN_HANDOFF_US (default 50) and a
+// passes through the same loop at most SPIN_GAP_NS apart; once one has lasted DKB_SPIN_HANDOFF_US (default 50) and a
 // thread waits for a virtual core, each pass gives the core to the waiter, whatever its priority, yields the host CPU
 // and takes a core again. Shorter waits keep the core: a lock held for a moment would otherwise make the next pass wait
-// for another thread's next SVC (MacNativeGames). TOTK_SPIN=0 keeps the core always (the gate's own cost only).
+// for another thread's next SVC (MacNativeGames). DKB_SPIN=0 keeps the core always (the gate's own cost only).
 #define SPIN_GAP_NS 20000ull
 static int g_spin_on = -1;
 static uint64_t g_spin_handoff_ns;
@@ -1860,9 +1860,9 @@ void rt_spin_gate(Cpu *c, uint64_t head) {
     RtThread *t = tcur;
     if (!t) return;
     if (g_spin_on < 0) {
-        const char *e = cfg_get("TOTK_SPIN_HANDOFF_US");
+        const char *e = cfg_get("DKB_SPIN_HANDOFF_US");
         g_spin_handoff_ns = (uint64_t)(e && *e ? atoll(e) : 50) * 1000;
-        g_spin_on = !(cfg_get("TOTK_SPIN") && !cfg_bool("TOTK_SPIN"));
+        g_spin_on = !(cfg_get("DKB_SPIN") && !cfg_bool("DKB_SPIN"));
     }
     t->sp_n++;
     t->sp_site = head;
@@ -1990,18 +1990,18 @@ void kern_core_stats_reset(void) {
     unlock();
 }
 
-// TOTK_TRACE=sched: every 120 presents, the time split of the busiest threads (running, waiting for a core, host
+// DKB_TRACE=sched: every 120 presents, the time split of the busiest threads (running, waiting for a core, host
 // calls) and of the render thread, the render and the main thread's longest waits by object and by the thread whose
 // signal ended them, and the preemption latency.
 #define REP_N 8
-// At each present (holding G): starts recording at TOTK_CRIT's first frame, stops and writes the file at its last.
+// At each present (holding G): starts recording at DKB_CRIT's first frame, stops and writes the file at its last.
 // File: "CRIT", thread count, event count (u32 each); per thread handle, priority, flags (1 main, 2 presents), host
 // tid (u32 each); then the CritEv records.
 static void crit_frame(RtThread *self, uint64_t frame) {
     static int parsed;
     if (!parsed) {
         parsed = 1;
-        const char *e = cfg_get("TOTK_CRIT");
+        const char *e = cfg_get("DKB_CRIT");
         unsigned long long lo, hi;
         double wl, wh;
         if (e && e[0] == 'w' && sscanf(e + 1, "%lf-%lf", &wl, &wh) == 2 && wl >= 0 && wl < wh &&
@@ -2028,7 +2028,7 @@ static void crit_frame(RtThread *self, uint64_t frame) {
     crit_add(CRIT_FRAME, self ? self->handle : 0, 0, 0, frame, kern_now_ns());
     if (frame < g_crit_hi) return;
     g_crit_on = 0;
-    const char *path = cfg_get("TOTK_CRIT_OUT");
+    const char *path = cfg_get("DKB_CRIT_OUT");
     FILE *f = fopen(path && *path ? path : "crit.bin", "wb");
     if (!f) {
         rt_log("crit: cannot write %s", path && *path ? path : "crit.bin");
@@ -2288,7 +2288,7 @@ static void thread_finish(RtThread *t) {
 // is offset, and the landing code then reads its locals through the wrong base.)
 static __attribute__((noreturn)) void exit_now(RtThread *t) { longjmp(t->exit_jmp, 1); }
 
-// The calling host thread, for ap_try (TOTK_ASYNC_PREEMPT) and dg_sample (TOTK_CORE_DIAG).
+// The calling host thread, for ap_try (DKB_ASYNC_PREEMPT) and dg_sample (DKB_CORE_DIAG).
 static PlatIntr *ap_open_self(void) {
     if (!cores_enabled() || (!g_ap_int && g_diag <= 0)) return NULL;
     PlatIntr *h = plat_intr_self();
@@ -2300,7 +2300,7 @@ static void thread_main(void *p) {
     RtThread *t = p;
     tcur = t;
     t->tid = plat_thread_id();
-    plat_op_role(PLAT_OP_GAME);   // TOTK_TRACE=perf: its host operations count as the game's (perf.c ops_frame_log)
+    plat_op_role(PLAT_OP_GAME);   // DKB_TRACE=perf: its host operations count as the game's (perf.c ops_frame_log)
     PlatIntr *self = ap_open_self();
     lock();
     t->hthr = self;

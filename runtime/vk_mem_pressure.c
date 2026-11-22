@@ -28,7 +28,7 @@
 #include "platform/platform.h"
 
 static int trim_off(void) {
-    const char *off = cfg_get("TOTK_MEM_TRIM");   // DKB_MEM_TRIM in the environment, or dkb.ini's mem_trim
+    const char *off = cfg_get("DKB_MEM_TRIM");   // DKB_MEM_TRIM in the environment, or dkb.ini's mem_trim
     return off && !strcmp(off, "0");
 }
 
@@ -70,9 +70,9 @@ void vk_mem_pressure_check(void) {
     uint64_t avail, swap_free, total;
     int has_swap = 1;
     if (press_state == 0) {
-        // TOTK_ names, so that dkb.ini's keys count as well; DKB_MEM_TRIM and the others in the environment still win
-        press_avail_res = lp_reserve_bytes(cfg_get("TOTK_MEM_AVAIL_RESERVE_MB"), LP_AVAIL_RESERVE_MB);
-        press_commit_res = lp_reserve_bytes(cfg_get("TOTK_MEM_COMMIT_RESERVE_MB"), LP_COMMIT_RESERVE_MB);
+        // DKB_ names, so that dkb.ini's keys count as well; DKB_MEM_TRIM and the others in the environment still win
+        press_avail_res = lp_reserve_bytes(cfg_get("DKB_MEM_AVAIL_RESERVE_MB"), LP_AVAIL_RESERVE_MB);
+        press_commit_res = lp_reserve_bytes(cfg_get("DKB_MEM_COMMIT_RESERVE_MB"), LP_COMMIT_RESERVE_MB);
         int on = !trim_off() && (press_avail_res || press_commit_res) &&
                  plat_mem_avail(&avail, &swap_free, &total, &has_swap);
         __atomic_store_n(&press_state, on ? 1 : -1, __ATOMIC_RELAXED);

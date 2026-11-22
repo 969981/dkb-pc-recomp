@@ -1,4 +1,4 @@
-// Ported from adriadam10/mkw-recomp (MIT, Copyright (c) 2026 Adrià), runtime/input/switch2_proto.h at eb8fe198; TOTK_SWITCH2 for MKW_SWITCH2.
+// Ported from adriadam10/mkw-recomp (MIT, Copyright (c) 2026 Adrià), runtime/input/switch2_proto.h at eb8fe198; DKB_SWITCH2 for MKW_SWITCH2.
 // Nintendo Switch 2 controllers over Bluetooth LE (Pro Controller 2, Joy-Con 2 left and right): the protocol and the state a pad is made of. Pure C, no platform headers, so
 // tests/t_switch2.c checks it on any machine; pad_switch2_apple.m is the CoreBluetooth transport the Mac and iOS front ends share.
 //

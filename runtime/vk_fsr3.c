@@ -157,7 +157,7 @@ int vk_fsr3_wanted(void) {
     uint64_t f = frames_now();
     if (f != __atomic_load_n(&seen, __ATOMIC_RELAXED)) {
         // (upscaler = fsr4 without AMD's DLLs, or off Windows, runs this path)
-        const char *up = cfg_value("TOTK_UPSCALER");
+        const char *up = cfg_value("DKB_UPSCALER");
         __atomic_store_n(&chosen, !strcmp(up, "fsr3") || (!strcmp(up, "fsr4") && !vk_fsr4_wanted()), __ATOMIC_RELAXED);
         __atomic_store_n(&seen, f, __ATOMIC_RELAXED);
     }

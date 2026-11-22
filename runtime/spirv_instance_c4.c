@@ -1,4 +1,4 @@
-// Uniform block c4 read per instance (vk_exec_draw.c vk_exec_draw_merge, TOTK_DRAW_MERGE).
+// Uniform block c4 read per instance (vk_exec_draw.c vk_exec_draw_merge, DKB_DRAW_MERGE).
 //
 // Bananza draws one mesh thousands of times a frame with nothing between two draws but a new c4 range (one 256-byte
 // block each). The merge records such a run as one instanced draw and binds the run's blocks one after another as a

@@ -1,5 +1,5 @@
-// Frame timing (TOTK_TRACE=perf, the frame-time summary, the performance overlay's counts), the A/B switches (rt_ab,
-// rt_knob) and TOTK_ONE_PER_CORE. The sampling profiler (TOTK_PROFILE) is the OS's (prof_win.c); without one the weak
+// Frame timing (DKB_TRACE=perf, the frame-time summary, the performance overlay's counts), the A/B switches (rt_ab,
+// rt_knob) and DKB_ONE_PER_CORE. The sampling profiler (DKB_PROFILE) is the OS's (prof_win.c); without one the weak
 // prof_sampler_* below do nothing.
 #include <math.h>
 #include <stdio.h>
@@ -18,13 +18,13 @@
 volatile uint32_t prof_render_tid, prof_main_tid, prof_replay_tid;
 
 __attribute__((weak)) int prof_sampler_start(void) {
-    if (cfg_get("TOTK_PROFILE")) rt_log("prof: TOTK_PROFILE: no sampling profiler on this OS");
+    if (cfg_get("DKB_PROFILE")) rt_log("prof: DKB_PROFILE: no sampling profiler on this OS");
     return 0;
 }
 __attribute__((weak)) void prof_sampler_write(void) {}
 __attribute__((weak)) void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) { (void)frame, (void)now, (void)d; }
 
-// TOTK_TRACE=perf, TOTK_FLIGHT=1 or the full performance overlay: event counts are taken. Wait times are always taken
+// DKB_TRACE=perf, DKB_FLIGHT=1 or the full performance overlay: event counts are taken. Wait times are always taken
 // (frame-time summary). perf_base: the part fixed at start.
 static int perf_on, perf_base;
 static int overlay;   // performance overlay mode (perf_set_overlay): 0 off, 1 fps, 2 full, 3 breakdown
@@ -61,11 +61,11 @@ void prof_write(void) {
     prof_sampler_write();
 }
 
-// ---- TOTK_TRACE=perf: frame interval and the time the render thread spends waiting, logged every 60 presents. The
-// flight recorder (TOTK_FLIGHT=1, flight.c) takes the same numbers per frame.
+// ---- DKB_TRACE=perf: frame interval and the time the render thread spends waiting, logged every 60 presents. The
+// flight recorder (DKB_FLIGHT=1, flight.c) takes the same numbers per frame.
 static uint64_t wait_ns[PERF_N], frame_ns[PERF_N], worst_ns[PERF_N];   // window totals, this frame, the slowest frame
 
-// ---- TOTK_TRACE=perf: the replay of a slow frame by part (host.h PERF_PH_). The recording thread keeps a stack of the
+// ---- DKB_TRACE=perf: the replay of a slow frame by part (host.h PERF_PH_). The recording thread keeps a stack of the
 // parts open on it: a part's time is its interval less the intervals of the parts that ended inside it, so the parts
 // add up to no more than the replay and what is left is the replay's own walk. Only the thread inside submit_record
 // pushes (ph_on), and the slice workers while they record a slice (perf_ph_worker_begin), so the other threads'
@@ -329,7 +329,7 @@ static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share,
 int rt_ab(void) {
     static int64_t period = -1;   // us of world clock; 0: off
     if (period < 0) {
-        const char *e = cfg_get("TOTK_AB");
+        const char *e = cfg_get("DKB_AB");
         period = e && *e ? (int64_t)(atof(e) * 1e6) : 0;
     }
     int64_t w = period ? frame_step_world_us() : -1;
@@ -340,13 +340,13 @@ int rt_ab(void) {
 
 int rt_knob(const char *name, const char *def) {
     char key[64];
-    snprintf(key, sizeof key, "TOTK_%s", name);
+    snprintf(key, sizeof key, "DKB_%s", name);
     const char *e = cfg_get(key);
     if (!e || !*e) e = def;
     return !strcmp(e, "ab") ? 2 : strcmp(e, "0") != 0;
 }
 
-// TOTK_ONE_PER_CORE=1: the process keeps the first logical processor of each physical core, so busy threads (the
+// DKB_ONE_PER_CORE=1: the process keeps the first logical processor of each physical core, so busy threads (the
 // render thread, the guest cores, the job workers) never share a core's execution units with another; "ab" switches
 // it with the A/B blocks. Off by default until measured here; Savage Wind Recomp
 // reported +4-10% from the same rule on an 8-core SMT CPU.
@@ -368,14 +368,14 @@ static void cpu_placement(void) {
     plat_process_affinity(on ? one : all);
 }
 
-// TOTK_AB: every frame's interval and replay time summed per side (A, B) once the world clock passes 10 s, logged
+// DKB_AB: every frame's interval and replay time summed per side (A, B) once the world clock passes 10 s, logged
 // every 600 frames. Frame by frame, so blocks of a few seconds count whole (the 60-frame perf windows mostly straddle
 // them); a 2-3 s period keeps both sides on nearly the same scenery and the same CPU temperature.
 static void ab_frame(uint64_t frame, uint64_t d, uint64_t rep, int side) {
     static int on = -1;
     static double sum[2], rsum[2], n[2], sq[2];
     if (on < 0) {
-        const char *e = cfg_get("TOTK_AB");
+        const char *e = cfg_get("DKB_AB");
         on = e && *e && atof(e) > 0;
     }
     if (!on || !d) return;
@@ -415,10 +415,10 @@ static void lock_waits_log(uint64_t frame) {
     rt_log("perf: frame %llu: lock waits over 100 us: %s", (unsigned long long)frame, line);
 }
 
-// A slow frame's replay by part (TOTK_TRACE=perf): every part that took 0.05 ms or more, longest first, with its count,
+// A slow frame's replay by part (DKB_TRACE=perf): every part that took 0.05 ms or more, longest first, with its count,
 // its longest single interval (with the parts inside it) and, for the parts timed with perf_ph_begin_cpu, the thread's
 // CPU time in them. "rest of the walk" is the replay less the parts: the walk's own work and everything it does that no
-// part names. "outside the replay" is the frame interval less the replay; with TOTK_REPLAY_ASYNC the replay runs on its
+// part names. "outside the replay" is the frame interval less the replay; with DKB_REPLAY_ASYNC the replay runs on its
 // own thread beside the render thread, so the two need not add up to the interval. A second line gives the slice
 // workers' slices the same way, summed over the workers (they run side by side, so it can exceed the frame). Every
 // present clears the sums, so the lines hold what was recorded since the previous one.
@@ -437,9 +437,9 @@ static const char *const ph_name[PERF_PH_N] = {
     [PERF_PH_WB_LISTS] = "write-back lists taken", [PERF_PH_ST_SPLIT] = "staged write-backs split and recorded",
     [PERF_PH_WB_HELD] = "held parts' write-back checks"};
 
-// TOTK_PERF_PARTS=1 (with TOTK_TRACE=perf; off by default): the same parts summed over the 60 frames of each perf line
+// DKB_PERF_PARTS=1 (with DKB_TRACE=perf; off by default): the same parts summed over the 60 frames of each perf line
 // and printed per frame (perf: frame N: replay by part per frame), for the steady state, where no frame is slow enough
-// for the line above. The steady-state cost of TOTK_MIRROR_STAGED=all on the Hilltop Layer of Surf Hills (replay 9.09
+// for the line above. The steady-state cost of DKB_MIRROR_STAGED=all on the Hilltop Layer of Surf Hills (replay 9.09
 // against 8.53 ms a frame with the pools imported, five runs each) had no part to land in otherwise.
 static struct {
     int64_t ns[2][PERF_PH_N], cnt[2][PERF_PH_N], cpu[2][PERF_PH_N], all[2], allc[2], rep, frames;
@@ -532,7 +532,7 @@ static void ph_frame(uint64_t frame, uint64_t d, uint64_t rep, int slow) {
     }
 }
 
-// TOTK_TRACE=perf: the host operations (platform.h plat_op_begin) that ended in a slow frame, by thread role and kind,
+// DKB_TRACE=perf: the host operations (platform.h plat_op_begin) that ended in a slow frame, by thread role and kind,
 // so that a long frame outside the replay (a layer's teardown and load) splits into pool finalizes, thaws, imports,
 // releases, file reads and the system calls inside them. Taken every present, logged for the slow ones.
 static void ops_frame_log(uint64_t frame, int slow) {
@@ -583,9 +583,9 @@ void perf_present(uint64_t frame) {
         last = now;
         return;
     }
-    static uint64_t slow_ns;   // TOTK_PERF_SLOW_MS (default 50): frames at least this long get a line of their own
+    static uint64_t slow_ns;   // DKB_PERF_SLOW_MS (default 50): frames at least this long get a line of their own
     if (!slow_ns) {
-        const char *e = cfg_get("TOTK_PERF_SLOW_MS");
+        const char *e = cfg_get("DKB_PERF_SLOW_MS");
         slow_ns = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 50) * 1000000ull;
     }
     kern_core_waits_frame(frame, d, (last && d >= slow_ns) | (frame % 60 ? 0 : 2));

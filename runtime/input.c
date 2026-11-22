@@ -1,6 +1,6 @@
 // Host input for nn::hid (runtime/ov_input.c): an SDL3 gamepad (no SDL window needed), the keyboard and the mouse,
 // merged into Switch npad button bits and stick axes. Button order follows libnx HidNpadButton (ISC). The key and pad
-// bindings are the tables in input_map.c (totk.ini overrides them). The keyboard and the mouse come from the window
+// bindings are the tables in input_map.c (dkb.ini overrides them). The keyboard and the mouse come from the window
 // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
 // Keys and their map: docs/controls.md.
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
@@ -39,13 +39,13 @@ static void start(void);
 static int pad_switch;               // the open gamepad is a Switch Pro Controller or Joy-Con (HD rumble packets)
 static int pad_rumble;               // the open gamepad has rumble motors
 static volatile int32_t pad_labels[4];  // ... and the labels of its south, east, west, north buttons (PAD_LABEL_*), any thread
-static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under TOTK_PAD_LAYOUT=auto)
+static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under DKB_PAD_LAYOUT=auto)
 static int pad_layout = -1;          // PAD_LAYOUT_* in effect for the open gamepad, -1 to pick again; live (cfg_version)
 static unsigned pad_layout_seen;
 static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any thread), -1 without a gamepad
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
-static int motion_thread;            // 0 not started, 1 running, -1 off (TOTK_MOTION=0, no SDL)
+static int motion_thread;            // 0 not started, 1 running, -1 off (DKB_MOTION=0, no SDL)
 
 // SDL buttons of the gamepad inputs (input_map.h PAD_*), by position; PAD_ZL and PAD_ZR are the triggers (axes).
 static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
@@ -60,7 +60,7 @@ static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
     [PAD_TOUCHPAD] = SDL_GAMEPAD_BUTTON_TOUCHPAD,   // the DualSense and DualShock 4 touchpad click (#291)
 };
 
-// TOTK_INPUT_SCRIPT=<file>: lines "<frame> <button> [hold]" or "<frame> LSTICK|RSTICK <x> <y> [hold]", ORed into the real input.
+// DKB_INPUT_SCRIPT=<file>: lines "<frame> <button> [hold]" or "<frame> LSTICK|RSTICK <x> <y> [hold]", ORed into the real input.
 // <frame> and its hold are 60 Hz ticks of game time since the first present (frame_step_ticks: presents at 60 fps), so
 // the title menus get the presses at the same game time at any frame limit. A line "@<ms> ..." is timed instead: <ms>
 // and its hold are milliseconds of the world clock (frame_step_world_us, game time since the loaded save's first
@@ -98,10 +98,10 @@ static int wait_met(const ScriptEv *e, int i, int64_t w) {
 
 static void script_load(void) {
     script_state = 1;
-    const char *path = cfg_get("TOTK_INPUT_SCRIPT");
+    const char *path = cfg_get("DKB_INPUT_SCRIPT");
     if (!path || !*path) return;
     FILE *f = fopen(path, "r");
-    if (!f) { rt_log("input: cannot open TOTK_INPUT_SCRIPT %s", path); return; }
+    if (!f) { rt_log("input: cannot open DKB_INPUT_SCRIPT %s", path); return; }
     char line[256];
     int cap = 0, ln = 0;
     while (fgets(line, sizeof line, f)) {
@@ -125,7 +125,7 @@ static void script_load(void) {
 }
 
 // DKB_LIVE_INPUT=<file> (test harness): the first line of the file, read again every 6th call, lists the buttons held right now
-// (names as in TOTK_INPUT_SCRIPT, whitespace or comma separated; "LSTICK:x:y" and "RSTICK:x:y" set a stick). The file can be
+// (names as in DKB_INPUT_SCRIPT, whitespace or comma separated; "LSTICK:x:y" and "RSTICK:x:y" set a stick). The file can be
 // rewritten while the game runs, so a person or a script can drive it step by step. DKB_LIVE_INPUT2 does the same for
 // player 2 (input_poll2), and while it is set player 2 counts as connected. Returns 0 when the variable is not set.
 typedef struct { const char *env, *path; unsigned calls; uint64_t bits; int32_t ls[2], rs[2]; } LiveInput;
@@ -214,7 +214,7 @@ void input_script_report(void) {
     if (s.waits) rt_log("input: script waits: %d, %d of them timed out", s.waits, s.timeouts);
 }
 
-// TOTK_INPUT_RECORD=<file>: writes the merged input as TOTK_INPUT_SCRIPT lines, one per button press and per stick
+// DKB_INPUT_RECORD=<file>: writes the merged input as DKB_INPUT_SCRIPT lines, one per button press and per stick
 // segment, so a played session replays as a script. A stick segment ends when an axis moves by more than REC_STICK_STEP.
 // An event that begins on the world clock is written timed ("@<ms>", hold in ms), one before it in ticks
 // (frame_step_ticks). When the world clock starts, held buttons and sticks are cut there and go on as timed events.
@@ -257,11 +257,11 @@ static void rec_flush_all(void) {
 
 static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
     if (!rec_state) {
-        const char *path = cfg_get("TOTK_INPUT_RECORD");   // no default: not recording when unset
+        const char *path = cfg_get("DKB_INPUT_RECORD");   // no default: not recording when unset
         rec = path && *path ? fopen(path, "w") : NULL;
         rec_state = rec ? 1 : -1;
-        if (path && *path && !rec) rt_log("input: cannot open TOTK_INPUT_RECORD %s", path);
-        if (rec) { fprintf(rec, "# Recorded input (TOTK_INPUT_RECORD); frame = 60 Hz ticks of game time, @ms = world clock.\n"); atexit(rec_flush_all);
+        if (path && *path && !rec) rt_log("input: cannot open DKB_INPUT_RECORD %s", path);
+        if (rec) { fprintf(rec, "# Recorded input (DKB_INPUT_RECORD); frame = 60 Hz ticks of game time, @ms = world clock.\n"); atexit(rec_flush_all);
                    rt_log("input: recording to %s", path); }
     }
     if (rec_state != 1) return;
@@ -304,7 +304,7 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
     if (wrote) fflush(rec);
 }
 
-static float mouse_sens = -1;              // TOTK_MOUSE_SENS, 0 = mouse camera off; live (cfg_version)
+static float mouse_sens = -1;              // DKB_MOUSE_SENS, 0 = mouse camera off; live (cfg_version)
 static unsigned mouse_sens_seen;
 static uint64_t mouse_direct_frame = ~0ull;  // most recent manual camera update, under lock
 
@@ -312,7 +312,7 @@ static float mouse_sens_get(void) {
     unsigned ver = cfg_version();
     if (mouse_sens >= 0 && ver == mouse_sens_seen) return mouse_sens;
     mouse_sens_seen = ver;
-    double v = cfg_double("TOTK_MOUSE_SENS");
+    double v = cfg_double("DKB_MOUSE_SENS");
     mouse_sens = (float)(v < 0 ? 0 : v > 10 ? 10 : v);
     return mouse_sens;
 }
@@ -326,7 +326,7 @@ static int mouse_direct_mode(void) {
     if (patch == -2) patch = rt_patch_set("mousecamera");
     unsigned ver = cfg_version();
     if (on < 0 || seen != ver) {
-        on = cfg_bool("TOTK_MOUSE_CAMERA");
+        on = cfg_bool("DKB_MOUSE_CAMERA");
         seen = ver;
         rt_patch_switch(patch, on);
         if (!on) mouse_direct_frame = ~0ull;
@@ -380,14 +380,14 @@ static void mouse_camera(int32_t out[2]) {
     out[1] = held[1];
 }
 
-static float stick_dead = -1;              // TOTK_STICK_DEADZONE as a fraction of full deflection; live (cfg_version)
+static float stick_dead = -1;              // DKB_STICK_DEADZONE as a fraction of full deflection; live (cfg_version)
 static unsigned stick_dead_seen;
 
 static float stick_dead_get(void) {
     unsigned ver = cfg_version();
     if (stick_dead >= 0 && ver == stick_dead_seen) return stick_dead;
     stick_dead_seen = ver;
-    double v = cfg_double("TOTK_STICK_DEADZONE");
+    double v = cfg_double("DKB_STICK_DEADZONE");
     stick_dead = (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
     return stick_dead;
 }
@@ -532,12 +532,12 @@ static void pad2_release(void) {
 // disconnections fall back, and an explicit preference applies at startup or when changed by the user.
 static void scan_pads(void) {
     pad_device_seen = cfg_version();
-    const char *preferred = cfg_value("TOTK_PAD_DEVICE");
+    const char *preferred = cfg_value("DKB_PAD_DEVICE");
     InputPadDevice *devices;
     int n = devices_locked(&devices);
     uint32_t current = pad && SDL_GamepadConnected(pad) ? SDL_GetGamepadID(pad) : 0;
     if (!n && current) { free(devices); return; }   // do not interpret a failed snapshot as a topology change
-    pad_selection.keep = cfg_bool("TOTK_COOP");   // a second gamepad joins as player 2 instead of taking player 1 over
+    pad_selection.keep = cfg_bool("DKB_COOP");   // a second gamepad joins as player 2 instead of taking player 1 over
     uint32_t wanted = input_pad_choose(&pad_selection, devices, n, preferred, current);
     if (current && current == wanted) { free(devices); return; }
     SDL_Gamepad *next = wanted ? open_pad_locked(wanted) : NULL;
@@ -607,7 +607,7 @@ static int pad_layout_get(void) {
     if (pad_layout >= 0 && ver == pad_layout_seen) return pad_layout;
     pad_layout_seen = ver;
     int was = pad_layout;
-    const char *set = cfg_value("TOTK_PAD_LAYOUT");
+    const char *set = cfg_value("DKB_PAD_LAYOUT");
     pad_layout = input_pad_layout_pick(set, pad_east_a);
     if (pad_layout != was)
         rt_log("input: gamepad layout %s (pad_layout = %s)", pad_layout == PAD_LAYOUT_XBOX ? "xbox" : "nintendo", set);
@@ -615,7 +615,7 @@ static int pad_layout_get(void) {
     return pad_layout;
 }
 
-// The TOTK_BIND_* values last applied, one per line; the tables are built again when one changes (the menu's remapping rows write
+// The DKB_BIND_* values last applied, one per line; the tables are built again when one changes (the menu's remapping rows write
 // them while the game runs). Under lock.
 static unsigned binds_seen = ~0u;
 static char binds_applied[4096];
@@ -628,7 +628,7 @@ static void binds_refresh(void) {
     size_t len = 0;
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
-        snprintf(var, sizeof var, "TOTK_BIND_%s", input_action_name(a));
+        snprintf(var, sizeof var, "DKB_BIND_%s", input_action_name(a));
         const char *s = cfg_get(var);
         len += (size_t)snprintf(now + len, len < sizeof now ? sizeof now - len : 0, "%s\n", s ? s : "");
     }
@@ -637,16 +637,16 @@ static void binds_refresh(void) {
     input_map_configure();
 }
 
-// TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry> (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis values
+// DKB_TEST_PAD=<lx>,<ly>,<rx>,<ry> (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis values
 // (-32768..32767, down is +y), attached before the first scan so it is the gamepad the game reads: drift and full
 // deflection go through the same mapping and dead zone as a real pad.
 static void test_pad_attach(void) {
     static SDL_Joystick *joy;   // kept open: a virtual joystick's axes are set through an open handle
-    const char *e = cfg_get("TOTK_TEST_PAD");
+    const char *e = cfg_get("DKB_TEST_PAD");
     int v[4];
     if (!e || !*e) return;
     if (sscanf(e, "%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3]) != 4) {
-        rt_log("input: TOTK_TEST_PAD=%s is not <lx>,<ly>,<rx>,<ry>; no test gamepad", e);
+        rt_log("input: DKB_TEST_PAD=%s is not <lx>,<ly>,<rx>,<ry>; no test gamepad", e);
         return;
     }
     SDL_VirtualJoystickDesc d;
@@ -670,12 +670,12 @@ static void test_pad_attach(void) {
 
 static void start(void) {
     binds_refresh();
-    const char *e = cfg_get("TOTK_INPUT");
-    if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (TOTK_INPUT=none)"); return; }
+    const char *e = cfg_get("DKB_INPUT");
+    if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (DKB_INPUT=none)"); return; }
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) test_pad_attach();
-    if (state == 1) switch2_start();   // Switch 2 controllers over Bluetooth, as virtual gamepads (TOTK_SWITCH2)
+    if (state == 1) switch2_start();   // Switch 2 controllers over Bluetooth, as virtual gamepads (DKB_SWITCH2)
     if (state == 1) {
         scan_pads();
         if (!pad) rt_log("input: no gamepad (keyboard only until one is connected)");
@@ -712,7 +712,7 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
     SDL_JoystickID id = SDL_GetGamepadID(pad);
     if (pad_fullscreen_gate.device != id) pad_fullscreen_pending = 0;
     uint64_t shortcut = (pd[PAD_START] ? 1ull << B_PLUS : 0) | (pd[PAD_BACK] ? 1ull << B_MINUS : 0);
-    if (cfg_bool("TOTK_PAD_FULLSCREEN_HOLD"))
+    if (cfg_bool("DKB_PAD_FULLSCREEN_HOLD"))
         pad_fullscreen_pending |= input_hold_gate(&pad_fullscreen_gate, id, plat_now_ns(), &shortcut);
     else {
         pad_fullscreen_gate = (InputHoldGate){0};
@@ -731,7 +731,7 @@ static int pad_fullscreen_take(void) {
     return toggle;
 }
 
-// Under lock, state 1: the open gamepad's buttons (Switch bits after TOTK_PAD_LAYOUT and the TOTK_BIND_* lines) and
+// Under lock, state 1: the open gamepad's buttons (Switch bits after DKB_PAD_LAYOUT and the DKB_BIND_* lines) and
 // sticks; 0 without a connected gamepad.
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
@@ -792,7 +792,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     int32_t st[4] = {sl[0], sl[1], sr[0], sr[1]};
     // Keep the original merged Minus+Plus settings shortcut unless fullscreen is opted in.
     int toggle = 0;
-    if (!cfg_bool("TOTK_PAD_FULLSCREEN_HOLD"))
+    if (!cfg_bool("DKB_PAD_FULLSCREEN_HOLD"))
         toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
     else {
         combo_held = 0;
@@ -829,7 +829,7 @@ int input_mouse_direct(float degrees[2]) {
     int32_t dx, dy;
     ikb_mouse_take(&dx, &dy);
     mouse_direct_frame = frame;
-    const char *in = cfg_get("TOTK_INPUT");
+    const char *in = cfg_get("DKB_INPUT");
     int enabled = ikb_captured() && ikb_foreground() && !g_block && !g_menu &&
                   !(in && !strcmp(in, "none"));
     // Degrees per raw count at sensitivity 1; the setting scales mouse distance linearly.
@@ -850,7 +850,7 @@ int input_mouse_direct_recent(void) {
 }
 
 int input_cursor_allowed(void) {
-    const char *in = cfg_get("TOTK_INPUT");
+    const char *in = cfg_get("DKB_INPUT");
     return g_block != 1 && g_menu != 1 && mouse_sens_get() > 0 && !(in && !strcmp(in, "none"));
 }
 
@@ -927,8 +927,8 @@ int input_poll2(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
     int on = 0;
     plat_mutex_lock(&lock);
     if (!state) start();
-    if (state == 1 && !cfg_bool("TOTK_COOP")) pad2_release();
-    if (state == 1 && cfg_bool("TOTK_COOP")) {
+    if (state == 1 && !cfg_bool("DKB_COOP")) pad2_release();
+    if (state == 1 && cfg_bool("DKB_COOP")) {
         pad2_scan();
         if (pad2) {
             on = 1;
@@ -937,13 +937,13 @@ int input_poll2(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
             pd[PAD_ZL] = SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
             pd[PAD_ZR] = SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
             for (int p = PAD_ZR + 1; p < PAD_COUNT; p++) pd[p] = SDL_GetGamepadButton(pad2, pad_sdl[p]);
-            b = input_map_pad_buttons(pd, input_pad_layout_pick(cfg_value("TOTK_PAD_LAYOUT"), pad2_east_a));
+            b = input_map_pad_buttons(pd, input_pad_layout_pick(cfg_value("DKB_PAD_LAYOUT"), pad2_east_a));
             float dead = stick_dead_get();
             input_pad_stick(SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFTX), -(int32_t)SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFTY), dead, sl);
             input_pad_stick(SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHTX), -(int32_t)SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHTY), dead, sr);
         }
     }
-    if (cfg_bool("TOTK_COOP")) on |= live_read(&live2, &b, sl, sr);
+    if (cfg_bool("DKB_COOP")) on |= live_read(&live2, &b, sl, sr);
     plat_mutex_unlock(&lock);
     if (g_block || g_menu) b = 0, sl[0] = sl[1] = sr[0] = sr[1] = 0;   // a text entry or the menu holds both players
     stick_bits(&b, sl[0], sl[1], B_SL_LEFT);
@@ -963,7 +963,7 @@ int input_pad_layout(void) {
 }
 
 int input_sony_pad_present(void) {
-    const char *e = cfg_get("TOTK_INPUT");
+    const char *e = cfg_get("DKB_INPUT");
     if (e && !strcmp(e, "none")) return 0;
     // SDL_Init counts its callers, so start() initialising the subsystem again later is harmless.
     if (!SDL_Init(SDL_INIT_GAMEPAD)) {
@@ -1040,7 +1040,7 @@ int input_capture(int reset, int *id) {
 }
 
 int input_rumble_triggers_enabled(void) {
-    return cfg_bool("TOTK_RUMBLE_TRIGGERS");
+    return cfg_bool("DKB_RUMBLE_TRIGGERS");
 }
 
 // Under lock: the open pad is a Switch 2 controller over Bluetooth (switch2.c's virtual gamepad), which takes the game's
@@ -1058,9 +1058,9 @@ int input_rumble_stream(const float v[2][4]) {
     return ok;
 }
 
-// Under lock: the open pad takes HD packets (a Switch pad, TOTK_RUMBLE_HD not off).
+// Under lock: the open pad takes HD packets (a Switch pad, DKB_RUMBLE_HD not off).
 static int pad_hd(void) {
-    return state == 1 && pad && pad_switch && !hd_failed && strcmp(cfg_value("TOTK_RUMBLE_HD"), "off") != 0 && !pad_s2();
+    return state == 1 && pad && pad_switch && !hd_failed && strcmp(cfg_value("DKB_RUMBLE_HD"), "off") != 0 && !pad_s2();
 }
 
 int input_rumble_hd(const float v[2][4], uint32_t ms) {
@@ -1142,13 +1142,13 @@ int input_motion_enabled(void) {
     unsigned v = cfg_version();
     if (on < 0 || v != seen) {
         seen = v;
-        on = cfg_bool("TOTK_MOTION");
+        on = cfg_bool("DKB_MOTION");
     }
     return on;
 }
 
 // 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
-// fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis
+// fusion. Without a gamepad with sensors, or with motion off (DKB_MOTION=0, live), nothing is fed and the six-axis
 // sensor reads at rest.
 static void motion_main(void *arg) {
     (void)arg;
@@ -1174,7 +1174,7 @@ void input_motion_start(void) {
     plat_mutex_lock(&lock);
     if (!state) start();
     if (!motion_thread) {
-        if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
+        if (!input_motion_enabled()) rt_log("input: motion off (DKB_MOTION=0); it can be turned on while the game runs");
         if (state != 1) motion_thread = -1;
         else {
             if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");

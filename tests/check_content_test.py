@@ -55,6 +55,10 @@ class ContentTest(unittest.TestCase):
         path.write_bytes(SAFE)
         self.assert_rejected(self.check(), 'generated from game code')
 
+    def test_legacy_marker_is_rejected(self):
+        self.stage('fixture.txt', GENERATED.replace(content.GENERATED_MARKER.encode(), content.LEGACY_GENERATED_MARKER.encode()))
+        self.assert_rejected(self.check(), 'generated from game code')
+
     def test_safe_index_blob_is_accepted_with_forbidden_worktree(self):
         path = self.stage('fixture.txt', SAFE)
         path.write_bytes(GENERATED)

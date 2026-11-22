@@ -1,6 +1,6 @@
-// totk.exe entry: reserves the guest address space, parses the command line and runs one mode.
+// dkb.exe entry: reserves the guest address space, parses the command line and runs one mode.
 //
-//   totk.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
+//   dkb.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
 //     --probe-kernel, --probe-ipc, --probe-ipc-lifetime, --probe-services, --probe-fs    host probes
@@ -18,7 +18,7 @@
 //     --boot            run the game to the first NVN call
 //     --seconds S       run the game (implies --boot's start-up) until the world clock (game time since the loaded
 //                       save's first frame) passed S seconds, then exit 0 at that present
-//     --shot PNG        with --seconds: save that frame; env TOTK_GPU=null|vulkan selects the back end
+//     --shot PNG        with --seconds: save that frame; env DKB_GPU=null|vulkan selects the back end
 //     (no mode)         run the game
 //
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
@@ -44,9 +44,9 @@
 unsigned rt_trace;
 
 // Log file. A game run whose stderr is not a file already (started from Explorer, a shortcut or a console) also
-// writes its log to logs\totk.log next to totk.exe, so a player has one to attach to a report; run_game.py and
-// `2> file` keep their own file. Each start moves the earlier logs to totk.1.log .. totk.4.log. A file stops at 64 MiB
-// (TOTK_TRACE can write that much). Lines from before log_open wait in a static buffer: mem_init runs first so that
+// writes its log to logs\dkb.log next to dkb.exe, so a player has one to attach to a report; run_game.py and
+// `2> file` keep their own file. Each start moves the earlier logs to dkb.1.log .. dkb.4.log. A file stops at 64 MiB
+// (DKB_TRACE can write that much). Lines from before log_open wait in a static buffer: mem_init runs first so that
 // nothing else lands in the guest address space, and an earlier open would put the CRT's heap there.
 #define LOG_KEEP 5
 #define LOG_CAP (64ull << 20)
@@ -117,8 +117,8 @@ static void log_open(int game) {
     if (cut && (size_t)(cut - dir) + sizeof "/logs" <= sizeof dir) {
         strcpy(cut, "/logs");
         plat_file_mkdir_p(dir);
-        const char *base = rt_game_version ? "totk" : "dkb";   // Bananza logs to dkb.log, TotK to totk.log
-        for (int i = LOG_KEEP - 1; i > 0; i--) {   // totk.3.log -> totk.4.log, ..., totk.log -> totk.1.log
+        const char *base = "dkb";
+        for (int i = LOG_KEEP - 1; i > 0; i--) {   // dkb.3.log -> dkb.4.log, ..., dkb.log -> dkb.1.log
             if (i > 1) snprintf(from, sizeof from, "%s/%s.%d.log", dir, base, i - 1);
             else snprintf(from, sizeof from, "%s/%s.log", dir, base);
             snprintf(to, sizeof to, "%s/%s.%d.log", dir, base, i);
@@ -141,7 +141,7 @@ static void log_open(int game) {
 }
 
 static void parse_trace(void) {
-    const char *e = cfg_get("TOTK_TRACE");   // no default: nothing is traced when unset
+    const char *e = cfg_get("DKB_TRACE");   // no default: nothing is traced when unset
     if (!e) return;
     static const struct { const char *name; unsigned bit; } names[] = {
         {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
@@ -152,7 +152,7 @@ static void parse_trace(void) {
         int known = 0;
         for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
             if (strlen(names[i].name) == n && !strncmp(p, names[i].name, n)) rt_trace |= names[i].bit, known = 1;
-        if (!known && n) rt_log("TOTK_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, codec, all)", (int)n, p);
+        if (!known && n) rt_log("DKB_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, codec, all)", (int)n, p);
         p += n + (p[n] == ',');
     }
 }
@@ -250,7 +250,7 @@ static void crash_handler(const PlatCrash *x) {
     uintptr_t rip = x->rip;
     // x->module names the DLL of a fault outside this executable (the last-chance filter: a driver, a Vulkan layer);
     // its offset is then into that module, and the lifted-function lookup below finds nothing.
-    rt_logf("FATAL: %s (%#x) at host %p (%s+%#llx)", x->what, x->code, (void *)rip, x->module ? x->module : "totk",
+    rt_logf("FATAL: %s (%#x) at host %p (%s+%#llx)", x->what, x->code, (void *)rip, x->module ? x->module : "dkb",
             (unsigned long long)x->offset);
     if (x->access >= 0)
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
@@ -266,7 +266,7 @@ static void crash_handler(const PlatCrash *x) {
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
     for (int i = 0; i < x->nframes; i++) {   // abort and invalid parameter: where the host code called it
         uint64_t g = lifted_function(x->frames[i]);
-        rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - (rip - x->offset)));
+        rt_logf("  host frame %2d: dkb+%#llx", i, (unsigned long long)(x->frames[i] - (rip - x->offset)));
         if (g) rt_logf(" in lifted function f_%llx", (unsigned long long)g);
         rt_log_raw("\n", 1);
     }
@@ -455,7 +455,7 @@ static void check_memory(void) {
 }
 
 #ifdef _WIN32
-// memory.c mem_commit_later against a heap shrink (TOTK_HEAP_LAZY, Windows only). The background thread commits a
+// memory.c mem_commit_later against a heap shrink (DKB_HEAP_LAZY, Windows only). The background thread commits a
 // staged pool's untouched pages about 2 s after the request, so the heap may shrink in between, or while it commits the
 // range slice by slice. Neither may leave a committed page beyond the new heap end, nor mark one in the commit map: a
 // later grow and mem_touch of the range must find every page reserved and commit it. Only plat_mem_state looks at the
@@ -480,8 +480,8 @@ static int all_state(uint64_t a, uint64_t e, int committed) {   // every page of
 }
 
 static int probe_commit_later(void) {
-    if (!cfg_bool("TOTK_HEAP_LAZY")) {
-        printf("commit-later: skipped (TOTK_HEAP_LAZY=0)\n");
+    if (!cfg_bool("DKB_HEAP_LAZY")) {
+        printf("commit-later: skipped (DKB_HEAP_LAZY=0)\n");
         return 0;
     }
     int before = failures;
@@ -577,9 +577,9 @@ static int usage(const char *argv0) {
     return 2;
 }
 
-// Paths for a copied folder (tools/package_build.py). Per path: TOTK_EXEFS, TOTK_ROMFS, TOTK_PROFILE_DIR, else the
-// folder next to totk.exe (exefs with main.npdm, romfs with romfs.bin, any profile folder) if it is there, else the
-// path baked in at build time. A relative value is relative to totk.exe's folder.
+// Paths for a copied folder (tools/package_build.py). Per path: DKB_EXEFS, DKB_ROMFS, DKB_PROFILE_DIR, else the
+// folder next to dkb.exe (exefs with main.npdm, romfs with romfs.bin, any profile folder) if it is there, else the
+// path baked in at build time. A relative value is relative to dkb.exe's folder.
 static char pp_exefs[PLAT_PATH_MAX * 2], pp_romfs[PLAT_PATH_MAX * 2], pp_profile[PLAT_PATH_MAX * 2];
 
 static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must, char *out, size_t cap,
@@ -604,9 +604,9 @@ static void portable_paths(RtConfig *c) {
     char *cut = n && n < sizeof exe ? plat_last_sep(exe) : NULL;
     if (!cut) return;
     *cut = 0;
-    c->exefs = portable_path(exe, "TOTK_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
-    c->romfs = portable_path(exe, "TOTK_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
-    c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
+    c->exefs = portable_path(exe, "DKB_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
+    c->romfs = portable_path(exe, "DKB_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
+    c->profile = portable_path(exe, "DKB_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
 }
 
 // The lifted code is built for the x86-64 level tools/build_game.py chose; on a CPU below it the first AVX2 or FMA
@@ -636,7 +636,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "--set %s: not KEY=VALUE with a known setting (dkb.ini.example lists them)\n", argv[i]);
             return 2;
         }
-    mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
+    mem_init();   // first: claim the guest address space before anything else can land there; reads dkb.ini
     // Right after the settings can be read and before anything loads or calls the Vulkan loader (SDL's video init,
     // vk_init): the loader reads VK_DRIVER_FILES when it first lists the drivers.
     vk_driver_env_apply();
@@ -649,13 +649,13 @@ int main(int argc, char **argv) {
     parse_trace();
     prof_start();
     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait
-    // costs a full tick. TOTK_TIMER_1MS=0 keeps the default for comparison.
-    if (cfg_bool("TOTK_TIMER_1MS")) plat_timer_1ms();
+    // costs a full tick. DKB_TIMER_1MS=0 keeps the default for comparison.
+    if (cfg_bool("DKB_TIMER_1MS")) plat_timer_1ms();
     cfg = (RtConfig){.exefs = rt_default_exefs, .romfs = rt_default_romfs, .profile = rt_default_profile,
-                     .gpu = cfg_get("TOTK_GPU")};
+                     .gpu = cfg_get("DKB_GPU")};
     portable_paths(&cfg);   // command-line paths below still win
     if (cfg.gpu && strcmp(cfg.gpu, "null") && strcmp(cfg.gpu, "vulkan")) {
-        rt_logf("TOTK_GPU must be null or vulkan, not '%s'\n", cfg.gpu);
+        rt_logf("DKB_GPU must be null or vulkan, not '%s'\n", cfg.gpu);
         return 2;
     }
     const char *mode = NULL;
@@ -674,7 +674,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "--version")) {
             // The port version (VERSION, plus the commit of a checkout) and the game it was built for, so a report says
             // which build it came from.
-            printf("%s %s (%s %s)\n", rt_game_version ? "totk" : "dkb", rt_port_version,
+            printf("%s %s (%s %s)\n", "dkb", rt_port_version,
                    rt_game_version ? "Tears of the Kingdom" : "Donkey Kong Bananza", rt_game_display);
             return 0;
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
@@ -683,7 +683,7 @@ int main(int argc, char **argv) {
                    "is not changed\n"
                    "  --version        the port version and the game it was built for\n"
                    "  --seconds S      play for S seconds and exit; --shot PNG saves the last frame\n"
-                   "Settings: dkb.ini next to the exe, or the environment (TOTK_ or DKB_ and the key in capitals).\n",
+                   "Settings: dkb.ini next to the exe, or the environment (DKB_ and the key in capitals).\n",
                    argv[0]);
             return 0;
         } else if (!strcmp(argv[i], "--set")) {
@@ -703,7 +703,7 @@ int main(int argc, char **argv) {
     log_open(!mode);
     if (!mode) {
         // console = 0: a frontend that starts the game gets no console window in front of the game's (#238).
-        if (!cfg_bool("TOTK_CONSOLE")) {
+        if (!cfg_bool("DKB_CONSOLE")) {
             const char *why = plat_console_hide();
             if (why) rt_log("console: left as is: %s", why);   // tells #364-style reports which case they hit
         }
@@ -715,7 +715,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-loader")) return probe_loader();
     if (!strcmp(mode, "--probe-cfg")) return probe_cfg();
 #ifdef _WIN32
-    if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of totk.manifest
+    if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of dkb.manifest
 #endif
 #ifdef _WIN32
     if (!strcmp(mode, "--probe-commit-later")) return probe_commit_later();

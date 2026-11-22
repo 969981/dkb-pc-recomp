@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # The same value as GENERATED_MARKER in tools/check_content.py, built in two pieces so that this file does not contain it.
-GENERATED_MARKER = "TOTK_RECOMP_" + "GENERATED_FROM_GAME_CODE"
+GENERATED_MARKER = "DKB_RECOMP_" + "GENERATED_FROM_GAME_CODE"
 ASSET_ID = re.compile(r"^[0-9a-f]{64}$")
 
 

@@ -3,7 +3,7 @@
 The storage-bind serial of c0 (c0_info in vk_exec_draw.c, on a draw context of the fixture's) and the sampler generation of vk_texture.c
 (descriptor_registered) are cut out of the runtime sources and linked against a scratch allocator in host memory. No
 Vulkan loader or GPU is linked. Every switch is set to "ab", so each case runs with the switch off (bananza's
-behaviour) and on, and flips it between calls the way TOTK_AB does inside one run.
+behaviour) and on, and flips it between calls the way DKB_AB does inside one run.
 """
 import argparse
 import os

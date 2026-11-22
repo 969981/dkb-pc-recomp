@@ -1,7 +1,7 @@
 """Exercise the GPU part notes of runtime/vk_sync.c with slices recording on other threads.
 
 A sliced pass's slices note their draws while the replay thread keeps noting into the part it records
-(TOTK_PERF_SLOW_GPU_MS). Each slice notes into a note of its own (vk_sync_slice_note_begin) and the replay thread folds
+(DKB_PERF_SLOW_GPU_MS). Each slice notes into a note of its own (vk_sync_slice_note_begin) and the replay thread folds
 them into the part that executes the slices (vk_sync_note_merge). The note functions come from vk_sync.c as they are;
 no Vulkan loader or GPU is linked, and a held part is only the `held` ring entry the merge reads.
 """

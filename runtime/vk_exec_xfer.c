@@ -100,7 +100,7 @@ static void write_counter(uint64_t addr, uint64_t counter) {
 }
 
 // A timestamp report. On the console the GPU runs a submission as soon as the game submits it and its work takes a few
-// milliseconds; here the replay comes first (up to a frame later with TOTK_REPLAY_ASYNC), and the completion is seen
+// milliseconds; here the replay comes first (up to a frame later with DKB_REPLAY_ASYNC), and the completion is seen
 // later still, so "now" at completion is mostly the replay's delay. Bananza paces itself on (end-of-frame timestamp -
 // CPU frame start): with that delay in it, it measured every frame as longer than 1/60 s and dropped to a longer present
 // interval. For a Switch 2 game the report keeps that existing entry-tick approximation, copied into its callback

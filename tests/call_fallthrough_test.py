@@ -12,7 +12,7 @@ NaN through exactly that. The fixture marks the slow path (R0 = 1.0), the fast p
 (R1 = 9.0); the test runs the emitted SPIR-V, including functions, branches and the call's variable arguments, for an
 argument that takes each path. No game data or GPU is used.
 
-Usage: python tests/call_fallthrough_test.py --translator build/xlate/totk_xlate.exe [--spirv-val PATH]
+Usage: python tests/call_fallthrough_test.py --translator build/xlate/dkb_xlate.exe [--spirv-val PATH]
 """
 import argparse
 import json

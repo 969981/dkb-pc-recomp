@@ -12,8 +12,8 @@
   repeat only: the completed first-visit bundle folder to reuse.
 
 .PARAMETER Exe
-  dkb.exe to run, relative to the repo root (default build\dkb100\dkb.exe, where docs/dkb-testing.md builds it). Its folder's runtime files (exe, DLLs, *.bin, dkb.ini or totk.ini) are copied into
-  the bundle's bin\ folder and the copy runs, so the game's logs land in bin\logs\dkb.log (bin\logs\totk.log for a TotK build) and the source folder is
+  dkb.exe to run, relative to the repo root (default build\dkb100\dkb.exe, where docs/dkb-testing.md builds it). Its folder's runtime files (exe, DLLs, *.bin, dkb.ini) are copied into
+  the bundle's bin\ folder and the copy runs, so the game's logs land in bin\logs\dkb.log and the source folder is
   not written to.
 
 .PARAMETER Exefs
@@ -41,7 +41,7 @@
   idle: the menu presses only (the earlier harness script, kept for comparison).
 
 .PARAMETER Realtime
-  Value of TOTK_REALTIME. Unset by default, so the run uses the game's own default (runtime/cfg.c). Pass 0 or 1 to force it;
+  Value of DKB_REALTIME. Unset by default, so the run uses the game's own default (runtime/cfg.c). Pass 0 or 1 to force it;
   builds without the realtime patch set ignore it (the log says so).
 
 .PARAMETER Thumbs
@@ -144,7 +144,7 @@ if ($Visit -eq 'first') {
 # and the harness used to redirect stderr to a file, which turned the log off. Running a copy keeps stderr on the
 # console and the log in bin\logs\dkb.log, and leaves the source folder (its logs, caches, dkb.ini) untouched.
 New-Item -ItemType Directory -Path $binDir | Out-Null
-$runtimeFiles = Get-ChildItem -LiteralPath $srcFolder -File | Where-Object { $_.Name -eq 'dkb.exe' -or $_.Extension -in '.dll', '.bin' -or $_.Name -in 'dkb.ini', 'totk.ini' }
+$runtimeFiles = Get-ChildItem -LiteralPath $srcFolder -File | Where-Object { $_.Name -eq 'dkb.exe' -or $_.Extension -in '.dll', '.bin' -or $_.Name -in 'dkb.ini' }
 foreach ($f in $runtimeFiles) { Copy-Item -LiteralPath $f.FullName -Destination $binDir }
 $exePath = Join-Path $binDir 'dkb.exe'
 $exeFolder = $binDir
@@ -157,40 +157,40 @@ New-Script $Script $ticks | Set-Content -LiteralPath $inputPath -Encoding ascii
 
 # ---------------------------------------------------------------- 5. settings: everything from the environment is cleared, then ours are set
 $settings = [ordered]@{
-    TOTK_ASSUME_FOCUS       = '1'                  # keep the game running when the window is not focused
-    TOTK_WINDOW_SIZE        = '1920x1080'
-    TOTK_FULLSCREEN         = '0'                  # overrides a dkb.ini [display] fullscreen = 1 (a6 has one)
-    TOTK_OUTPUT_RES         = '1920x1080'
-    TOTK_RENDER_SCALE       = '100'
-    TOTK_FPS_LIMIT          = '60'
-    TOTK_VK_PRESENT         = 'mailbox'            # the default, pinned so the run does not depend on it
-    TOTK_PERF_OVERLAY       = 'off'
-    TOTK_INPUT_SCRIPT       = $inputPath
-    TOTK_SHADER_CACHE       = $cache
+    DKB_ASSUME_FOCUS       = '1'                  # keep the game running when the window is not focused
+    DKB_WINDOW_SIZE        = '1920x1080'
+    DKB_FULLSCREEN         = '0'                  # overrides a dkb.ini [display] fullscreen = 1 (a6 has one)
+    DKB_OUTPUT_RES         = '1920x1080'
+    DKB_RENDER_SCALE       = '100'
+    DKB_FPS_LIMIT          = '60'
+    DKB_VK_PRESENT         = 'mailbox'            # the default, pinned so the run does not depend on it
+    DKB_PERF_OVERLAY       = 'off'
+    DKB_INPUT_SCRIPT       = $inputPath
+    DKB_SHADER_CACHE       = $cache
 }
-if ($Realtime -ne '') { $settings['TOTK_REALTIME'] = $Realtime }
+if ($Realtime -ne '') { $settings['DKB_REALTIME'] = $Realtime }
 if ($Measure -eq 'flight') {
     # Per-frame record: the flight recorder, one dump per 1200 presents (the dumps tile the run).
-    $settings['TOTK_FLIGHT'] = '1'
-    $settings['TOTK_FLIGHT_FRAMES'] = '1200'
-    $settings['TOTK_FLIGHT_THUMBS'] = '0'
-    $settings['TOTK_FLIGHT_SPIKE_MS'] = '50'
-    $settings['TOTK_FLIGHT_DIR'] = $flightDir
-    $settings['TOTK_FLIGHT_AT'] = ((1..15 | ForEach-Object { $_ * 1200 }) -join ',')
+    $settings['DKB_FLIGHT'] = '1'
+    $settings['DKB_FLIGHT_FRAMES'] = '1200'
+    $settings['DKB_FLIGHT_THUMBS'] = '0'
+    $settings['DKB_FLIGHT_SPIKE_MS'] = '50'
+    $settings['DKB_FLIGHT_DIR'] = $flightDir
+    $settings['DKB_FLIGHT_AT'] = ((1..15 | ForEach-Object { $_ * 1200 }) -join ',')
 }
 if ($Thumbs) {
     # Verification only: thumbnails of the last 120 frames before each dump, dumps every 300 presents from tick 1800.
-    $settings['TOTK_FLIGHT'] = '1'
-    $settings['TOTK_FLIGHT_FRAMES'] = '120'
-    $settings['TOTK_FLIGHT_THUMBS'] = '1'
-    $settings['TOTK_FLIGHT_SPIKE_MS'] = '0'
-    $settings['TOTK_FLIGHT_DIR'] = $flightDir
-    $settings['TOTK_FLIGHT_AT'] = ((0..14 | ForEach-Object { 2900 + $_ * 240 }) -join ',')
+    $settings['DKB_FLIGHT'] = '1'
+    $settings['DKB_FLIGHT_FRAMES'] = '120'
+    $settings['DKB_FLIGHT_THUMBS'] = '1'
+    $settings['DKB_FLIGHT_SPIKE_MS'] = '0'
+    $settings['DKB_FLIGHT_DIR'] = $flightDir
+    $settings['DKB_FLIGHT_AT'] = ((0..14 | ForEach-Object { 2900 + $_ * 240 }) -join ',')
 }
-# Diagnostics that stay off: no TOTK_TRACE, TOTK_PROFILE, validation, input recording or live input.
-$diagnosticsOff = @('TOTK_TRACE', 'TOTK_PROFILE', 'TOTK_PROFILE_RENDER', 'TOTK_PROFILE_CHAINS', 'TOTK_SPEED_PROBE',
-    'TOTK_VK_VALIDATION', 'TOTK_INPUT_RECORD', 'TOTK_CRIT', 'DKB_LIVE_INPUT')
-if ($Measure -eq 'summary') { $diagnosticsOff += @('TOTK_FLIGHT', 'TOTK_FLIGHT_*') }
+# Diagnostics that stay off: no DKB_TRACE, DKB_PROFILE, validation, input recording or live input.
+$diagnosticsOff = @('DKB_TRACE', 'DKB_PROFILE', 'DKB_PROFILE_RENDER', 'DKB_PROFILE_CHAINS', 'DKB_SPEED_PROBE',
+    'DKB_VK_VALIDATION', 'DKB_INPUT_RECORD', 'DKB_CRIT', 'DKB_LIVE_INPUT')
+if ($Measure -eq 'summary') { $diagnosticsOff += @('DKB_FLIGHT', 'DKB_FLIGHT_*') }
 
 # ---------------------------------------------------------------- 6. machine and build metadata
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exeSrc).Hash
@@ -207,7 +207,6 @@ $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemor
 $gitHead = ''
 try { $gitHead = (git -C $repo rev-parse --short HEAD 2>$null) } catch {}
 $iniPath = Join-Path $binDir 'dkb.ini'
-if (-not (Test-Path -LiteralPath $iniPath)) { $iniPath = Join-Path $binDir 'totk.ini' }   # a TotK build reads totk.ini
 $iniInfo = if (Test-Path -LiteralPath $iniPath) { [ordered]@{ present = $true; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $iniPath).Hash; text = (Get-Content -LiteralPath $iniPath -Raw) } } else { [ordered]@{ present = $false } }
 
 $run = [ordered]@{
@@ -245,9 +244,9 @@ if ($DryRun) {
     return
 }
 
-# ---------------------------------------------------------------- 7. clear inherited TOTK_/DKB_ variables, set ours; restored in finally
+# ---------------------------------------------------------------- 7. clear inherited DKB_ variables, set ours; restored in finally
 $saved = @{}
-Get-ChildItem Env: | Where-Object { $_.Name -match '^(TOTK|DKB)_' } | ForEach-Object { $saved[$_.Name] = $_.Value; Remove-Item -LiteralPath "Env:$($_.Name)" }
+Get-ChildItem Env: | Where-Object { $_.Name -match '^DKB_' } | ForEach-Object { $saved[$_.Name] = $_.Value; Remove-Item -LiteralPath "Env:$($_.Name)" }
 $run.inherited_cleared = @($saved.Keys | Sort-Object)
 # -ExtraEnv NAME=VALUE (for example a profiler): recorded in run.json settings, so the gate-14 check sees it. The token
 # {prof} is replaced by <bundle>\prof, which is created here.

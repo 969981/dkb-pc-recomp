@@ -51,7 +51,7 @@
 #endif
 #define ALIAS_PAGES (ALIAS_SIZE / PAGE)
 static uint64_t alias_page_count = ALIAS_PAGES;   // pages of the alias region actually reserved (macOS may take fewer)
-// Application pool: Switch 2 games are said to get about 9 GiB of the 12 (not measured on hardware; TOTK_APP_POOL
+// Application pool: Switch 2 games are said to get about 9 GiB of the 12 (not measured on hardware; DKB_APP_POOL
 // overrides). TotK's retail Switch 1 pool was 0xCD500000.
 #define DEFAULT_POOL (9 * GiB)
 #define SYSTEM_RESOURCE_BUDGET (32ull << 20)
@@ -108,7 +108,7 @@ static volatile int64_t frz_count[4];   // freezes; thaws by a write fault, by m
 // or a lazy-heap hole (or more runs than freeze_locked keeps, or a failed protection change).
 enum { FRZ_NO_GUARD, FRZ_NO_HELD, FRZ_NO_NEVER, FRZ_NO_STATE };
 static volatile int64_t frz_refused[MEM_FRZ_NO_N];
-// TOTK_FRZ_WHOLE=0 (an A/B of the thaw, TOTK_TRACE=perf shows the difference): every region is thawed the way one with
+// DKB_FRZ_WHOLE=0 (an A/B of the thaw, DKB_TRACE=perf shows the difference): every region is thawed the way one with
 // holes is, a query per read-only run, from the bottom up. Read at the first freeze (frz_lock), before which nothing
 // is thawed.
 static int frz_whole = -1;
@@ -121,7 +121,7 @@ static void (*decommit_hook)(uint64_t a, uint64_t n);
 
 static int heap_lazy(void);
 
-// frz_lock, with the time a thread waits for it recorded as an operation in flight (TOTK_TRACE=perf): a thaw of a
+// frz_lock, with the time a thread waits for it recorded as an operation in flight (DKB_TRACE=perf): a thaw of a
 // whole pool holds the lock while it runs, and every write fault into a frozen region and every file read waits for it.
 static void frz_lock_take(void) {
     if (plat_mutex_trylock(&frz_lock)) return;
@@ -281,9 +281,9 @@ int mem_freeze(uint64_t a) {
     int op = plat_op_begin(PLAT_OP_FREEZE, a, FRZ_SIZE);
     frz_lock_take();
     if (frz_whole < 0) {
-        const char *e = cfg_get("TOTK_FRZ_WHOLE");
+        const char *e = cfg_get("DKB_FRZ_WHOLE");
         frz_whole = !(e && !strcmp(e, "0"));
-        if (!frz_whole) rt_log("mem: frozen regions are thawed with a query per read-only run (TOTK_FRZ_WHOLE=0)");
+        if (!frz_whole) rt_log("mem: frozen regions are thawed with a query per read-only run (DKB_FRZ_WHOLE=0)");
     }
     int why = -1;
     if (frz[r]) ok = 1;
@@ -303,7 +303,7 @@ int mem_freeze(uint64_t a) {
 
 int mem_frozen(uint64_t a) { return a < RT_ADDRESS_LIMIT && __atomic_load_n(&frz[a >> FRZ_SHIFT], __ATOMIC_ACQUIRE); }
 
-// ---- read probe (TOTK_STAGED_READ_PROBE=1, off by default; Windows only)
+// ---- read probe (DKB_STAGED_READ_PROBE=1, off by default; Windows only)
 // Whether anything on the CPU reads the bytes the GPU writes into a staged pool (vk_memory.c staged mirror): once the
 // completion thread has copied a submission's write-back bytes into guest memory (staged_wb_done), their pages become
 // PAGE_NOACCESS (mem_probe_protect). The first access to such a page faults into probe_fault (win32.c fault_veh), which
@@ -314,7 +314,7 @@ int mem_frozen(uint64_t a) { return a < RT_ADDRESS_LIMIT && __atomic_load_n(&frz
 // as readable. Diagnostic only: protection changes cost time on every page of every write-back.
 // Per page: 0 not protected; PRB_BUSY while a thread changes the page's protection (the others wait for it to end);
 // PRB_ON | lo << 12 | (hi - 1), the bytes [lo, hi) of the page the write-backs wrote since it was protected; PRB_OWN,
-// a page whose GPU-written bytes are only in a VRAM mirror (vk_memory.c staged mirror, TOTK_STAGED_WB=fault, below).
+// a page whose GPU-written bytes are only in a VRAM mirror (vk_memory.c staged mirror, DKB_STAGED_WB=fault, below).
 #define PRB_CHUNK_SHIFT 28
 #define PRB_PER_CHUNK (1u << (PRB_CHUNK_SHIFT - 12))
 #define PRB_ON 0x80000000u
@@ -479,13 +479,13 @@ int mem_probe_on(void) {
     if (!prb_mode) {
         int on = 0;
 #ifdef _WIN32
-        const char *e = cfg_get("TOTK_STAGED_READ_PROBE");
+        const char *e = cfg_get("DKB_STAGED_READ_PROBE");
         on = e && *e && strcmp(e, "0");
         if (on) {
             plat_mem_probe_hooks(probe_fault, probe_marked, probe_release);
             atexit(probe_atexit);   // the totals: vk_mem_shutdown does not run when the game exits on its own
             rt_log("mem: read probe: pages of staged write-backs are made PAGE_NOACCESS after the fence, and each first "
-                   "access is counted (TOTK_STAGED_READ_PROBE)");
+                   "access is counted (DKB_STAGED_READ_PROBE)");
         }
 #endif
         prb_mode = on ? 1 : -1;
@@ -570,7 +570,7 @@ void mem_probe_copy(void *dst, uint64_t src, uint64_t n) {
     }
 }
 
-// ---- GPU-owned pages (vk_memory.c staged mirror, TOTK_STAGED_WB=fault)
+// ---- GPU-owned pages (vk_memory.c staged mirror, DKB_STAGED_WB=fault)
 // The same page states and fault path as the read probe: an owned page is PAGE_NOACCESS, and its first access (or a
 // kernel-path release) calls the hook with the page made read-write and its state PRB_BUSY; the hook copies the
 // GPU's bytes in and calls mem_guard_clear. The callers keep their own lock around the state changes of a page that
@@ -772,18 +772,18 @@ static void protect(uint64_t a, uint64_t n, int prot, const char *what) {
 // The process is re-run when a region is taken: Windows places DLLs, heaps and thread stacks at random addresses,
 // and a fresh process gets a fresh layout.
 static void reexec_or_fail(const char *what) {
-    const char *e = cfg_get("TOTK_REEXEC");
+    const char *e = cfg_get("DKB_REEXEC");
     int n = e ? atoi(e) : 0;
     if (n >= REEXEC_LIMIT) rt_fatal("memory: %s is not free after %d attempts", what, n);
     char buf[16];
     snprintf(buf, sizeof buf, "%d", n + 1);
-    plat_setenv("TOTK_REEXEC", buf);
+    plat_setenv("DKB_REEXEC", buf);
     plat_reexec();
 }
 
 void mem_init(void) {
     if (L.pool) return;
-    const char *ran = cfg_get("TOTK_REEXEC");
+    const char *ran = cfg_get("DKB_REEXEC");
     if (ran && *ran && atoi(ran)) rt_log("mem: re-ran the process %d time%s for a free address space", atoi(ran),
                                           atoi(ran) == 1 ? "" : "s");
     // Fixed window: modules, kernel region, host-function addresses. The window's ends come from rt_layout, never from
@@ -828,10 +828,10 @@ void mem_init(void) {
     plat_mem_fault_hook(thaw_fault);   // before the crash handler
     alias_pages = calloc(alias_page_count, 1);
     if (!alias_pages) rt_fatal("memory: cannot allocate the alias page map");
-    // totk.ini is read here, once the address space is claimed and before the first setting: the pool size below
-    // depends on TOTK_APP_POOL and on the resolution settings (resolution.c decides them once, on this first call).
+    // dkb.ini is read here, once the address space is claimed and before the first setting: the pool size below
+    // depends on DKB_APP_POOL and on the resolution settings (resolution.c decides them once, on this first call).
     cfg_init();
-    const char *pool = cfg_get("TOTK_APP_POOL");
+    const char *pool = cfg_get("DKB_APP_POOL");
     L = (RtGuestLayout){
         .aslr = {low, RT_ADDRESS_LIMIT - low},
         .stack = {low + STACK_OFF, STACK_SIZE},
@@ -841,12 +841,12 @@ void mem_init(void) {
         .hostfn = {RT_HOSTFN_BASE, RT_HOSTFN_SIZE},
         .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes(),   // resolution.c
     };
-    if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
+    if (!L.pool) rt_fatal("memory: DKB_APP_POOL is 0");
 }
 
 const RtGuestLayout *mem_layout(void) { return &L; }
 
-// ---- commit report (TOTK_MEM_REPORT=N, and once at exit from perf_summary_flush in perf.c)
+// ---- commit report (DKB_MEM_REPORT=N, and once at exit from perf_summary_flush in perf.c)
 // Says where the process's commit goes: one plat_mem_walk, each committed run added to the bucket of the address range
 // it starts in. The bounds are the ones mem_init set (L, mods_lo, mods_hi never change afterwards), so no lock is
 // taken; the walk itself takes none either, so a game thread holding frz_lock or lock cannot block it.
@@ -887,7 +887,7 @@ void mem_commit_report(const char *when) {
 static uint64_t written_pages(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max, int reset) {
     if (!max || !size) return 0;
     if (!watched(addr, size)) return UINT64_MAX;
-    uint64_t ph = perf_ph_begin();   // TOTK_TRACE=perf: a part of the replay (perf.c ph_frame)
+    uint64_t ph = perf_ph_begin();   // DKB_TRACE=perf: a part of the replay (perf.c ph_frame)
     uint64_t n = plat_mem_written(addr, size, pages, max, reset);
     perf_ph_end(PERF_PH_WW, ph);
     return n;
@@ -911,12 +911,12 @@ static int overlaps(uint64_t a, uint64_t n, uint64_t b, uint64_t m) { return a <
 static int inside(uint64_t a, uint64_t n, RtRange r) { return a >= r.base && n <= r.size && a - r.base <= r.size - n; }
 
 // ---- 0x01 SetHeapSize
-// TOTK_HEAP_LAZY=1 (Windows only, ignored elsewhere): the heap stays reserved and its pages are committed when touched,
+// DKB_HEAP_LAZY=1 (Windows only, ignored elsewhere): the heap stays reserved and its pages are committed when touched,
 // so the commit charge follows what the game uses instead of what it asked for.
 static int heap_lazy(void) {
 #ifdef _WIN32
     static int on = -1;
-    if (on < 0) on = cfg_bool("TOTK_HEAP_LAZY");
+    if (on < 0) on = cfg_bool("DKB_HEAP_LAZY");
     return on;
 #else
     return 0;
@@ -945,17 +945,17 @@ static int touch_query(uint64_t s, uint64_t e, int must) {
     return 1;
 }
 
-// TOTK_TOUCH_MAP: 1 (default) lets mem_touch skip the chunks the platform's commit map knows to be committed
+// DKB_TOUCH_MAP: 1 (default) lets mem_touch skip the chunks the platform's commit map knows to be committed
 // (plat_mem_lazy_run), 0 queries every chunk as before, verify queries the known chunks as well and logs each one found
 // reserved (then commits it). Windows only, like the lazy heap.
 #ifdef _WIN32
 static int touch_map(void) {
     static int mode = -1;
     if (mode < 0) {
-        const char *e = cfg_get("TOTK_TOUCH_MAP");
+        const char *e = cfg_get("DKB_TOUCH_MAP");
         int m = !e || !*e ? 1 : !strcmp(e, "verify") ? 2 : strcmp(e, "0") != 0;
         if (m != 1 && heap_lazy())
-            rt_log("mem: mem_touch %s (TOTK_TOUCH_MAP=%s)", m ? "checks the commit map against VirtualQuery" :
+            rt_log("mem: mem_touch %s (DKB_TOUCH_MAP=%s)", m ? "checks the commit map against VirtualQuery" :
                    "queries every chunk", e);
         mode = m;
     }
@@ -973,7 +973,7 @@ void mem_touch_stats(uint64_t out[4]) {
 
 // Commits the reserved pages of [a, a+n) that lie in the guest heap, in 64 KiB chunks, before something other than the
 // CPU (a kernel file read, a driver importing host memory) accesses them: those accesses fail on a reserved page
-// instead of faulting into fault_veh. Committed pages are left alone. No-op without TOTK_HEAP_LAZY.
+// instead of faulting into fault_veh. Committed pages are left alone. No-op without DKB_HEAP_LAZY.
 // Chunks the platform's commit map knows (every chunk the fault handler or an earlier mem_touch committed) are skipped
 // without a system call; only the others are queried with plat_mem_state, whose VirtualQuery reports the whole run of
 // like pages after the address and so costs more the longer the committed stretch around the pool (win32.c lazy_map).
@@ -1036,10 +1036,10 @@ static int touch_range(uint64_t a, uint64_t n, int must) {
 }
 
 // ---- lazy-heap commits in the background (mem_commit_later)
-// A staged pool (vk_memory.c, TOTK_MIRROR_STAGED) is never imported, so the pages of it the CPU never touched stay
+// A staged pool (vk_memory.c, DKB_MIRROR_STAGED) is never imported, so the pages of it the CPU never touched stay
 // reserved, where an imported pool's import commits them all (mem_touch). freeze_locked never freezes a 2 MiB region
 // with a lazy-heap hole (fault_veh may commit it at any moment), so the regions over such a pool are write-watch queried
-// every frame: with TOTK_MIRROR_STAGED=all on the Hilltop Layer of Surf Hills (3.2.0) about 300 MiB were frozen instead
+// every frame: with DKB_MIRROR_STAGED=all on the Hilltop Layer of Surf Hills (3.2.0) about 300 MiB were frozen instead
 // of about 730, and the queries covered 630 MiB a frame instead of 220. This thread commits those holes, as the import
 // would have, CL_DELAY_MS after the pool's first use and CL_SLICE bytes at a time, so the frame that first uses the
 // pools (the point of the staged mirror is that its first use costs no import) and the replay's queries meanwhile wait
@@ -1142,7 +1142,7 @@ static void heap_lazy_chunk_init(void) {
     static int done;
     if (done) return;
     done = 1;
-    const char *e = cfg_get("TOTK_LAZY_CHUNK_KB");
+    const char *e = cfg_get("DKB_LAZY_CHUNK_KB");
     if (!e || !*e) return;
     uint64_t kb = strtoull(e, NULL, 0);
     if (!kb) return;
@@ -1151,7 +1151,7 @@ static void heap_lazy_chunk_init(void) {
     uint64_t p = 64;
     while ((p << 1) <= kb) p <<= 1;
     plat_mem_lazy_chunk(p << 10);
-    if (p != 64) rt_log("mem: lazy heap fault commit chunk %llu KiB (TOTK_LAZY_CHUNK_KB)", (unsigned long long)p);
+    if (p != 64) rt_log("mem: lazy heap fault commit chunk %llu KiB (DKB_LAZY_CHUNK_KB)", (unsigned long long)p);
 }
 #endif
 
@@ -1163,14 +1163,14 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
         plat_op_end(op, 0);
         return R_INVALID_STATE;
     }
-    // TOTK_TRACE=perf: each change after the first, the first 64 (a shrink decommits, and thaws the frozen regions it
+    // DKB_TRACE=perf: each change after the first, the first 64 (a shrink decommits, and thaws the frozen regions it
     // covers)
     static int changes;
     if ((rt_trace & RT_TRACE_PERF) && heap_size && size != heap_size && ++changes <= 64)
         rt_log("mem: SetHeapSize %#llx -> %#llx (%s %llu MiB)", (unsigned long long)heap_size, (unsigned long long)size,
                size < heap_size ? "shrinks by" : "grows by",
                (unsigned long long)((size < heap_size ? heap_size - size : size - heap_size) >> 20));
-    // TOTK_HEAP_LAZY: growing leaves the new range reserved; platform/win32.c fault_veh commits it on first touch and
+    // DKB_HEAP_LAZY: growing leaves the new range reserved; platform/win32.c fault_veh commits it on first touch and
     // mem_touch before a kernel or driver access. Shrinking decommits (a no-op on pages never committed).
     if (size > heap_size && !heap_lazy()) commit(L.heap.base + heap_size, size - heap_size, "heap");
 #ifdef _WIN32
@@ -1499,7 +1499,7 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
 // in both cases outside a moved stack's source; 0 inside the heap
 // block or the alias region otherwise; -1 anywhere else (modules, the stack region, the kernel region, host memory),
 // for the caller to ask the platform. No system call: on Windows plat_mem_readable's VirtualQuery reports the whole
-// run of like pages around a, so a pointer in a long read-write stretch of a committed heap (TOTK_HEAP_LAZY=0: all
+// run of like pages around a, so a pointer in a long read-write stretch of a committed heap (DKB_HEAP_LAZY=0: all
 // 9.8 GiB of it) cost milliseconds, and a GetWriteWatch over the same reservation waited for it (#317).
 int mem_guest_readable(uint64_t a, uint64_t n) {
     if (!n) n = 1;

@@ -7,7 +7,7 @@ what you can adjust today, what is known not to work, and how to tell us about a
 ## What you can adjust
 
 Most of these are in the settings menu (F1 or Esc; on a controller, the Guide button or Minus and Plus together).
-Every one can also be set in `dkb.ini` next to `dkb.exe`; `totk.ini.example` describes each key.
+Every one can also be set in `dkb.ini` next to `dkb.exe`; `dkb.ini.example` describes each key.
 
 **Input** ([docs/controls.md](docs/controls.md))
 

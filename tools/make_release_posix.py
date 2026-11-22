@@ -30,7 +30,7 @@ EXTRA_TOOLS = ['requirements-installer.txt', 'fetch_refs.sh']
 LICENSES = {'runtime/shaders/ffx/LICENSE.txt': 'FidelityFX-FSR-LICENSE.txt',
             'runtime/third_party/imgui/LICENSE.txt': 'imgui-LICENSE.txt',
             'runtime/ui/fonts/LICENSE-Roboto.txt': 'Roboto-LICENSE.txt',
-            'tools/xlate/LICENSE': 'totk_xlate-LICENSE.txt'}
+            'tools/xlate/LICENSE': 'dkb_xlate-LICENSE.txt'}
 
 README_SETUP = """\
 DKB Recomp setup for {label}

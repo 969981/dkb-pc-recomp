@@ -451,6 +451,6 @@ void switch2_close(S2Session *s) {
 #if !defined(_WIN32) && !defined(__linux__)
 // No Bluetooth LE transport on this OS (macOS: CoreBluetooth is not ported): the setting does nothing
 void switch2_start(void) {
-    if (cfg_int("TOTK_SWITCH2")) rt_log("input: Switch 2 controllers over Bluetooth are not available on this OS");
+    if (cfg_int("DKB_SWITCH2")) rt_log("input: Switch 2 controllers over Bluetooth are not available on this OS");
 }
 #endif

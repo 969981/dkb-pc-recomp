@@ -1,4 +1,4 @@
-// CRT monitor and TV filters on the present (TOTK_CRT_FILTER = lottes_grille|lottes_tv|hyllian|zfast; off by default),
+// CRT monitor and TV filters on the present (DKB_CRT_FILTER = lottes_grille|lottes_tv|hyllian|zfast; off by default),
 // ported from Hookshot (gpu/vk/vk_framegen.cpp init_crt and record_crt, gpu/vk/crt_policy.h raster and the four shaders
 // gpu/vk/shaders/crt_*.comp), commit 709cbf8c "feat(vk): add selectable CRT monitor and TV filters". Hookshot is
 // GPL-3.0; the shaders adapt Timothy Lottes' crt-lottes (public domain), Hyllian's crt-hyllian-fast (MIT) and Greg
@@ -14,7 +14,7 @@
 // SDR shaders: present_image does not call vk_crt_record for the game's own HDR (PQ) picture, and calls vk_crt_idle
 // instead, which logs the skip once. Resources are made at the first use of a filter and only for the one chosen;
 // turning the filter off hands the images back. Any failure turns the filter off for the session and the picture goes
-// out unfiltered. TOTK_CRT_LINES (240, 480 or 720) applies at the next frame.
+// out unfiltered. DKB_CRT_LINES (240, 480 or 720) applies at the next frame.
 #include "vk.h"
 
 #include <string.h>
@@ -233,7 +233,7 @@ static int parse_mode(const char *s) {
 }
 
 int vk_crt_record(VkCommandBuffer cb, VkImage dst, const int to[4]) {
-    int mode = parse_mode(cfg_value("TOTK_CRT_FILTER"));
+    int mode = parse_mode(cfg_value("DKB_CRT_FILTER"));
     VkCtx *c = vk_ctx();
     if (mode == MODE_OFF || (S.tried && !S.ok)) {   // turned off: hand the images back until it is turned on again
         if (S.img[PICTURE].img) {
@@ -248,7 +248,7 @@ int vk_crt_record(VkCommandBuffer cb, VkImage dst, const int to[4]) {
     int tx = to[0], ty = to[1], tw = to[2], th = to[3];
     if (tw <= 0 || th <= 0 || !ensure_filter(c, shader)) return 0;
     // 240 (Hookshot's default), 480 or 720 virtual lines; any other value counts as 240
-    int req = cfg_int("TOTK_CRT_LINES");
+    int req = cfg_int("DKB_CRT_LINES");
     uint32_t rw, rh;
     raster_size((uint32_t)tw, (uint32_t)th, req == 480 || req == 720 ? req : 240, &rw, &rh);
     if (!ensure_images(c, (uint32_t)tw, (uint32_t)th, rw, rh)) return 0;
@@ -301,7 +301,7 @@ int vk_crt_record(VkCommandBuffer cb, VkImage dst, const int to[4]) {
 // off, made again when an SDR picture asks for the filter once more. With a filter chosen, the first skipped frame logs
 // a line; vk_crt_record arms it again.
 void vk_crt_idle(void) {
-    if (parse_mode(cfg_value("TOTK_CRT_FILTER")) != MODE_OFF && !S.log_skip && !(S.tried && !S.ok)) {
+    if (parse_mode(cfg_value("DKB_CRT_FILTER")) != MODE_OFF && !S.log_skip && !(S.tried && !S.ok)) {
         S.log_skip = 1;
         rt_log("vk: CRT filter skipped: the game's own HDR picture is not an SDR picture");
     }

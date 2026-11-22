@@ -45,7 +45,7 @@ void rt_fatal(const char *fmt, ...) {
 // ---- minimal host stubs
 void cfg_init(void) {}
 const char *cfg_get(const char *name) { (void)name; return NULL; }
-int cfg_bool(const char *name) { return !strcmp(name, "TOTK_HEAP_LAZY"); }
+int cfg_bool(const char *name) { return !strcmp(name, "DKB_HEAP_LAZY"); }
 uint64_t res_heap_extra_bytes(void) { return 0; }
 int ldr_count(void) { return 0; }
 const RtLoaded *ldr_module(int i) { (void)i; return NULL; }

@@ -1,6 +1,6 @@
-// The remapping rows of the Controls tab (binds_page.h): edits a copy of the input tables (input_map.h), writes the TOTK_BIND_* lines that
-// give the copy, and input_win.c applies them at its next poll; totk.ini follows a moment later (opt_save_soon). The
-// gamepad cells show and change the table of the button layout in use (TOTK_PAD_LAYOUT).
+// The remapping rows of the Controls tab (binds_page.h): edits a copy of the input tables (input_map.h), writes the DKB_BIND_* lines that
+// give the copy, and input_win.c applies them at its next poll; dkb.ini follows a moment later (opt_save_soon). The
+// gamepad cells show and change the table of the button layout in use (DKB_PAD_LAYOUT).
 #include <stdio.h>
 #include <string.h>
 
@@ -70,7 +70,7 @@ static void utf8(uint32_t c, char *out, size_t n) {
 }
 
 // A key as the player sees it: its catalog name, the numpad format, the character on a punctuation key in the keyboard
-// layout in use, else its totk.ini name in capitals (letters, digits, F keys).
+// layout in use, else its dkb.ini name in capitals (letters, digits, F keys).
 static const char *key_label(int k, char *buf, size_t n) {
     if (k == KEY_NONE) return "";
     if (k >= KEY_SPACE && k <= KEY_PAGEDOWN) return menu_text((UiTextId)(UI_KEY_SPACE + (k - KEY_SPACE)));
@@ -112,7 +112,7 @@ static const char *pad_label(int p) {
 static int shortcut_device_type(void) {
     static int remembered = SDL_GAMEPAD_TYPE_UNKNOWN;
     static char preference[128];
-    const char *now = cfg_value("TOTK_PAD_DEVICE");
+    const char *now = cfg_value("DKB_PAD_DEVICE");
     InputPadInfo info;
     if (input_pad_info(&info)) remembered = info.type;
     else if (strcmp(preference, now)) remembered = SDL_GAMEPAD_TYPE_UNKNOWN;
@@ -150,7 +150,7 @@ static void shortcut_rows(const InputMap &m, int layout) {
     opt_text(UI_MENU_SHORTCUT_READONLY);
     const char *guide[] = {shortcut_label(PAD_COUNT, type)};
     opt_shortcut_row("##shortcut_settings", UI_MENU_SHORTCUT_SETTINGS, UI_MENU_SHORTCUT_SETTINGS_DESC, "F1", guide, 1);
-    if (cfg_bool("TOTK_PAD_FULLSCREEN_HOLD")) {
+    if (cfg_bool("DKB_PAD_FULLSCREEN_HOLD")) {
         const char *fullscreen[] = {shortcut_label(PAD_START, type), shortcut_label(PAD_BACK, type)};
         opt_shortcut_row("##shortcut_fullscreen", UI_MENU_SHORTCUT_FULLSCREEN, UI_MENU_SHORTCUT_FULLSCREEN_DESC, "F11  |  Hold 0.5 s", fullscreen, 2);
     } else {
@@ -171,21 +171,21 @@ static void shortcut_rows(const InputMap &m, int layout) {
 // The layout the gamepad cells show: the one in effect, or without a gamepad the one the setting names (Xbox for auto).
 static int shown_layout(void) {
     int l = input_pad_layout();
-    return l >= 0 ? l : input_pad_layout_pick(cfg_value("TOTK_PAD_LAYOUT"), 0);
+    return l >= 0 ? l : input_pad_layout_pick(cfg_value("DKB_PAD_LAYOUT"), 0);
 }
 
 // Writes the bind_ line of every action whose line for m differs from the one set; a line at the defaults goes away.
 static void write_lines(const InputMap *m) {
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[40], line[256];
-        snprintf(var, sizeof var, "TOTK_BIND_%s", input_action_name(a));
+        snprintf(var, sizeof var, "DKB_BIND_%s", input_action_name(a));
         input_map_line(m, a, line, sizeof line);
         const char *now = cfg_get(var);
         if (!strcmp(line, now ? now : "")) continue;
         if (line[0]) {
             cfg_set(var, line);
         } else {
-            const char *k = var + 5;
+            const char *k = var;
             cfg_reset(&k, 1);
         }
         rt_log("menu: bind_%s = %s", input_action_name(a), line[0] ? line : "(default)");

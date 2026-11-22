@@ -30,7 +30,7 @@ typedef struct VkCtx {
     VmaAllocator vma;
     VkSemaphore timeline;                   // one timeline semaphore; values are issued by vk_sync.c
     VkDebugUtilsMessengerEXT messenger;
-    volatile int32_t validation_errors;        // errors seen by the messenger (TOTK_VK_VALIDATION=1)
+    volatile int32_t validation_errors;        // errors seen by the messenger (DKB_VK_VALIDATION=1)
     int validation;                         // layer active
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
         has_conditional_rendering, has_transform_feedback, has_provoking_vertex, has_device_fault, has_memory_budget,
@@ -45,9 +45,9 @@ typedef struct VkCtx {
         has_swapchain_colorspace,           // VK_EXT_swapchain_colorspace enabled on the instance (HDR10 formats)
         has_anti_lag;                       // VK_AMD_anti_lag enabled and its antiLag feature there (vk_antilag.c)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
-    // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
+    // an earlier draw of the pass wrote. DKB_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
-    // (attachable images get feedback usage, a by-region barrier inside the pass); else (or TOTK_FEEDBACK=restart)
+    // (attachable images get feedback usage, a by-region barrier inside the pass); else (or DKB_FEEDBACK=restart)
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
@@ -61,7 +61,7 @@ typedef struct {
     uint32_t sbuf_align;               // nonzero: storage buffers bind at their address rounded down to this
     uint32_t sg_size;                  // requiredSubgroupSize on sg_pin_stages (32)
     VkShaderStageFlags sg_pin_stages;  // 0: no pin, stages run at the device's subgroupSize
-    int gpl;                           // VK_EXT_graphics_pipeline_library enabled with fast linking (TOTK_GPL=0: off)
+    int gpl;                           // VK_EXT_graphics_pipeline_library enabled with fast linking (DKB_GPL=0: off)
     int amd;                           // an AMD GPU (vendor 0x1002), any driver
     int intel;                         // an Intel GPU (vendor 0x8086), any driver
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
@@ -71,7 +71,7 @@ typedef struct {
 } VkCaps;
 extern VkCaps vk_caps;
 void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc
-void vk_caps_features(VkPhysicalDeviceFeatures *f);   // before vkCreateDevice (TOTK_VK_NO_FLOAT64 clears shaderFloat64)
+void vk_caps_features(VkPhysicalDeviceFeatures *f);   // before vkCreateDevice (DKB_VK_NO_FLOAT64 clears shaderFloat64)
 // Before vkCreateDevice, with the driver's graphics pipeline library feature and properties: sets vk_caps.gpl,
 // 1 = enable the extensions (VK_KHR_pipeline_library, VK_EXT_graphics_pipeline_library) and the feature.
 int vk_caps_gpl(const VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT *f,
@@ -92,7 +92,7 @@ void vk_device_fault_report(VkResult r);
 // codes bracket the work that hung. Without the extension every call returns at once.
 enum { VK_CRUMB_SUBMIT = 1, VK_CRUMB_SUBMIT_END, VK_CRUMB_UPLOAD, VK_CRUMB_UPLOAD_END, VK_CRUMB_ASTC, VK_CRUMB_PRESENT,
        VK_CRUMB_PRESENT_END, VK_CRUMB_BIND };
-// TOTK_CRUMB_BIND=1 (default off, needs the buffer marker): every pipeline bind gets a VK_CRUMB_BIND crumb into words 2
+// DKB_CRUMB_BIND=1 (default off, needs the buffer marker): every pipeline bind gets a VK_CRUMB_BIND crumb into words 2
 // and 3 of the marker buffer. vk_crumb_bind_on says whether it is active; vk_crumb_bind_note returns the next bind
 // number (the crumb's n) and remembers the pipeline and its NVN 2 stage names for the report.
 int vk_crumb_bind_on(void);
@@ -141,7 +141,7 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                   const int crop[4], VkImage dst, const int out[4]);
 void vk_fsr_idle(void);      // the picture skips the pass: its images go back
 void vk_fsr_release(void);   // before the device goes away
-// SMAA on the present (vk_smaa.c): with TOTK_SMAA = low|medium|high, records SMAA of the rectangle to {x, y, w, h} of the
+// SMAA on the present (vk_smaa.c): with DKB_SMAA = low|medium|high, records SMAA of the rectangle to {x, y, w, h} of the
 // swapchain image dst, which is in TRANSFER_DST and holds the scaled picture, and leaves it there; 0 = nothing recorded.
 int vk_smaa_record(VkCommandBuffer cb, VkImage dst, const int to[4]);
 void vk_smaa_release(void);   // before the device goes away
@@ -163,14 +163,14 @@ typedef struct {
     VkImageView picture;
     uint32_t picture_w, picture_h;
 } VkFiInputs;
-// CRT filters on the present (vk_crt.c): with TOTK_CRT_FILTER = lottes_grille|lottes_tv|hyllian|zfast, records the
+// CRT filters on the present (vk_crt.c): with DKB_CRT_FILTER = lottes_grille|lottes_tv|hyllian|zfast, records the
 // filter over the rectangle {x, y, w, h} of the swapchain image dst, which is in TRANSFER_DST and holds the scaled SDR
 // picture, and leaves it there; 0 = nothing recorded. vk_crt_idle: this frame's picture is the game's own HDR one,
 // which the filter skips (logged once); it hands the filter's images back. vk_crt_release: before the device goes away.
 int vk_crt_record(VkCommandBuffer cb, VkImage dst, const int to[4]);
 void vk_crt_idle(void);
 void vk_crt_release(void);
-// Frame generation (vk_framegen.c, TOTK_FRAME_GEN = auto or 2x to 8x), called by the present thread. vk_fg_record:
+// Frame generation (vk_framegen.c, DKB_FRAME_GEN = auto or 2x to 8x), called by the present thread. vk_fg_record:
 // before the game's frame is presented, copies the crop of src (the window texture, in GENERAL, fmt its format, w x h)
 // into its history and, when the frame before is there, makes the frames between them; frame_no (0: none) goes to
 // vk_thumbs_frame for the game's frame. fi: the scene's depth and motion of this frame (vk_fsr3fi_take), NULL or not
@@ -185,7 +185,7 @@ void vk_crt_release(void);
 int vk_fg_record(VkImage src, VkFormat fmt, int w, int h, const int crop[4], const VkFiInputs *fi, uint64_t frame_no, uint64_t antilag);
 void vk_fg_show(int (*pending)(void), uint64_t frame, uint64_t antilag);
 void vk_fg_release(void);   // before the device goes away
-// AMD Anti-Lag 2 (vk_antilag.c, TOTK_ANTILAG). vk_antilag_available: the device can run it (0 before the device).
+// AMD Anti-Lag 2 (vk_antilag.c, DKB_ANTILAG). vk_antilag_available: the device can run it (0 before the device).
 // vk_antilag_frame: the index of the game frame being made now (its input stage was given), 0 while off or none; a
 // present job keeps it. vk_antilag_input: after the game presented, the next frame's input stage, where the driver
 // waits until that frame should start. vk_antilag_present: before the present of game frame `frame` (0: none, as for
@@ -195,7 +195,7 @@ uint64_t vk_antilag_frame(void);
 void vk_antilag_input(void);
 void vk_antilag_present(uint64_t frame);
 void vk_antilag_release(void);   // before the device goes (vk_shutdown): the next device starts it afresh
-// Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
+// Colour adjustment on the present (vk_color.c): with DKB_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
 VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
@@ -225,7 +225,7 @@ void vk_present_image_held(VkImage src, VkImageLayout layout, VkFormat fmt, int 
 // vk_backend.c: until kern_now_ns() reaches at: a sleep to 1 ms before it, then yields
 void vk_wait_until(uint64_t at);
 void vk_present_unlock(void);
-// TOTK_FLIGHT thumbnails (GfxBackend.thumbs_enable, thumbs_read; flight.c): the present thread blits every presented
+// DKB_FLIGHT thumbnails (GfxBackend.thumbs_enable, thumbs_read; flight.c): the present thread blits every presented
 // frame into a host-visible ring of n thumbnails.
 void vk_thumbs_enable(int n);            // before the first present; n slots of FLIGHT_THUMB_W x FLIGHT_THUMB_H
 void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame of the vk_present_image call that follows
@@ -325,20 +325,20 @@ enum { VK_MCLS_NONE, VK_MCLS_HOST_NOACC, VK_MCLS_HOST_UNC, VK_MCLS_HOST_CACHED, 
 enum { VK_MUSE_VB, VK_MUSE_IB, VK_MUSE_UBO, VK_MUSE_SSBO, VK_MUSE_IND, VK_MUSE_COPY_SRC, VK_MUSE_GPU_WRITE,
        VK_MUSE_CPU_READ, VK_MUSE_N };
 void vk_mem_count(int cls, int use, uint64_t bytes);
-// TOTK_TRACE=perf dirty census (vk_memory.c): the replay notes each imported pool it binds as a vertex, index, uniform,
+// DKB_TRACE=perf dirty census (vk_memory.c): the replay notes each imported pool it binds as a vertex, index, uniform,
 // storage or indirect buffer; at the start of every submit the pages the CPU wrote in such pools since the previous
 // submit are counted from the shared page generations and logged as `mem: dirty` every 60 frames. Nothing when tracing
 // is off: VK_MEM_BOUND is one flag test at the call site.
 void vk_mem_bound_note(void *pool);
 #define VK_MEM_BOUND(sp) do { if ((rt_trace & RT_TRACE_PERF) && (sp).pool) vk_mem_bound_note((sp).pool); } while (0)
 void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its lock, before the replay
-// VRAM mirror of buffer-bound pools (vk_memory.c). vk_mirror_on: TOTK_MEMORY=mirror|verify, or the
-// device class is discrete and TOTK_MEMORY is unset or auto; set at device selection. The replay (submitting thread
+// VRAM mirror of buffer-bound pools (vk_memory.c). vk_mirror_on: DKB_MEMORY=mirror|verify, or the
+// device class is discrete and DKB_MEMORY is unset or auto; set at device selection. The replay (submitting thread
 // under vk_sync_submit's lock) calls:
 // - VK_MEM_USE at a vertex, index, uniform, storage or indirect binding of a span vk_mem_resolve returned: the pool's
 //   mirror is created on first use and sp.buffer becomes it (same offsets); a pool that stays imported keeps its buffer.
 // - VK_MEM_PICK where a copy, fill or update reads or writes a span: the mirror if the pool has one, never a new one,
-//   except for a staged pool (TOTK_MIRROR_STAGED), whose spans resolve with a null buffer: both give it its mirror, or
+//   except for a staged pool (DKB_MIRROR_STAGED), whose spans resolve with a null buffer: both give it its mirror, or
 //   import it when it cannot have one. Code that uses sp.buffer calls one of them first, and skips the span when
 //   sp.buffer is still null after it (a staged pool with neither a mirror nor an import: vk_memory.c staged_import
 //   leaves it unbacked, as a pool whose first-use import failed), as it does a span vk_mem_resolve did not return.
@@ -357,7 +357,7 @@ void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 int vk_mem_gpu_kept(const VkMemSpan *sp, uint64_t size);    // as vk_mem_gpu_wrote, but whole pages stay in the mirror; 0: none did
 int vk_mem_kept_overlaps(uint64_t addr, uint64_t size);     // a kept GPU write lies in the range
 uint64_t vk_mem_mirror_gen(void);   // changes whenever a mirror is made or dropped, and with every submission
-int vk_mem_shadow_on(void);         // shadow storage is in use (TOTK_SHADOW)
+int vk_mem_shadow_on(void);         // shadow storage is in use (DKB_SHADOW)
 void vk_mem_threads(void);         // the workers of sliced passes bind mirrors too (vk_exec.c), from now on
 // The calling thread's vk_mem_count calls count nothing while on (the slices of a parallel pass, vk_exec.c par_record:
 // the census is single-writer).
@@ -383,7 +383,7 @@ uint64_t vk_usnap_gen(void);                      // changes whenever a binding 
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
-// TOTK_WB_EARLY: the least KiB of noted GPU writes worth a held part's write-back (vk_mem_mirror_wb_held; 0: off).
+// DKB_WB_EARLY: the least KiB of noted GPU writes worth a held part's write-back (vk_mem_mirror_wb_held; 0: off).
 int vk_mem_wb_early_min(void);
 // The write-back tag of the calling thread's GPU writes from now on (vk_exec.c: the walk's place among held pass ends);
 // returns the previous one. vk_mem_mirror_wb_held: once a held part is submitted, the writes tagged upto or lower go
@@ -405,10 +405,10 @@ typedef struct { uint64_t addr, size; VkBuffer buf; } VkGpuWrite;
 void vk_gpu_written_into(uint64_t addr, uint64_t size, VkBuffer buf);
 // vk_gpu_written_into for the n ranges of one submission, in one pass. With the shadow storage: one lock hold, the pages
 // made writable in runs before the copies, and the pending list searched once. Without it, the page stamps are taken in
-// batches of ranges under one hold of the locks (TOTK_STAMP_BATCH; 0: one vk_gpu_written_into per range).
+// batches of ranges under one hold of the locks (DKB_STAMP_BATCH; 0: one vk_gpu_written_into per range).
 void vk_gpu_written_many(const VkGpuWrite *w, int n);
 // Or-ed into a range's size for vk_gpu_written_many: a storage buffer a shader wrote, which the game rarely reads on
-// the CPU. With the lazy write-back on (vk_memory.c, TOTK_WB_LAZY), such a range may be copied back at the first CPU
+// the CPU. With the lazy write-back on (vk_memory.c, DKB_WB_LAZY), such a range may be copied back at the first CPU
 // access to its pages instead of at the fence.
 #define VK_WB_LAZY (1ull << 63)
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
@@ -416,7 +416,7 @@ int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr ge
 void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
 int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at addr (NONE when unbacked)
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
-                                                  // with TOTK_TRACE=perf, every 1800 frames
+                                                  // with DKB_TRACE=perf, every 1800 frames
 // VRAM in use and its budget, summed over the DEVICE_LOCAL heaps. exact 1: VK_EXT_memory_budget (the whole process),
 // 0: this allocator's own allocations against the heap sizes. 0 when unknown.
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact);
@@ -446,7 +446,7 @@ void vk_mem_snap_stats(uint64_t *checks, uint64_t *calls, uint64_t *untracked); 
 // completes, or, with alloc non-NULL, until the caller's vmaDestroyBuffer after vk_upload_flush(1). The replay calls
 // vk_upload_flush(0) before each submission that may read uploaded images; queue order and the batch's closing
 // barrier make the uploads visible to it. Returns the batch sequence number; wait=1 blocks until it completed.
-// TOTK_FIX_ZERO (default 1): physical pools are zeroed once at creation and GPU-only images with memory of their own
+// DKB_FIX_ZERO (default 1): physical pools are zeroed once at creation and GPU-only images with memory of their own
 // are cleared when created; 0 leaves both as the driver hands them out.
 int vk_fix_zero(void);
 VkCommandBuffer vk_upload_begin(void);
@@ -467,13 +467,13 @@ void vk_defer_image(VkImage img, VmaAllocation alloc);   // alloc NULL: vkDestro
 void vk_defer_view(VkImageView view);
 void vk_exec_image_gone(VkImage image);   // destroy_tex, texture lock held: the replay's views of image go with it
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc);
-// ---- ASTC (vk_astc.c). TOTK_ASTC = auto | gpu | native | cpu | check; see vk_astc.c.
+// ---- ASTC (vk_astc.c). DKB_ASTC = auto | gpu | native | cpu | check; see vk_astc.c.
 enum { VK_ASTC_CPU, VK_ASTC_GPU, VK_ASTC_NATIVE, VK_ASTC_CHECK };
 int vk_astc_mode(void);                 // decided once per device (logged); VK_ASTC_CPU before vk_init
 int vk_astc_native(VkFormat astc_fmt);  // 1: images of this ASTC format are created as such and get the raw blocks
 int vk_astc_gpu(void);                  // 1: ASTC images decoded to RGBA8 by the compute decoder (vk_astc_record)
-int vk_astc_bc(void);                   // 1: those images are BC3 instead, encoded after the decode (TOTK_ASTC_BC=1)
-// 1: with vk_astc_bc, an image whose blocks are all opaque may be BC1 (vk_astc_record bc 2; TOTK_ASTC_BC1=0: off)
+int vk_astc_bc(void);                   // 1: those images are BC3 instead, encoded after the decode (DKB_ASTC_BC=1)
+// 1: with vk_astc_bc, an image whose blocks are all opaque may be BC1 (vk_astc_record bc 2; DKB_ASTC_BC1=0: off)
 int vk_astc_bc1(void);
 // One image region decoded from raw blocks: tight rows of 16-byte blocks at byte src of the source buffer (slices one
 // after the other), w x h texels and slices deep, written at offset of level / layer.
@@ -487,12 +487,12 @@ typedef struct { VkDeviceSize src; uint32_t w, h, slices, level, layer; VkOffset
 int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, const VkAstcRegion *rg, int n, uint32_t bw,
                    uint32_t bh, int srgb, int bc, VkImage img, VkImageAspectFlags aspect, VkBuffer readback);
 void vk_astc_stats(uint64_t *dispatches, uint64_t *texels);   // since start
-// TOTK_ASTC_TIME=1: GPU timestamps around each vk_astc_record's dispatches (logged per footprint and the largest one)
+// DKB_ASTC_TIME=1: GPU timestamps around each vk_astc_record's dispatches (logged per footprint and the largest one)
 void vk_astc_time_enable(int on);
 int vk_astc_time_get(uint32_t bw, uint32_t bh, uint64_t *texels, uint64_t *calls, double *us);   // totals so far
 void vk_astc_time_summary(void);        // logs the totals
 // Before the Vulkan instance of the game exists: the largest device-local heap (MiB) of the best GPU (the discrete one,
-// else an integrated one; TOTK_GPU_INDEX picks), whether it is integrated and whether it is NVIDIA's. Makes and drops
+// else an integrated one; DKB_GPU_INDEX picks), whether it is integrated and whether it is NVIDIA's. Makes and drops
 // an instance of its own. 0 when no GPU answers (vk_device.c).
 int vk_hw_probe(unsigned *vram_mib, int *integrated, int *nvidia);
 void vk_astc_release(void);             // vk_device.c, before the device goes: frees the decoder's objects
@@ -532,7 +532,7 @@ typedef struct {
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin).
                                    // Read and set through vk_tex_fb_learned and vk_tex_fb_learn
 } VkTexImage;
-// vk_astc_bc1.c: the ASTC textures kept as BC (TOTK_ASTC_BC) and the format their images are in (astc_bc 1 = BC3,
+// vk_astc_bc1.c: the ASTC textures kept as BC (DKB_ASTC_BC) and the format their images are in (astc_bc 1 = BC3,
 // 2 = BC1). kinds: whether an upload counts the kinds of the blocks it writes. scan: the count of them, stopping at
 // the first block that may carry alpha. choice: what the count says about an entry's image. bc3: the BC1 -> BC3
 // change a write into a BC1 image needs. Each takes what it needs from the entry and puts what it changes back:
@@ -614,8 +614,8 @@ int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *
 int vk_texture_cpu_stale(uint64_t addr, uint64_t size);    // a GPU-written mirrored texture there has stale storage
 uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size);   // newest recorded writer of such a texture; 0: none
 void vk_texture_write_back(uint64_t addr, uint64_t size);   // writes those images back into their storage (waits)
-// The replay's deferred-read write-back (TOTK_WB_ASYNC, default on): copies recorded and submitted without waiting,
-// written to the storage by a later vk_texture_wb_poll once they completed. TOTK_WB_ASYNC=0: vk_texture_write_back.
+// The replay's deferred-read write-back (DKB_WB_ASYNC, default on): copies recorded and submitted without waiting,
+// written to the storage by a later vk_texture_wb_poll once they completed. DKB_WB_ASYNC=0: vk_texture_write_back.
 void vk_texture_write_back_async(uint64_t addr, uint64_t size);
 void vk_texture_wb_poll(void);                      // finishes the asynchronous write-backs whose copies completed
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc);   // vk_pool_fini: drop the images there
@@ -775,7 +775,7 @@ VkCommandBuffer vk_sync_split_wait(void);
 // between that needs a held part on the GPU.
 VkCommandBuffer vk_sync_split_defer(void);
 void vk_sync_split_finish(void (*tail)(VkCommandBuffer cb, void *arg), void *arg);
-// TOTK_TRACE=perf: the replay notes each draw or dispatch of the part being timed (kind 0 draw, 1 indirect draw, 2
+// DKB_TRACE=perf: the replay notes each draw or dispatch of the part being timed (kind 0 draw, 1 indirect draw, 2
 // dispatch, 3 indirect dispatch; a, b: the NVN 2 names of its vertex and fragment stages, or its compute stage and 0;
 // work: vertices x instances or groups, 0 when indirect), so a slow part can name its work. vk_sync_noting: 1 while
 // the part is timed. vk_sync_note_args: the indirect draw just noted takes its VkDrawIndexedIndirectCommand from this
@@ -783,7 +783,7 @@ void vk_sync_split_finish(void (*tail)(VkCommandBuffer cb, void *arg), void *arg
 // stage named `stage` stores into [addr, addr+size) of guest memory, so a slow part can tell which shader of the part
 // wrote its largest indirect draw's arguments.
 int vk_sync_noting(void);
-void vk_sync_mark(VkCommandBuffer cb, uint64_t key);   // TOTK_PASS_GPU: a timestamp at a pass edge (vk_sync.c)
+void vk_sync_mark(VkCommandBuffer cb, uint64_t key);   // DKB_PASS_GPU: a timestamp at a pass edge (vk_sync.c)
 void vk_sync_note(int kind, uint64_t a, uint64_t b, uint64_t work);
 void vk_sync_note_args(uint64_t addr);
 void vk_sync_note_write(uint64_t addr, uint64_t size, uint64_t stage);
@@ -800,11 +800,11 @@ void vk_sync_note_merge(VkSyncNote *n, int held_front);
 // Callbacks run in the order they were added, after those of earlier values; a value already done runs at once there.
 void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg);
 // gfx_vulkan_backend (vk_backend.c): presents go to a present thread and run after the submissions made before them.
-void rdoc_init(void);                     // runtime/rdoc.c: TOTK_RDOC debug capture; before vkCreateInstance
+void rdoc_init(void);                     // runtime/rdoc.c: DKB_RDOC debug capture; before vkCreateInstance
 int rdoc_active(void);
 void rdoc_after_present(uint64_t frame);
 void vk_present_drain(void);               // returns once every queued present was submitted to gfx_queue
-int vk_replay_async(void);                 // TOTK_REPLAY_ASYNC (default 0): submissions replay on the replay thread
+int vk_replay_async(void);                 // DKB_REPLAY_ASYNC (default 0): submissions replay on the replay thread
 void vk_program_release(const prog_t *p);  // GfxBackend.program_release: vk_pipeline.c; weak no-op in vk_backend.c
 void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_spec_shutdown, vk_mem_shutdown, vk_shutdown in that order
 
@@ -867,7 +867,7 @@ typedef struct {
     const VkPipeBinding *bindings;
     uint32_t vs_inputs;                    // Locations the vertex shader reads
     // Independent layouts (vk_caps.gpl): set 0 holds the vertex stage's bindings, set 1 the fragment stage's; bindings
-    // are ordered by set. One of the two sets at most is a push set. n_sets 1: everything in set 0 (TOTK_GPL=0, compute).
+    // are ordered by set. One of the two sets at most is a push set. n_sets 1: everything in set 0 (DKB_GPL=0, compute).
     VkDescriptorSetLayout set_layout1;
     int push1;
     uint32_t n_sets;
@@ -878,7 +878,7 @@ typedef struct {
 // One descriptor of the packed array a descriptor update template reads (VkPipeInfo.tpl), 24 bytes for every type; the
 // bytes a type leaves unused are zero, so equal descriptors compare equal byte for byte.
 typedef union { VkDescriptorImageInfo image; VkDescriptorBufferInfo buffer; VkBufferView view; uint64_t w[3]; } VkDescSlot;
-// The most uniform buffers of one set the pipelines make UNIFORM_BUFFER_DYNAMIC (TOTK_DYN_UBO, vk_pipeline.c).
+// The most uniform buffers of one set the pipelines make UNIFORM_BUFFER_DYNAMIC (DKB_DYN_UBO, vk_pipeline.c).
 #define VK_DYN_UBO_MAX 32
 // Both return the cached pipeline (created on first use; failures are cached and logged once). info: may be NULL.
 // Valid until vk_pipeline_shutdown; thread-safe.
@@ -886,19 +886,19 @@ VkPipeline vk_pipeline_graphics(const VkPipeState *s, const VkPipeInfo **info);
 // The replay's variant: after vk_pipeline_async_enable a missing pipeline is built by background workers and this
 // returns VK_NULL_HANDLE with *pending 1 until it is ready (the draw is skipped); otherwise as vk_pipeline_graphics.
 // wait_ms > 0 waits up to that long for a pending pipeline first. Pipelines built in a run are recorded to
-// pipeline-keys.bin next to the pipeline cache and prebuilt at the next boot (TOTK_PIPE_PREBUILD=0: not).
+// pipeline-keys.bin next to the pipeline cache and prebuilt at the next boot (DKB_PIPE_PREBUILD=0: not).
 VkPipeline vk_pipeline_graphics_async(const VkPipeState *s, const VkPipeInfo **info, int *pending, uint32_t wait_ms);
 // vk_exec.c vk_exec_lookahead: s is a guess at a later draw's state. A missing pipeline is entered and queued as
 // vk_pipeline_graphics_async would with wait 0, but no stat counts it and its key reaches the key file only once a
 // draw asks for the pipeline. vk_pipeline_guess_counts: such keys queued, and those a draw asked for since.
 void vk_pipeline_graphics_guess(const VkPipeState *s);
 void vk_pipeline_guess_counts(uint64_t *queued, uint64_t *used);
-// rt_boot calls it unless --shot is given; TOTK_PIPE_SYNC=1 makes it a no-op. Probes never call it.
+// rt_boot calls it unless --shot is given; DKB_PIPE_SYNC=1 makes it a no-op. Probes never call it.
 void vk_pipeline_async_enable(void);
 int vk_pipeline_async_on(void);   // 1 after vk_pipeline_async_enable: graphics shaders are translated in the background too
 // Boot prewarm, before the guest runs (rt_boot): loads the shaders pipeline-keys.bin names, translating the ones not
 // cached under the current translator from their stored inputs, and builds every recorded pipeline, on all cores.
-// No-op without vk_pipeline_async_enable, with TOTK_PIPE_PREBUILD=0 or with TOTK_GPU=null.
+// No-op without vk_pipeline_async_enable, with DKB_PIPE_PREBUILD=0 or with DKB_GPU=null.
 void vk_pipeline_prewarm(void);
 VkPipeline vk_pipeline_compute(const GfxShader *cs, const VkPipeInfo **info);
 // Records every dynamic state that VkPipeState determines, after binding a graphics pipeline: cull mode, front face,
@@ -920,11 +920,11 @@ VkPrimitiveTopology vk_pipeline_topology(int nvn_prim);   // quads -> triangle l
                                                           // rewrites those draws; polygon -> fan
 int vk_geometry_supported(void);                   // 1: the device has geometryShader (MoltenVK does not)
 uint8_t vk_geometry_input(uint32_t nvn_primitive);    // GFX_GEOMETRY_*; 0 for unsupported/emulated input primitives
-// TOTK_DUMP=key (vk_dump.c): F9 in the game window dumps the frame after next; the window calls this on the key.
+// DKB_DUMP=key (vk_dump.c): F9 in the game window dumps the frame after next; the window calls this on the key.
 void vk_dump_request(void);
 VkFormat vk_vertex_format(int nvn_format, int *type);     // attribute format (supported fallback), GFX_TYPE_* in *type
 PFN_vkCmdPushDescriptorSetKHR vk_pipeline_push_fn(void);  // after the first vk_pipeline_* call
-// Descriptor update templates (after the first vk_pipeline_* call): NULL when templates are off (TOTK_DESC_TEMPLATE=0,
+// Descriptor update templates (after the first vk_pipeline_* call): NULL when templates are off (DKB_DESC_TEMPLATE=0,
 // a device below Vulkan 1.1) or, for the push variant, vkCmdPushDescriptorSetWithTemplateKHR is missing.
 PFN_vkCmdPushDescriptorSetWithTemplateKHR vk_pipeline_push_tpl_fn(void);
 PFN_vkUpdateDescriptorSetWithTemplate vk_pipeline_update_tpl_fn(void);
@@ -933,7 +933,7 @@ PFN_vkUpdateDescriptorSetWithTemplate vk_pipeline_update_tpl_fn(void);
 int vk_pipeline_set_indep(int on);
 typedef struct { uint64_t graphics, compute, failures, hits, layouts, push_layouts, async_built, pending_skips; } VkPipeStats;
 void vk_pipeline_stats(VkPipeStats *s);
-void vk_pipeline_save(void);               // writes the VkPipelineCache to pipeline-cache.bin next to totk.exe
+void vk_pipeline_save(void);               // writes the VkPipelineCache to pipeline-cache.bin next to dkb.exe
 void vk_pipeline_autosave(void);           // vk_pipeline_save at most every 20 s, when pipelines were built since
 void vk_pipeline_shutdown(void);           // waits for background builds, saves, destroys pipelines, layouts and the
                                            // cache; before vk_shutdown

@@ -5,7 +5,7 @@
     python tools/test.py --area nvn,geometry
     python tools/test.py nvn2-compute-c0    names or globs (fnmatch) of tests
     python tools/test.py --list             what would run, and why anything would be skipped
-    python tools/test.py --set cc=C:/llvm/bin/clang.exe --set xlate=build/xlate/totk_xlate.exe
+    python tools/test.py --set cc=C:/llvm/bin/clang.exe --set xlate=build/xlate/dkb_xlate.exe
 
 Tiers: 0 = Python only, 1 = host toolchain (Clang, spirv-val, the shader translator), 2 = a Vulkan device,
 3 = your dump or your build of the game, 4 = scripted game runs. A test whose tools or device are missing is reported as
@@ -118,10 +118,10 @@ TOOLS = {
     'dotnet': ('dotnet with the .NET 10 SDK', lambda: _first(ROOT / 'toolchain' / 'dotnet' / ('dotnet' + EXE),
                                                             _which('dotnet'))),
     'xlate': ('shader translator (python tools/build_xlate.py)',
-              lambda: _first(ROOT / 'build' / 'xlate' / ('totk_xlate' + EXE))),
+              lambda: _first(ROOT / 'build' / 'xlate' / ('dkb_xlate' + EXE))),
     'xlate_defined_minmax': ('translator built with defined float min/max (python tools/build_xlate.py '
                              '--defined-float-minmax --out build/xlate-defined-minmax)',
-                             lambda: _first(ROOT / 'build' / 'xlate-defined-minmax' / ('totk_xlate' + EXE))),
+                             lambda: _first(ROOT / 'build' / 'xlate-defined-minmax' / ('dkb_xlate' + EXE))),
     'xlate_baseline':('an unmodified translator build to compare against (set it explicitly)', lambda: None),
     'ryu_src': ('the patched translator sources build_xlate.py prepared',
                 lambda: _first(ROOT / 'build' / 'xlate' / 'ryujinx')),
@@ -278,7 +278,7 @@ def run_one(t, tools, gpu, verbose):
     env = dict(os.environ)
     env['PYTHONUTF8'] = '1'
     env['PYTHONDONTWRITEBYTECODE'] = '1'
-    env.setdefault('TOTK_VOLUME', '0')   # games the tests start are silent unless the caller sets a volume
+    env.setdefault('DKB_VOLUME', '0')   # games the tests start are silent unless the caller sets a volume
     # The tests that pick their own compiler read CC/CXX; MSYS2's bin goes first so its DLLs and tools are found.
     if 'cc' in tools:
         env['CC'] = str(tools['cc'])
@@ -379,7 +379,7 @@ def stale_translator(exe):
                 newest, which = f.stat().st_mtime, f
     if which is not None and newest > built + 2:
         return (f'the translator {Path(exe)} is older than {which.relative_to(ROOT)}: its tests check old shader code. '
-                f'Rebuild it (python tools/build_xlate.py) or point at a newer one (--set xlate=build/<name>/totk_xlate.exe)')
+                f'Rebuild it (python tools/build_xlate.py) or point at a newer one (--set xlate=build/<name>/dkb_xlate.exe)')
     return None
 
 

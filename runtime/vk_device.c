@@ -113,7 +113,7 @@ static void mesa_anti_lag_layer(void) {
     // Only for a player who starts with antilag = 1: the layer is chosen when the instance is made, so with antilag = 0
     // at start it is not loaded at all (and Anti-Lag 2 is not offered on RADV until a restart with it on).
     char cur[16];
-    if (cfg_bool("TOTK_ANTILAG") && !plat_getenv("ENABLE_LAYER_MESA_ANTI_LAG", cur, sizeof cur))
+    if (cfg_bool("DKB_ANTILAG") && !plat_getenv("ENABLE_LAYER_MESA_ANTI_LAG", cur, sizeof cur))
         plat_setenv("ENABLE_LAYER_MESA_ANTI_LAG", "1");
 #endif
 }
@@ -127,14 +127,14 @@ static int create_instance(void) {
     const char *ext[28];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 8);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
-    int validate = cfg_bool("TOTK_VK_VALIDATION");
+    int validate = cfg_bool("DKB_VK_VALIDATION");
     if (validate && !layer_present(layers[0])) {
-        rt_log("vk: TOTK_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
+        rt_log("vk: DKB_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
     }
     // The checkpoints also want debug utils, for the device address binding messenger (vk_crumbs.c).
     int utils = validate;
-    const char *ck = cfg_get("TOTK_GPU_CHECKPOINTS");
+    const char *ck = cfg_get("DKB_GPU_CHECKPOINTS");
     if (!utils && ck && !strcmp(ck, "1")) {
         uint32_t ni = 0;
         vkEnumerateInstanceExtensionProperties(NULL, &ni, NULL);
@@ -209,9 +209,9 @@ int vk_hw_probe(unsigned *vram_mib, int *integrated, int *nvidia) {
     vkEnumeratePhysicalDevices(inst, &n, NULL);
     if (n > 16) n = 16;
     vkEnumeratePhysicalDevices(inst, &n, pd);
-    const char *e = cfg_get("TOTK_GPU_INDEX");
+    const char *e = cfg_get("DKB_GPU_INDEX");
     int want = e && *e ? atoi(e) : -1, best = -1, best_score = -1;
-    const char *name = cfg_get("TOTK_GPU_NAME");
+    const char *name = cfg_get("DKB_GPU_NAME");
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
@@ -268,17 +268,17 @@ static uint32_t find_gfx_family(VkPhysicalDevice pd, const VkQueueFamilyProperti
     return UINT32_MAX;
 }
 
-// First discrete GPU with Vulkan 1.3, the required extensions and a graphics+present queue; TOTK_GPU_INDEX (index) or
-// TOTK_GPU_NAME (case-insensitive part of the name) overrides.
+// First discrete GPU with Vulkan 1.3, the required extensions and a graphics+present queue; DKB_GPU_INDEX (index) or
+// DKB_GPU_NAME (case-insensitive part of the name) overrides.
 static int pick_device(void) {
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(g_vk.instance, &n, NULL);
     if (!n) { rt_log("vk: no Vulkan device"); return 0; }
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
     vkEnumeratePhysicalDevices(g_vk.instance, &n, pd);
-    const char *e = cfg_get("TOTK_GPU_INDEX");   // no fixed default: the best device when unset
+    const char *e = cfg_get("DKB_GPU_INDEX");   // no fixed default: the best device when unset
     int want = e && *e ? atoi(e) : -1;
-    const char *name = cfg_get("TOTK_GPU_NAME");
+    const char *name = cfg_get("DKB_GPU_NAME");
     int best = -1, best_score = -1;
     VkPhysicalDeviceProperties best_p = {0};
     for (uint32_t i = 0; i < n; i++) {
@@ -311,8 +311,8 @@ static int pick_device(void) {
         }
     }
     if (best < 0) {
-        if (want >= 0) rt_log("vk: TOTK_GPU_INDEX=%d is not usable (see above)", want);
-        else if (name && *name) rt_log("vk: no usable gpu matches TOTK_GPU_NAME=%s (see above)", name);
+        if (want >= 0) rt_log("vk: DKB_GPU_INDEX=%d is not usable (see above)", want);
+        else if (name && *name) rt_log("vk: no usable gpu matches DKB_GPU_NAME=%s (see above)", name);
         else rt_log("vk: no device with Vulkan 1.3 and the required extensions (see above)");
         free(pd);
         return 0;
@@ -450,7 +450,7 @@ static int create_device(void) {
     if (has_ext(ep, ne, VK_AMD_BUFFER_MARKER_EXTENSION_NAME)) { g_vk.has_buffer_marker = 1; ext[n_ext++] = VK_AMD_BUFFER_MARKER_EXTENSION_NAME; }
     // NVIDIA's counterpart, opt-in because every pipeline bind then carries a checkpoint command.
     {
-        const char *e = cfg_get("TOTK_GPU_CHECKPOINTS");
+        const char *e = cfg_get("DKB_GPU_CHECKPOINTS");
         if (e && !strcmp(e, "1") && has_ext(ep, ne, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
             g_vk.has_nv_checkpoints = 1;
             ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
@@ -542,16 +542,16 @@ static int create_device(void) {
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
-        const char *e = cfg_get("TOTK_FEEDBACK");
+        const char *e = cfg_get("DKB_FEEDBACK");
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;
         // Under RADV the feedback layout is not the default: an RX 6600 hung (ring gfx timeout, no page fault) on the
-        // first frame that used it (issue #122, a guess until a tester confirms); TOTK_FEEDBACK=layout opts back in.
+        // first frame that used it (issue #122, a guess until a tester confirms); DKB_FEEDBACK=layout opts back in.
         int layout_wanted = e && !strcmp(e, "layout") ? 1 : !vk_caps.radv;
         g_vk.feedback = e && !strcmp(e, "0") ? VK_FEEDBACK_OFF
                       : layout_ok && layout_wanted && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
         rt_log("vk: feedback loops: %s (attachmentFeedbackLoopLayout %d, dynamicRenderingLocalRead %d)",
                g_vk.feedback == VK_FEEDBACK_LAYOUT ? "feedback layout + by-region barrier"
-               : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (TOTK_FEEDBACK=0)",
+               : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (DKB_FEEDBACK=0)",
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 

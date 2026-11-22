@@ -1,5 +1,5 @@
 // AMD FSR 3.1 frame interpolation, and the optical flow it runs on, recorded as our own Vulkan compute passes: the made
-// frame between two of the game's when Frame generation is 2x and frame_gen_by = fsr3 (TOTK_FRAME_GEN_BY; opt-in,
+// frame between two of the game's when Frame generation is 2x and frame_gen_by = fsr3 (DKB_FRAME_GEN_BY; opt-in,
 // experimental). A C rewrite of Hookshot's gpu/vk/vk_fsr3fi.cpp
 // (https://git.notrexed.dev/Hookshot/Hookshot @ 7191250b7b0f8a4becd79ee086229a2620872fc7, GPL-3.0).
 //
@@ -426,7 +426,7 @@ static int capable(void) {
 
 int vk_fsr3fi_wanted(void) {
     // the setting first: a device is not asked anything, and nothing is logged, while it is not chosen
-    return !strcmp(cfg_value("TOTK_FRAME_GEN_BY"), "fsr3") && capable() && !G.failed;
+    return !strcmp(cfg_value("DKB_FRAME_GEN_BY"), "fsr3") && capable() && !G.failed;
 }
 
 // The sampler, the counters, the constants buffer and the pipelines, once per device.
@@ -644,7 +644,7 @@ static uint64_t last_ns;   // when the previous frame was noted (nl), for the pa
 void vk_fsr3fi_note(const VkTemporalIn *t, uint32_t w, uint32_t h) {
     plat_mutex_lock(&nl);
     noted.valid = 0;   // a frame this does not take is not interpolated with the one before it
-    if (t && t->temporal && t->depth && t->mv && w && h && !strcmp(cfg_value("TOTK_FRAME_GEN"), "2x") &&
+    if (t && t->temporal && t->depth && t->mv && w && h && !strcmp(cfg_value("DKB_FRAME_GEN"), "2x") &&
         vk_fsr3fi_wanted()) {
         float dtv[4];
         if (vk_fsr3_camera_factors(t->proj, dtv)) {
@@ -716,7 +716,7 @@ static int pictures_for(uint32_t w, uint32_t h, VkFormat format) {
 }
 
 void vk_fsr3fi_note_picture(VkCommandBuffer cb, const VkTexImage *out) {
-    if (!out || !out->image || strcmp(cfg_value("TOTK_FRAME_GEN"), "2x") || !vk_fsr3fi_wanted()) return;
+    if (!out || !out->image || strcmp(cfg_value("DKB_FRAME_GEN"), "2x") || !vk_fsr3fi_wanted()) return;
     plat_mutex_lock(&nl);
     if (noted.valid && pictures_for(out->width, out->height, out->format)) {
         const uint32_t slot = P.next++ % PICTURES;

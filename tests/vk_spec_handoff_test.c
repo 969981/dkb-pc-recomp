@@ -3,7 +3,7 @@
 // Vulkan context and the three Vulkan calls the file makes. The helper threads are real threads.
 //
 // One process per configuration, because vk_spec_on reads its knobs once:
-//   vk_spec_handoff <TOTK_REPLAY_PAR or -> <TOTK_REPLAY_HELPERS or -> <helper threads expected, or cpu>
+//   vk_spec_handoff <DKB_REPLAY_PAR or -> <DKB_REPLAY_HELPERS or -> <helper threads expected, or cpu>
 // "cpu" expects vk_spec_helpers_for of the logical processors of this process, so the default goes through it.
 //   vk_spec_handoff counts
 // checks vk_spec_helpers_for itself, for every number of logical processors.
@@ -28,15 +28,15 @@ static int ab_block;
 static char logged[1024];
 
 const char *cfg_get(const char *name) {
-    if (!strcmp(name, "TOTK_REPLAY_PAR")) return par_value;
-    if (!strcmp(name, "TOTK_REPLAY_HELPERS")) return helpers_value;
+    if (!strcmp(name, "DKB_REPLAY_PAR")) return par_value;
+    if (!strcmp(name, "DKB_REPLAY_HELPERS")) return helpers_value;
     return NULL;
 }
 
 // The rule of runtime/perf.c rt_knob: the default when the name is unset or empty, 2 for "ab", 0 for "0", 1 otherwise.
 int rt_knob(const char *name, const char *def) {
     char key[64];
-    snprintf(key, sizeof key, "TOTK_%s", name);
+    snprintf(key, sizeof key, "DKB_%s", name);
     const char *e = cfg_get(key);
     if (!e || !*e) e = def;
     return !strcmp(e, "ab") ? 2 : strcmp(e, "0") != 0;
@@ -357,7 +357,7 @@ static int counts(void) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "counts")) return counts();
-    if (argc != 4) return fprintf(stderr, "usage: %s <TOTK_REPLAY_PAR or -> <TOTK_REPLAY_HELPERS or -> <helpers or cpu>\n"
+    if (argc != 4) return fprintf(stderr, "usage: %s <DKB_REPLAY_PAR or -> <DKB_REPLAY_HELPERS or -> <helpers or cpu>\n"
                                           "       %s counts\n", argv[0], argv[0]), 2;
     setvbuf(stdout, NULL, _IONBF, 0);
     par_value = strcmp(argv[1], "-") ? argv[1] : NULL;
@@ -370,7 +370,7 @@ int main(int argc, char **argv) {
     ab_block = 1;
     int on = vk_spec_on();
     n = vk_spec_count();
-    CHECK(on == (expected > 0), "vk_spec_on %d with TOTK_REPLAY_PAR=%s", on, argv[1]);
+    CHECK(on == (expected > 0), "vk_spec_on %d with DKB_REPLAY_PAR=%s", on, argv[1]);
     CHECK(n == expected, "%d helper threads, expected %d", n, expected);
     CHECK(vk_spec_checking() == check, "vk_spec_checking %d", vk_spec_checking());
     CHECK(strstr(logged, expected ? "helper threads" : "translated by the replay thread alone") != NULL, "the log line: %s", logged);
@@ -379,7 +379,7 @@ int main(int argc, char **argv) {
     CHECK(strstr(logged, count) != NULL, "the log line: %s", logged);
     size_t once = strlen(logged);
     ab_block = 0;
-    CHECK(vk_spec_on() == (expected > 0 && !ab), "TOTK_REPLAY_PAR=%s in an A block: vk_spec_on %d", argv[1], vk_spec_on());
+    CHECK(vk_spec_on() == (expected > 0 && !ab), "DKB_REPLAY_PAR=%s in an A block: vk_spec_on %d", argv[1], vk_spec_on());
     ab_block = 1;
     CHECK(vk_spec_on() == (expected > 0) && vk_spec_count() == expected && strlen(logged) == once, "a second vk_spec_on changed something");
 
@@ -392,7 +392,7 @@ int main(int argc, char **argv) {
         command_buffers();
         identity();   // the helpers outlive vk_spec_shutdown
     }
-    printf("vk_spec handoff (TOTK_REPLAY_PAR=%s, TOTK_REPLAY_HELPERS=%s): %d helper threads, %d checks, %d failed\n",
+    printf("vk_spec handoff (DKB_REPLAY_PAR=%s, DKB_REPLAY_HELPERS=%s): %d helper threads, %d checks, %d failed\n",
            argv[1], argv[2], n, checks, failures);
     return failures != 0;
 }

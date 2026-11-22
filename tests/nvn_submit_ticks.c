@@ -35,7 +35,7 @@ static void state_reset(VkExec *ex) { memset(ex,0,sizeof *ex); }
 void vk_dump_init(void) {}
 void vk_exec_pass_end(VkExec *ex) { ex->in_pass=0; }
 static void par_flush(VkExec *ex) { (void)ex; }
-// No pass end is held back (TOTK_PAR_DEFER off): nothing to settle, and no slice contexts wait for their merge.
+// No pass end is held back (DKB_PAR_DEFER off): nothing to settle, and no slice contexts wait for their merge.
 static void par_settle_all(VkExec *ex) { (void)ex; }
 static int par_no_defer __attribute__((unused)), par_unmerged, par_nworkers;
 void vk_exec_draw_slices_end(int n) { (void)n; }
@@ -49,7 +49,7 @@ void vk_mem_mirror_begin(void) {}
 int vk_mem_mirror_end(VkCommandBuffer cb,uint64_t f) { (void)cb;(void)f;return 0; }
 void vk_usnap_begin(const uint64_t *h,int n,uint64_t f) { (void)h;(void)n;(void)f; }
 void vk_usnap_end(uint64_t f) { (void)f; }
-uint64_t perf_ph_begin_cpu(void) { return 0; }   // perf.c's replay parts (TOTK_TRACE=perf), off here
+uint64_t perf_ph_begin_cpu(void) { return 0; }   // perf.c's replay parts (DKB_TRACE=perf), off here
 void perf_ph_end(int part, uint64_t t0) { (void)part; (void)t0; }
 static void free_views(void *p) { (void)p;abort(); }
 uint64_t kern_now_ns(void) { return now_ns; }

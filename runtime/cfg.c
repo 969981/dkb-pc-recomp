@@ -1,6 +1,6 @@
-// totk.ini: file-backed defaults for the TOTK_* environment variables (docs/controls.md, totk.ini.example).
+// dkb.ini: file-backed defaults for the DKB_* environment variables (docs/controls.md, dkb.ini.example).
 // Format: "key = value" lines, '#' or ';' at the start of a line begins a comment, [sections] only group. A key is a
-// variable name without "TOTK_" (an optional TOTK_ or DKB_ prefix is accepted), case-insensitive. A value is the rest of the
+// variable name without "DKB_" (an optional DKB_ prefix is accepted), case-insensitive. A value is the rest of the
 // line, trimmed, optionally in double quotes; an empty value counts as unset. The environment wins over the file.
 //
 // Live settings: cfg_set changes a value in memory (readers see the new pointer; the old string is kept, so a pointer
@@ -15,8 +15,15 @@
 #include "host.h"
 #include "platform/platform.h"
 
-#define PREFIX "TOTK_"
-#define PREFIX_LEN 5
+#ifdef _WIN32
+#define ENV_LIST _environ
+#else
+extern char **environ;
+#define ENV_LIST environ
+#endif
+
+#define PREFIX "DKB_"
+#define PREFIX_LEN 4
 #define CFG_MAX_KEYS 512
 
 typedef struct { char *key, *value; int dirty, removed; } CfgEntry;   // key upper-case, without the prefix; value NULL after cfg_reset
@@ -53,7 +60,7 @@ static const char *const known[] = {
     "ULTRAWIDE", "HUD_POSITION", "WB_ASYNC", "WB_EARLY", "WB_EXACT", "WB_FENCE_LIMIT", "WB_LAZY", "WB_UNLOCKED", "WINDOW_FILTER", "WINDOW_MODE", "WINDOW_SIZE", "WW_SLOW_MS", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
-// The totk.ini section a key cfg_set may write goes to when the file lacks it (totk.ini.example's sections).
+// The dkb.ini section a key cfg_set may write goes to when the file lacks it (dkb.ini.example's sections).
 static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"ANTILAG", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
@@ -117,7 +124,7 @@ static const CfgMeta metas[] = {
     {"UPSCALER", "fsr", "fsr|bilinear|dlss|fsr3|fsr4", LIVE}, {"DLSS_PRESET", "auto", "auto|k|m", LIVE},   // vk_dlss.c preset_for
     // Bananza: the 3D scene ratio of the temporal upscalers by name, when scene_res is auto (dkb_wide.c dkb_scene_ratio)
     {"DLSS_MODE", "auto", "auto|dlaa|quality|balanced|performance|ultra_performance", RESTART},
-    // A defaults table by level, below the environment and totk.ini (cfg.c PRESETS); custom changes nothing
+    // A defaults table by level, below the environment and dkb.ini (cfg.c PRESETS); custom changes nothing
     {"PRESET", "custom", "custom|recommended|1|2|3|4|5", RESTART},
     {"FSR4_LDR", "0", "0|1", RESTART},   // vk_fsr4.c: diagnosis, the colour is taken as perceptual up to 1
     {"WINDOW_FILTER", "fsr1", "fsr1|linear|catmull_rom|lanczos", LIVE},
@@ -217,10 +224,10 @@ static char *trim(char *s) {
     return s;
 }
 
-// The upper-case key without the prefix (TOTK_, or DKB_ as in the environment), in place.
+// The upper-case key without the prefix (an optional DKB_ as in the environment), in place.
 static char *norm_key(char *key) {
     for (char *p = key; *p; p++) *p = (char)toupper((unsigned char)*p);
-    return !strncmp(key, PREFIX, PREFIX_LEN) ? key + PREFIX_LEN : !strncmp(key, "DKB_", 4) ? key + 4 : key;
+    return !strncmp(key, PREFIX, PREFIX_LEN) ? key + PREFIX_LEN : key;
 }
 
 // A value of a key with named choices ("fsr|bilinear|dlss"): written in another case it becomes the choice in place
@@ -249,7 +256,7 @@ static void add(char *key, char *value, int line) {
     size_t vl = strlen(value);
     if (vl >= 2 && value[0] == '"' && value[vl - 1] == '"') value[vl - 1] = 0, value++;
     if (!*key) return;
-    if (!is_known(key)) rt_log("cfg: totk.ini line %d: unknown key '%s'", line, key);
+    if (!is_known(key)) rt_log("cfg: dkb.ini line %d: unknown key '%s'", line, key);
     if (!*value) return;   // "key =" leaves the setting at its default
     check_choice(key, value, line);
     for (int i = 0; i < n_entries; i++)
@@ -275,7 +282,7 @@ int cfg_load(const char *path) {
         char *s = trim(p);
         char *eq = strchr(s, '=');
         if (*s && *s != '#' && *s != ';' && *s != '[') {
-            if (!eq) rt_log("cfg: totk.ini line %d: no '=' in '%s'", line, s);
+            if (!eq) rt_log("cfg: dkb.ini line %d: no '=' in '%s'", line, s);
             else {
                 *eq = 0;
                 add(trim(s), trim(eq + 1), line);
@@ -288,8 +295,8 @@ int cfg_load(const char *path) {
     return 1;
 }
 
-// ---- device profiles: defaults for a known machine, below the environment and totk.ini and above the table, so any
-// key the player sets wins and resetting a key in the menu returns to the profile's value. TOTK_DEVICE_PROFILE = auto
+// ---- device profiles: defaults for a known machine, below the environment and dkb.ini and above the table, so any
+// key the player sets wins and resetting a key in the menu returns to the profile's value. DKB_DEVICE_PROFILE = auto
 // (default: the Steam Deck when the firmware says so), desktop (none) or deck.
 //
 // The Steam Deck (LCD Jupiter, OLED Galileo; 1280x800, 16:10, 4 Zen 2 cores, RDNA 2 with 8 CUs sharing 16 GB): the game
@@ -350,7 +357,7 @@ int vk_driver_env_apply(void) __attribute__((weak));
 int vk_driver_env_apply(void) { return 0; }
 
 // ---- performance presets: a defaults table per level, layered like the device profile (below the environment and
-// totk.ini, above the built-in table), so every key the player sets wins. preset = custom (the default) changes
+// dkb.ini, above the built-in table), so every key the player sets wins. preset = custom (the default) changes
 // nothing; 1..5 is Minimum, Low, Medium, High, Ultra; recommended picks the level the machine fits (cfg_preset_score).
 // A NULL cell leaves the key at the built-in default. On Bananza OUTPUT_RES is the game's virtual display (built-in
 // 2880x1620); the game draws its 3D smaller and upscales it unless SCENE_RES = full (level 4: DLAA with DLSS). No
@@ -424,19 +431,7 @@ static const char *preset_value(const char *key) {
     return NULL;
 }
 
-// DKB_X in the environment stands for TOTK_X and wins over it: the TOTK_ names come from TotK Recomp and stay, so its
-// fixes keep applying without a rename.
-static const char *dkb_alias(const char *name) {
-    char alias[96];
-    if (strncmp(name, PREFIX, PREFIX_LEN) || strlen(name) >= sizeof alias - 1) return NULL;
-    snprintf(alias, sizeof alias, "DKB_%s", name + PREFIX_LEN);
-    return getenv(alias);
-}
-
-static const char *env_of(const char *name) {
-    const char *e = dkb_alias(name);
-    return e ? e : getenv(name);
-}
+static const char *env_of(const char *name) { return getenv(name); }
 
 static const char *raw_get(const char *name) {
     const char *e = env_of(name);
@@ -456,7 +451,7 @@ const char *cfg_get(const char *name) {
     return NULL;
 }
 
-// Whether name's value comes from the player (the environment or totk.ini), not a profile or the table.
+// Whether name's value comes from the player (the environment or dkb.ini), not a profile or the table.
 int cfg_is_set(const char *name) { return raw_get(name) != NULL; }
 
 unsigned cfg_version(void) { return __atomic_load_n(&version, __ATOMIC_ACQUIRE); }
@@ -474,8 +469,6 @@ int cfg_set_arg(const char *arg) {
     // A full variable name (DKB_FIX_LIST_CAP: the patch sets are read from their own variable) is set as given.
     if (key != buf) return plat_setenv(buf, eq + 1);
     if (!is_known(key)) return 0;
-    snprintf(var, sizeof var, "DKB_%s", key);
-    plat_setenv(var, NULL);   // a DKB_ variable would win over the TOTK_ one (dkb_alias)
     snprintf(var, sizeof var, "%s%s", PREFIX, key);
     return plat_setenv(var, eq + 1);
 }
@@ -662,7 +655,7 @@ static void put(Out *o, const char *s, size_t n) {
     if (o->n + n + 1 > o->cap) {
         o->cap = (o->n + n + 1) * 2;
         o->buf = realloc(o->buf, o->cap);
-        if (!o->buf) rt_fatal("cfg: out of memory writing totk.ini");
+        if (!o->buf) rt_fatal("cfg: out of memory writing dkb.ini");
     }
     memcpy(o->buf + o->n, s, n);
     o->n += n;
@@ -710,7 +703,7 @@ int cfg_save_to(const char *path) {
     // after[i]: entries to write after line i (-1 = none); replace[i]: the entry whose value line i now carries
     int *replace = malloc(sizeof(int) * ((size_t)nl + 1)), *after_key = malloc(sizeof(int) * (size_t)(n + 1));
     char *drop = calloc((size_t)nl + 1, 1);   // lines of a reset key
-    if (!lines || !replace || !after_key || !drop) rt_fatal("cfg: out of memory writing totk.ini");
+    if (!lines || !replace || !after_key || !drop) rt_fatal("cfg: out of memory writing dkb.ini");
     for (int i = 0, at = 0; i < nl; i++) {
         size_t start = (size_t)at;
         while ((uint64_t)at < size && text[at] != '\n') at++;
@@ -824,10 +817,10 @@ static int find_ini(void) {
     char *cut = plat_last_sep(path);
     if (!cut) cut = strrchr(path, '/');
     if (!cut || cut + 10 >= path + sizeof path) return 0;
-    // Bananza writes dkb.ini and reads an older totk.ini only while no dkb.ini exists; TotK keeps totk.ini.
-    strcpy(cut + 1, rt_game_version ? "totk.ini" : "dkb.ini");
+    // dkb.ini; an older totk.ini is read only while no dkb.ini exists.
+    strcpy(cut + 1, "dkb.ini");
     snprintf(ini_path, sizeof ini_path, "%s", path);
-    if (!rt_game_version && !plat_file_exists(ini_path)) {
+    if (!plat_file_exists(ini_path)) {
         // No dkb.ini yet: an existing totk.ini is copied to it, so the settings carry over and every later write
         // (which only touches the changed lines) lands in dkb.ini with the rest of the file intact.
         strcpy(cut + 1, "totk.ini");
@@ -861,14 +854,28 @@ static void load_ini(void) {
     for (int i = 0; i < n_entries; i++) {
         char var[128];
         snprintf(var, sizeof var, PREFIX "%s", entries[i].key);
-        if (env_of(var)) rt_log("cfg: %s (or its DKB_ name) is set in the environment and overrides the settings file", var);
+        if (env_of(var)) rt_log("cfg: %s is set in the environment and overrides the settings file", var);
     }
 }
 
+// The project's variables used to start with TOTK_; they are not read any more. Names only, no values.
+static void log_legacy_env(void) {
+    char names[256] = "";
+    int n = 0;
+    for (char **e = ENV_LIST; e && *e; e++) {
+        if (strncmp(*e, "TOTK_", 5)) continue;
+        const char *eq = strchr(*e, '=');
+        size_t len = eq ? (size_t)(eq - *e) : strlen(*e), have = strlen(names);
+        if (n++ < 8 && have + len + 3 < sizeof names) snprintf(names + have, sizeof names - have, "%s%.*s", have ? ", " : "", (int)len, *e);
+    }
+    if (n) rt_log("cfg: %d TOTK_ environment variable(s) ignored since the rename, use DKB_ instead: %s%s", n, names, n > 8 ? ", ..." : "");
+}
+
 void cfg_init(void) {
+    log_legacy_env();
     load_ini();
     cfg_preset_resolve();
     if (profile_of())
-        rt_log("cfg: device profile Steam Deck: defaults for the keys the settings file does not set (TOTK_DEVICE_PROFILE=desktop "
+        rt_log("cfg: device profile Steam Deck: defaults for the keys the settings file does not set (DKB_DEVICE_PROFILE=desktop "
                "turns it off)");
 }

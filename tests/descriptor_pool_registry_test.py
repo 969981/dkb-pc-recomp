@@ -46,7 +46,7 @@ PRELUDE = r'''
 #define CHK_N 4096
 unsigned rt_trace;
 const char rt_game_target[] = "dkb458752";
-// Every TOTK_* switch reads as off, its default.
+// Every DKB_* switch reads as off, its default.
 int rt_knob(const char *name, const char *def) { (void)name; (void)def; return 0; }
 int rt_ab(void) { return 0; }
 GfxStats gfx_counters;
@@ -64,7 +64,7 @@ int plat_mutex_trylock(PlatMutex *m) { if (m->p) return 0; m->p = (void *)1; ret
 int plat_mutex_trylock_shared(PlatMutex *m) { return plat_mutex_trylock(m); }
 uint64_t kern_now_ns(void) { return 0; }
 void perf_lock_wait(int lock, uint64_t ns) { (void)lock; (void)ns; }
-const char *cfg_get(const char *key) { (void)key; return NULL; }   // TOTK_LOCK_HOLDS: off
+const char *cfg_get(const char *key) { (void)key; return NULL; }   // DKB_LOCK_HOLDS: off
 void plat_cond_broadcast(PlatCond *c) { (void)c; }
 void plat_cond_wait(PlatCond *c, PlatMutex *m) { (void)c; (void)m; rt_fatal("unexpected fixture wait\n"); }
 '''

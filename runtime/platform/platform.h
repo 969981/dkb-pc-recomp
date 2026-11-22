@@ -240,7 +240,7 @@ int plat_mem_access_hook(int (*fn)(uint64_t addr));
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));
 // Windows only: a read or write that faults on a reserved page inside [base, base + size) commits the chunk around
-// it (64 KiB by default; plat_mem_lazy_chunk changes it) and retries (the guest heap with TOTK_HEAP_LAZY). Lock-free
+// it (64 KiB by default; plat_mem_lazy_chunk changes it) and retries (the guest heap with DKB_HEAP_LAZY). Lock-free
 // in the handler; plat_mem_lazy_faults counts them.
 void plat_mem_lazy(uint64_t base, uint64_t size);
 void plat_mem_lazy_chunk(uint64_t bytes);   // fault-handler commit size, power of two in [64 KiB, 4 MiB]
@@ -250,8 +250,8 @@ void plat_mem_lazy_chunk(uint64_t bytes);   // fault-handler commit size, power 
 uint64_t plat_mem_lazy_run(uint64_t a, uint64_t e, int *known);
 void plat_mem_lazy_mark(uint64_t a, uint64_t e);   // the caller committed every whole 64 KiB chunk inside [a, e)
 uint64_t plat_mem_lazy_faults(void);
-// Windows only, for memory.c's guarded pages (the GPU-owned pages of staged mirrors, TOTK_STAGED_WB=fault, and the
-// diagnostic read probe, TOTK_STAGED_READ_PROBE): fault(addr, write, rip) sees every read or write access violation
+// Windows only, for memory.c's guarded pages (the GPU-owned pages of staged mirrors, DKB_STAGED_WB=fault, and the
+// diagnostic read probe, DKB_STAGED_READ_PROBE): fault(addr, write, rip) sees every read or write access violation
 // first and returns 1 when it made the page accessible and the access should run again; marked(addr, n) tells
 // plat_mem_readable that the PAGE_NOACCESS pages of a range are guarded ones and count as readable; release(addr, n,
 // caller) makes the guarded pages of a range accessible before plat_mem_read hands them to the kernel. NULL hooks:
@@ -404,7 +404,7 @@ uintptr_t plat_exe_base(void);                            // where the executabl
 int plat_module_of(uintptr_t addr, char *name, size_t cap, uintptr_t *base);
 #define PLAT_PATH_MAX 1024   // path buffers of the runtime
 #ifdef _WIN32
-#define PLAT_EXE_SUFFIX ".exe"   // of the programs the runtime starts (totk_xlate)
+#define PLAT_EXE_SUFFIX ".exe"   // of the programs the runtime starts (dkb_xlate)
 #else
 #define PLAT_EXE_SUFFIX ""
 #endif
@@ -475,7 +475,7 @@ void plat_mem_walk(void (*fn)(uint64_t base, uint64_t size, int kind, void *arg)
 // Bytes of [base, base+size) that are in the process working set (resident). Windows only (QueryWorkingSetEx); the
 // other hosts return 0.
 uint64_t plat_mem_resident(uint64_t base, uint64_t size);
-// The host's own address-space queries and protection changes, for TOTK_TRACE=perf (#317). On Windows a VirtualQuery
+// The host's own address-space queries and protection changes, for DKB_TRACE=perf (#317). On Windows a VirtualQuery
 // reports the whole run of pages that share the queried page's state, so its cost grows with that run (about 5 us per
 // resident MiB: a page in a long read-write stretch of the committed guest heap costs milliseconds), and while it runs
 // a GetWriteWatch over the same reservation waits. Counted per kind of caller since the last call; the other hosts,
@@ -490,7 +490,7 @@ void plat_vm_stats(PlatVmStat out[PLAT_VM_N]);
 // plat_thread_cpu_ns has GetThreadTimes' 15.6 ms steps), for telling work from waiting in one timed call.
 uint64_t plat_self_cpu_ns(void);
 
-// ---- operations in flight (TOTK_TRACE=perf): what every thread was inside when a write-watch query waited
+// ---- operations in flight (DKB_TRACE=perf): what every thread was inside when a write-watch query waited
 // A GetWriteWatch waits while another thread's VirtualQuery, VirtualProtect, commit or decommit holds the process's
 // address-space lock, and the long write-watch queries of a layer exit (50 to 100 ms for 2 MiB) did not say whose. Each
 // operation below records its thread, kind, range and start in that thread's slot while it runs, and goes to a ring of

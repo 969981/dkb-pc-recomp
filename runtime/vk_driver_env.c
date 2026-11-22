@@ -27,7 +27,7 @@ int vk_driver_env_apply(void) {
 #ifdef _WIN32
     return 0;   // the setting is for Mesa builds on Linux; Windows drivers come from the registry
 #else
-    const char *want = cfg_value("TOTK_VULKAN_DRIVER");
+    const char *want = cfg_value("DKB_VULKAN_DRIVER");
     if (!*want) return 0;
     char probe[4096];   // plat_getenv gives 0 for a value that does not fit, so keep it roomy
     if (plat_getenv("VK_DRIVER_FILES", probe, sizeof probe) || plat_getenv("VK_ICD_FILENAMES", probe, sizeof probe)) {

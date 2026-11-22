@@ -94,10 +94,10 @@ static int stored_input_valid(const char *cache, const uint8_t iid[32], unsigned
 }
 
 int probe_geometry_shader(void) {
-    const char *cache = getenv("TOTK_SHADER_CACHE"), *translator = getenv("TOTK_XLATE");
-    CHECK(cache && *cache && strlen(cache) < 1024, "launcher must set TOTK_SHADER_CACHE to a fresh owned directory");
+    const char *cache = getenv("DKB_SHADER_CACHE"), *translator = getenv("DKB_XLATE");
+    CHECK(cache && *cache && strlen(cache) < 1024, "launcher must set DKB_SHADER_CACHE to a fresh owned directory");
     CHECK(translator && *translator && strlen(translator) < 1024 && plat_file_exists(translator),
-          "launcher must set TOTK_XLATE to the native translator");
+          "launcher must set DKB_XLATE to the native translator");
     int nonempty = 0;
     CHECK(plat_fs_kind(cache) == PLAT_FS_DIR && plat_fs_list(cache, cache_entry, &nonempty) == PLAT_FS_OK && !nonempty,
           "cache must already exist and be empty; no existing cache is deleted");

@@ -4,10 +4,10 @@
 // the setting is read at start, and is greyed out with a note when an environment variable fixes it.
 //
 //   opt_begin("##screen", scale);
-//   opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
+//   opt_toggle("DKB_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
 //   opt_end();
 //
-// key: the setting's TOTK_ name, which must have a cfg_meta row. Present path only (ImGui).
+// key: the setting's DKB_ name, which must have a cfg_meta row. Present path only (ImGui).
 #pragma once
 #include "imgui.h"
 
@@ -15,7 +15,7 @@ extern "C" {
 #include "ui_text.h"
 }
 
-// The row colours: true the Donkey Kong palette, false the classic one (menu.cpp picks it from TOTK_MENU_THEME). opt_accent
+// The row colours: true the Donkey Kong palette, false the classic one (menu.cpp picks it from DKB_MENU_THEME). opt_accent
 // and opt_warn: the heading and warning text colours of the chosen palette.
 void opt_theme(bool dk);
 ImVec4 opt_accent(void);
@@ -61,16 +61,16 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
 // Informational binding-style row: focusable for navigation/help, never rebinds or clears.
 void opt_shortcut_row(const char *id, UiTextId title, UiTextId desc, const char *key_hint,
                       const char *const *buttons, int count);
-// Binding rows show either key cells 0 and 1 or controller cell 2. The key has no TOTK_ prefix (e.g. BIND_A).
+// Binding rows show either key cells 0 and 1 or controller cell 2. The key has no DKB_ prefix (e.g. BIND_A).
 // Returns the activated cell, 10 + the cleared cell (Delete, Backspace or X), or -1. A note follows the description.
 // opt_focus_key("<key>#<cell>") returns the cursor to a cell after remapping.
 void opt_bind_key_header(void);
 int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *const cells[3], const bool enabled[3], bool controller,
                  const char *note = nullptr);
 
-// totk.ini is written a moment after the last change (a held slider would rewrite it every frame) and when the menu
+// dkb.ini is written a moment after the last change (a held slider would rewrite it every frame) and when the menu
 // closes. opt_save_tick: on every frame the menu lays out; force: write now if anything is pending. 1 while a write is
 // pending.
 int opt_save_tick(int force);
-// A change made outside a row (Reset, F10): totk.ini is written as after a row's change.
+// A change made outside a row (Reset, F10): dkb.ini is written as after a row's change.
 void opt_save_soon(void);

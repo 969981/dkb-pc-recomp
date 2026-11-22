@@ -8,7 +8,7 @@
 // lazily: a resize only marks it dirty (gfx_window_mark_dirty), the next present (or gfx_window_resize) rebuilds it.
 //
 // The in-game menu (ui/menu.h) draws over the game image in the back end's present, after its blit. The window's size
-// and fullscreen state are the settings TOTK_WINDOW_SIZE and TOTK_FULLSCREEN, which the back end applies at start and
+// and fullscreen state are the settings DKB_WINDOW_SIZE and DKB_FULLSCREEN, which the back end applies at start and
 // whenever a cfg_set changes them (window_settings_live -> gfx_window_apply_settings).
 //
 // Focus and vsync behaviour from MacNativeGames, games/totk/runtime/frontend.m:88-97, 175-176, 350-352
@@ -46,7 +46,7 @@ int gfx_window_take_dirty(void) { return plat_xchg32(&g_dirty, 0); }
 // The window gained or lost the focus: the game hears it as nn::oe's focus state and a notification message.
 void gfx_window_focus_changed(int in) {
     plat_xchg32(&g_focused, in);
-    oe_set_focus(in);                          // pinned to 1 by TOTK_ASSUME_FOCUS inside
+    oe_set_focus(in);                          // pinned to 1 by DKB_ASSUME_FOCUS inside
     oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
     plat_inc32(&g_focus_msgs);
     rt_log("gfx: window %s the focus", in ? "gained" : "lost");
@@ -104,31 +104,31 @@ void gfx_window_closed(void) {
     }
 }
 
-// TOTK_WINDOW_MODE: windowed, borderless (desktop fullscreen), fullscreen (the display's own mode where the back end can
-// ask for it). Unset, TOTK_FULLSCREEN=1 (the older setting, the Steam Deck profile) means borderless.
-// TOTK_WINDOW_SIZE=<w>x<h>: client area of the window (the swapchain follows the window; the game image is scaled to it).
+// DKB_WINDOW_MODE: windowed, borderless (desktop fullscreen), fullscreen (the display's own mode where the back end can
+// ask for it). Unset, DKB_FULLSCREEN=1 (the older setting, the Steam Deck profile) means borderless.
+// DKB_WINDOW_SIZE=<w>x<h>: client area of the window (the swapchain follows the window; the game image is scaled to it).
 int gfx_cfg_window_mode(void) {
-    const char *m = cfg_get("TOTK_WINDOW_MODE");
-    if (cfg_from_env("TOTK_FULLSCREEN") && !cfg_from_env("TOTK_WINDOW_MODE")) m = NULL;   // the older variable wins over the ini
+    const char *m = cfg_get("DKB_WINDOW_MODE");
+    if (cfg_from_env("DKB_FULLSCREEN") && !cfg_from_env("DKB_WINDOW_MODE")) m = NULL;   // the older variable wins over the ini
     if (m && *m) {
         if (!strcmp(m, "borderless")) return 1;
         if (!strcmp(m, "fullscreen")) return 2;
         if (!strcmp(m, "windowed")) return 0;
     }
-    return cfg_bool("TOTK_FULLSCREEN") ? 1 : 0;
+    return cfg_bool("DKB_FULLSCREEN") ? 1 : 0;
 }
 
 int gfx_cfg_fullscreen(void) { return gfx_cfg_window_mode() != 0; }
 
 void gfx_cfg_window_size(int *w, int *h) {
     int x = 0, y = 0;
-    if (sscanf(cfg_value("TOTK_WINDOW_SIZE"), "%dx%d", &x, &y) != 2 || x < 640 || y < 360 || x > 7680 || y > 4320)
+    if (sscanf(cfg_value("DKB_WINDOW_SIZE"), "%dx%d", &x, &y) != 2 || x < 640 || y < 360 || x > 7680 || y > 4320)
         sscanf(cfg_meta("WINDOW_SIZE")->def, "%dx%d", &x, &y);   // unparsable or out of range: the default
     *w = x;
     *h = y;
 }
 
-// The refresh rate of the window's monitor (TOTK_FPS_LIMIT=display), measured by the back end's window thread when the
+// The refresh rate of the window's monitor (DKB_FPS_LIMIT=display), measured by the back end's window thread when the
 // window opens, lands on another monitor or the display mode changes; readers take the stored value.
 static volatile int32_t g_rate_mhz;   // millihertz, 0 unknown
 
@@ -217,12 +217,12 @@ int gfx_window_focused(void) { return g_focused; }
 unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 
 // The rectangle {x, y, w, h} of a dw x dh swapchain image the cw x ch picture goes into: the whole image with
-// TOTK_ASPECT=stretch, else (fit, the default) the largest one of the picture's own aspect ratio, centred (a 16:9 picture
+// DKB_ASPECT=stretch, else (fit, the default) the largest one of the picture's own aspect ratio, centred (a 16:9 picture
 // on the Steam Deck's 1280x800 screen gets bars of 40 rows above and below; a 16:9 picture in a 21:9 window, bars at
 // the sides).
 void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
     out[0] = out[1] = 0, out[2] = dw, out[3] = dh;
-    if (cw <= 0 || ch <= 0 || !strcmp(cfg_value("TOTK_ASPECT"), "stretch")) return;
+    if (cw <= 0 || ch <= 0 || !strcmp(cfg_value("DKB_ASPECT"), "stretch")) return;
     if ((int64_t)dw * ch > (int64_t)dh * cw) out[2] = (int)(((int64_t)dh * cw + ch / 2) / ch);   // window wider: pillarbox
     else out[3] = (int)(((int64_t)dw * ch + cw / 2) / cw);                                        // taller: letterbox
     // A side of the window's parity keeps the two bars equal; a picture one pixel short of the window fills it
@@ -247,7 +247,7 @@ void gfx_window_resize(int client_w, int client_h) {
     gfx_backend()->window_resize();
 }
 
-// The present mode the back end's swapchain or layer got (TOTK_VK_PRESENT); the menu shows it. "" before one, "none"
+// The present mode the back end's swapchain or layer got (DKB_VK_PRESENT); the menu shows it. "" before one, "none"
 // when the back end has no swapchain.
 const char *gfx_window_present_mode(void) { return gfx_backend()->present_mode(); }
 

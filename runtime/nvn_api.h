@@ -9,7 +9,7 @@
 #include "host.h"
 #include "nvn_obj.h"
 
-// NVN_API(nvnX) { body }: the strong nvnp_nvnX(Cpu *c); counts the call in gfx_counters, TOTK_TRACE=gfx logs the first.
+// NVN_API(nvnX) { body }: the strong nvnp_nvnX(Cpu *c); counts the call in gfx_counters, DKB_TRACE=gfx logs the first.
 #define NVN_API(n)                                                                                                   \
     static void nvn_impl_##n(Cpu *c);                                                                                \
     void nvnp_##n(Cpu *c) {                                                                                          \
@@ -19,7 +19,7 @@
     }                                                                                                                \
     static void nvn_impl_##n(Cpu *c)
 void nvn_called(uint8_t *seen, const char *name);          // the counting prologue of NVN_API
-#define NVN_LOG(...) do { if (rt_trace & RT_TRACE_GFX) rt_log("nvn: " __VA_ARGS__); } while (0)   // TOTK_TRACE=gfx
+#define NVN_LOG(...) do { if (rt_trace & RT_TRACE_GFX) rt_log("nvn: " __VA_ARGS__); } while (0)   // DKB_TRACE=gfx
 // A wait for the GPU, the display or another thread gives the virtual core up until the end of the enclosing scope.
 #define NVN_BLOCKING() __attribute__((cleanup(kern_core_back))) int nvn_away_ = kern_core_away()
 static inline int nvn_arg_bool(const Cpu *c, int i) { return (int)(arg_x(c, i) & 0xff); }   // NVNboolean: low 8 bits only
@@ -47,7 +47,7 @@ uint64_t nvn_new_serial(void);                             // next tex_t / prog_
 uint64_t nvn_fence_last(void);                             // fence value of the newest submit (0 before the first)
 int nvn_depth_minus_w(void);                               // 1 after DeviceSetDepthMode(NEAR_IS_MINUS_W), else 0
 void nvn_guest_written(uint64_t addr, uint64_t size);      // the host or the game wrote pool storage: back end re-reads
-// TOTK_TRACE=perf: MemoryPoolFlushMappedRange [0] and BufferFlushMappedRange [1] calls [0] and bytes [1] by the pool's
+// DKB_TRACE=perf: MemoryPoolFlushMappedRange [0] and BufferFlushMappedRange [1] calls [0] and bytes [1] by the pool's
 // CPU class (0 CPU_CACHED, 1 CPU_UNCACHED, 2 other) since the previous call.
 void nvn_flush_stats(uint64_t out[2][3][2]);
 void nvn_submit_prepare(const uint64_t *handles, int n);   // weak no-op; the command-buffer slice reads deferred binds
@@ -75,7 +75,7 @@ uint64_t nvn_tex_view_offset(const tex_t *t, const view_t *v);
 // ---- nvn_api_cmd.c, nvn_ext.c: command buffers and their replay contract
 // A command handle (what QueueSubmitCommands receives) points at a host copy of one recording: a flat sequence of
 // 8-byte-aligned records {op_hdr, payload}, OP_BEGIN first and OP_END last. Called recordings are inlined, or with
-// TOTK_CALL_REF named by an OP_CALL record (p_jump, nested at most 6 deep); a copy holds no OP_JUMP. Texture pointers in payloads (p_set_rt, p_copy_b2t, p_copy_t2t, p_clear_tex) are
+// DKB_CALL_REF named by an OP_CALL record (p_jump, nested at most 6 deep); a copy holds no OP_JUMP. Texture pointers in payloads (p_set_rt, p_copy_b2t, p_copy_t2t, p_clear_tex) are
 // immutable host copies that live for the run, one per tex_t.serial. Deferred binds and pushes (payload src != 0)
 // hold the source data read at submit (nvn_submit_prepare). Payloads of the ops nvn_obj.h does not define:
 typedef struct { volatile uint32_t *val; uint32_t mode, value; } p_signal_event;   // OP_SIGNAL_EVENT; mode: NVNeventSignalMode
@@ -105,19 +105,19 @@ static inline const op_hdr *nvn_op_next(const op_hdr *h) { return (const op_hdr 
 static inline const void *nvn_op_payload(const op_hdr *h) { return h + 1; }
 int nvn_handle_live(uint64_t handle);                      // 1 while the handle's copy exists (its control memory was
                                                            // not added again)
-int nvn_call_ref_on(void);                                 // TOTK_CALL_REF: CallCommands may record OP_CALL (nvn_api_cmd.c)
-uint32_t nvn_copy_refs(uint64_t handle);                   // tests: OP_CALL records naming a copy (TOTK_CALL_REF)
+int nvn_call_ref_on(void);                                 // DKB_CALL_REF: CallCommands may record OP_CALL (nvn_api_cmd.c)
+uint32_t nvn_copy_refs(uint64_t handle);                   // tests: OP_CALL records naming a copy (DKB_CALL_REF)
 uint32_t nvn_copy_depth(uint64_t handle);                  // tests: the longest OP_CALL chain below a copy
 uint32_t nvn_copy_zombies(void);                           // tests: released copies still named or read
 uint64_t nvn_handle_bytes(uint64_t handle);                // bytes of the copy, OP_BEGIN to OP_END; 0 if not live
 uint64_t nvn_submit_count(void);                           // QueueSubmitCommands calls so far
 const char *nvn_op_name(uint32_t op);                      // "DRAW_IDX", ...; "?" past OP_COUNT_
-// The uniform ranges a recording binds, for the back end's uniform snapshot (vk_usnap.c, TOTK_USNAP_LIST).
+// The uniform ranges a recording binds, for the back end's uniform snapshot (vk_usnap.c, DKB_USNAP_LIST).
 // EndRecording gathers the recording's normalized OP_BIND_UBO ranges (and its OP_CALL callees' lists under
-// TOTK_CALL_REF) and, when nvn_ubo_lists_on says so, hands them to nvn_ubo_list_build, which sorts them by lo and
+// DKB_CALL_REF) and, when nvn_ubo_lists_on says so, hands them to nvn_ubo_list_build, which sorts them by lo and
 // merges overlapping or touching ranges in place; the copy keeps that list until it is released. Both are weak in
 // nvn_api_cmd.c (no lists) and defined by the back end. nvn_handle_ubo_list gives a live copy's list, NULL when it has
-// none (lists off when it was recorded, a callee lacked a list, or a per-submission clone of TOTK_REPLAY_ASYNC); the
+// none (lists off when it was recorded, a callee lacked a list, or a per-submission clone of DKB_REPLAY_ASYNC); the
 // caller then walks its records.
 typedef struct { uint64_t lo, hi; } nvn_range;
 typedef struct { uint64_t n; nvn_range r[]; } nvn_range_list;

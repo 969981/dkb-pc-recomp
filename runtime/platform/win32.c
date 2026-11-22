@@ -645,7 +645,7 @@ void plat_vm_stats(PlatVmStat out[PLAT_VM_N]) {
 }
 
 // QueryThreadCycleTime counts the thread's time on a CPU in time-stamp-counter ticks; the TSC rate is measured once
-// against QueryPerformanceCounter over 2 ms, at the first call (TOTK_TRACE=perf only).
+// against QueryPerformanceCounter over 2 ms, at the first call (DKB_TRACE=perf only).
 uint64_t plat_self_cpu_ns(void) {
     static volatile int64_t tsc_per_ms;   // 0: not measured yet
     int64_t r = __atomic_load_n(&tsc_per_ms, __ATOMIC_ACQUIRE);
@@ -708,7 +708,7 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 
 static int (*fault_hook)(uint64_t addr);
 
-// The lazily committed heap range (memory.c mem_set_heap_size, TOTK_HEAP_LAZY): read by fault_veh without a lock.
+// The lazily committed heap range (memory.c mem_set_heap_size, DKB_HEAP_LAZY): read by fault_veh without a lock.
 static volatile uint64_t lazy_base, lazy_end, lazy_faults;
 
 // The 64 KiB chunks of the lazy heap known to be wholly committed: one bit per chunk from lazy_base, set by lazy_commit
@@ -716,7 +716,7 @@ static volatile uint64_t lazy_base, lazy_end, lazy_faults;
 // the map before it queries the pages itself: a VirtualQuery of a committed page reports the whole run of like pages
 // after it, which in the lazy heap reaches tens of MiB, and on the first frame of the Hilltop Layer of Surf Hills the
 // replay thread's mem_touch calls for 282 first-use pool imports were 10 of its 28 samples in those imports (a
-// TOTK_PROFILE_SLOW dump), while every page was already committed by the CPU writes that filled the pools.
+// DKB_PROFILE_SLOW dump), while every page was already committed by the CPU writes that filled the pools.
 // plat_mem_lazy clears the bits of a range that leaves the heap and again of one that joins it, before the new end is
 // published: a fault in flight during a shrink may set a bit for a chunk the shrink then decommits, and the clear on
 // growth drops it before any caller can ask for that chunk again. All commits in the lazy heap go through lazy_commit or

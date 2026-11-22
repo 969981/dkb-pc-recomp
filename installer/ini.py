@@ -1,6 +1,6 @@
-"""totk.ini: set the game language and keep everything else (keys and syntax as runtime/cfg.c reads them).
+"""dkb.ini: set the game language and keep everything else (keys and syntax as runtime/cfg.c reads them).
 
-A new file starts from totk.ini.example, whose lines are all commented defaults. The language goes into `lang`
+A new file starts from dkb.ini.example, whose lines are all commented defaults. The language goes into `lang`
 (a Switch language code, runtime/ov_system.c): an active `lang = ...` line is rewritten in place, else the commented
 `# lang = ...` line of the example is activated, else the line is added to [language] (created at the end if
 missing). Other lines, comments and line order stay as they are.
@@ -9,7 +9,7 @@ import os
 import re
 from pathlib import Path
 
-# runtime/ov_system.c: the codes TOTK_LANG offers. Each language appears once, under the code the game accepts.
+# runtime/ov_system.c: the codes DKB_LANG offers. Each language appears once, under the code the game accepts.
 LANGUAGES = ('ja', 'en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'nl', 'pt', 'pt-BR', 'ru', 'ko',
              'zh-Hans', 'zh-Hant', 'pl', 'th')
 # Older installer builds wrote these two codes; they are read as the canonical ones and rewritten on the next install.
@@ -17,8 +17,8 @@ ALIASES = {'zh-CN': 'zh-Hans', 'zh-TW': 'zh-Hant'}
 # Their text falls back to the Switch shared fonts (runtime/ov_system.c), which the installer does not extract.
 NEED_SHARED_FONTS = ('ko', 'zh-Hans', 'zh-Hant')
 
-ACTIVE = re.compile(r'^(\s*)(?:totk_)?lang(\s*=\s*)(.*?)(\s*)$', re.IGNORECASE)
-COMMENTED = re.compile(r'^\s*[#;]\s*(?:totk_)?lang\s*=.*$', re.IGNORECASE)
+ACTIVE = re.compile(r'^(\s*)(?:dkb_)?lang(\s*=\s*)(.*?)(\s*)$', re.IGNORECASE)
+COMMENTED = re.compile(r'^\s*[#;]\s*(?:dkb_)?lang\s*=.*$', re.IGNORECASE)
 SECTION = re.compile(r'^\s*\[(.*)\]\s*$')
 
 
@@ -61,7 +61,7 @@ def get_language(text):
 
 def set_value(text, key, value, section):
     """text with the active `key = value` line rewritten, or added to [section]; value None removes active lines."""
-    active = re.compile(r'^\s*(?:totk_)?' + re.escape(key) + r'\s*=', re.IGNORECASE)
+    active = re.compile(r'^\s*(?:dkb_)?' + re.escape(key) + r'\s*=', re.IGNORECASE)
     lines = [line for line in text.splitlines() if value is not None or not active.match(line)]
     if value is not None:
         at = next((i for i, line in enumerate(lines) if active.match(line)), None)
@@ -79,7 +79,7 @@ def set_value(text, key, value, section):
     return '\n'.join(lines) + '\n'
 
 
-def write(dest, lang, example=None, name='totk.ini', fallback=None, change=None):
+def write(dest, lang, example=None, name='dkb.ini', fallback=None, change=None):
     """Write dest/<name> with lang (or, given change, with change(text) instead); an existing file keeps its other
     lines. Without that file, an existing dest/<fallback> (the older name) is the starting text. Returns the path."""
     path = Path(dest) / name

@@ -1,4 +1,4 @@
-"""tools/perf_check.py on synthetic TOTK_TRACE=perf logs in runtime/perf.c's line format; no game files.
+"""tools/perf_check.py on synthetic DKB_TRACE=perf logs in runtime/perf.c's line format; no game files.
 Run: python tests/perf_check_test.py
 """
 import importlib.util
@@ -59,7 +59,7 @@ class PerfCheck(unittest.TestCase):
         self.assertAlmostEqual(r['fps'], 1000 / 16.7, places=3)
 
     def test_the_instrumentation_lines_do_not_change_the_verdict(self):
-        # lines added by TOTK_TRACE=perf for slow-window diagnosis (runtime/perf.c, vk_memory.c): the submit lock, the process, GetWriteWatch timing
+        # lines added by DKB_TRACE=perf for slow-window diagnosis (runtime/perf.c, vk_memory.c): the submit lock, the process, GetWriteWatch timing
         extra = ('[host] perf: frame 60: submit lock: 3.00 submits per frame, wait 4.100 ms per frame (max 30.00 ms), held 11.000 ms per frame (max 50.00 ms)\n'
                  '[host] perf: frame 60: process: page faults +123456 (2057 per frame), working set 4054 MiB (peak 4100), private 11516 MiB; system: '
                  'available 11000 of 32000 MiB, commit 20000 of 60000 MiB\n'
@@ -138,7 +138,7 @@ class PerfCheck(unittest.TestCase):
         self.assertEqual(code, 0)
         text = out.getvalue()
         self.assertIn('render-cpu', text)
-        self.assertIn('TOTK_PROFILE_RENDER=1', text)   # the hint for the cause
+        self.assertIn('DKB_PROFILE_RENDER=1', text)   # the hint for the cause
         self.assertTrue((self.dir / 'r.json').is_file())
 
 

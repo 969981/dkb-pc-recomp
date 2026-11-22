@@ -70,9 +70,9 @@ void rt_fatal(const char *fmt, ...) {
     va_end(ap);
     abort();
 }
-// nvn_api_cmd.c reads TOTK_CALL_REF; off, so CallCommands copies the recording in as this fixture expects.
+// nvn_api_cmd.c reads DKB_CALL_REF; off, so CallCommands copies the recording in as this fixture expects.
 int cfg_bool(const char *name) {
-    if (strcmp(name, "TOTK_CALL_REF")) rt_fatal("unexpected setting lookup %s", name);
+    if (strcmp(name, "DKB_CALL_REF")) rt_fatal("unexpected setting lookup %s", name);
     return 0;
 }
 uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
