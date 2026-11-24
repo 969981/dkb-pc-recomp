@@ -175,6 +175,14 @@ static void *symbol(const char *name) {
 #endif
 }
 
+#ifdef __linux__
+// Whether a provider's name ends in kind (load: fsr4-vk names its providers "<version> Vulkan <kind>").
+static int name_ends(const char *name, const char *kind) {
+    size_t n = strlen(name), k = strlen(kind);
+    return n >= k && !strcmp(name + n - k, kind);
+}
+#endif
+
 // The library, the entry points, and the newest 4.x upscaler it lists for this device (the first of equal versions, so
 // a provider's Auto, which picks the GPU's model, comes before INT8 and FP8). 1 when FSR 4 can run here; the log says
 // why not otherwise. Once; the device must exist.
@@ -266,8 +274,10 @@ static int load(void) {
 #ifdef __linux__
             // fsr4-vk's Auto provider can select INT8 internally. Reject it before it creates a shader when the
             // device lacks linear derivatives. An explicit FP8 provider or another library keeps its own checks.
-            else if (!has_linear_derivatives &&
-                     (!strcmp(selected_name, "4.1.1 Vulkan Auto") || !strcmp(selected_name, "4.1.1 Vulkan INT8")))
+            // The providers are matched by their kind ("<version> Vulkan Auto", "<version> Vulkan INT8"), not by the
+            // version, so a newer fsr4-vk (4.1.2) is still checked.
+            else if (!has_linear_derivatives && (name_ends(selected_name, " Vulkan Auto") ||
+                                                 name_ends(selected_name, " Vulkan INT8")))
                 rt_log("fsr4: %s needs VK_KHR_compute_shader_derivatives with computeDerivativeGroupLinear enabled; "
                        "FSR 3.1 runs instead", selected_name);
 #endif

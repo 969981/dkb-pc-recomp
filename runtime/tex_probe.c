@@ -388,6 +388,7 @@ static int test_import(pool_t *pool) {
         vk_mem_shadow_sync();
         copy_wait(sp.buffer, sp.offset, sb, 0, 0x4000);
         vmaInvalidateAllocation(c->vma, sa, 0, VK_WHOLE_SIZE);
+        equal = 1;   // each check counts its own failure
         for (int i = 0; i < 0x4000; i++)
             if (s[i] != (i >= 0x1000 && i < 0x3800 ? 0x22 : 0x33)) { equal = 0; break; }
         GCHECK(equal, "shadow sync copied bytes covered by overlapping pending GPU writes");
@@ -398,6 +399,7 @@ static int test_import(pool_t *pool) {
         vk_mem_shadow_sync();
         copy_wait(sp.buffer, sp.offset, sb, 0, 0x4000);
         vmaInvalidateAllocation(c->vma, sa, 0, VK_WHOLE_SIZE);
+        equal = 1;
         for (int i = 0; i < 0x4000; i++)
             if (s[i] != 0x44) { equal = 0; break; }
         GCHECK(equal, "shadow sync retained a completed GPU write in its pending index");
