@@ -8,7 +8,8 @@ bare --zip writes DKB-Setup-<version>-windows.zip beside it, and with it DKB-Lau
 manifest the launcher updates from (write_launcher_release). The folder carries every runtime source instead of
 libdkbrt.a, has no hactool, and --prove does not apply. The TotK description below is otherwise the same.
 
-Needs Python 3.14 (tarfile reads the MSYS2 .zst packages), uv on PATH and network access on the first run. Downloads are
+Needs Python 3.14 (tarfile reads the MSYS2 .zst packages), uv and CMake on PATH (CMake: or in MSYS2 UCRT64's bin,
+C:\\msys64\\ucrt64\\bin or MSYS2_UCRT64_BIN) and network access on the first run. Downloads are
 cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismatch stops the build. The folder holds:
 
     python/    python.org embeddable 3.14.9 + the packages of tools/requirements-installer.txt + tkinter (the Tcl/Tk 9.0
@@ -17,7 +18,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link dkb.exe
     runtime/   libdkbrt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
                ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
-    bin/       dkb_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
+    bin/       dkb_xlate.exe (+ .id), hactool.exe, SDL3.dll (built here with libusb, build_sdl), libusb-1.0.dll,
+               libopus-0.dll, ninja.exe
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, LICENSE, LICENSE-MIT, dkb.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
     TotK-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
@@ -73,10 +75,14 @@ PINS = {
     'llvm-mingw': (f'https://github.com/mstorsjo/llvm-mingw/releases/download/{LLVM_VERSION}/'
                    f'llvm-mingw-{LLVM_VERSION}-ucrt-x86_64.zip',
                    'fd5462b7f5d93b2ff981fcd3f9c7e427e47f3203c64ea91c27bcc444eebd74cd'),
-    'sdl3-dll': (f'https://github.com/libsdl-org/SDL/releases/download/release-{SDL_VERSION}/SDL3-{SDL_VERSION}-win32-x64.zip',
-                 '75c2c0fc74e7d1206aaedc22893a35887332f4f85f5c8b74fddc10d177985f2c'),
-    'sdl3-devel': (f'https://github.com/libsdl-org/SDL/releases/download/release-{SDL_VERSION}/SDL3-devel-{SDL_VERSION}-mingw.tar.gz',
-                   '049b9dd711e3fb3f8d84feb998dfec54a75e17cf539c4a80ff4d058d839771cf'),
+    # SDL3 is built from its source release (build_sdl): the upstream Windows DLL has no libusb (#496)
+    'sdl3-src': (f'https://github.com/libsdl-org/SDL/releases/download/release-{SDL_VERSION}/SDL3-{SDL_VERSION}.tar.gz',
+                 '9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3'),
+    'libusb': (MSYS2 + 'mingw-w64-ucrt-x86_64-libusb-1.0.30-1-any.pkg.tar.zst',
+               '20106e6ff31b4581bb111b28a68b6b79a50dc3e5fc3033944e1c4b3ff8cd812e'),
+    # libusb is LGPL-2.1: its MSYS2 source package goes into licenses/ beside the DLL it built
+    'libusb-src': ('https://repo.msys2.org/mingw/sources/mingw-w64-libusb-1.0.30-1.src.tar.zst',
+                   'e1052bbff0fe7a7ce25b847ca5f69d7ecafe1c644a3d07f971e770c3a44724f6'),
     'ninja': ('https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip',
               '07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65'),
     'opus': (MSYS2 + 'mingw-w64-ucrt-x86_64-opus-1.6.1-2-any.pkg.tar.zst',
@@ -96,7 +102,7 @@ PINS = {
 }
 # The component MSI inside the python.org installer that carries Tcl/Tk and tkinter (Burn names its payloads a0..a27).
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
-SDL3_DLL_SHA256 = '2b4b128d8d510cc2d442693cf848c050d700d43dc667afe9e5fd82b0570d667e'   # SDL3.dll inside the SDL zip
+MSYS2_UCRT64_BIN = Path(os.environ.get('MSYS2_UCRT64_BIN', r'C:\msys64\ucrt64\bin'))   # CMake when it is not on PATH
 
 # llvm-mingw: what clang and lld need to compile and link dkb.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
 LLVM_BIN = {'clang.exe', 'clang++.exe', 'clang-23.exe', 'ld.lld.exe', 'llvm-ar.exe', 'llvm-ranlib.exe', 'llvm-nm.exe',
@@ -308,7 +314,69 @@ def build_llvm(out):
 
 # ---- bin/ and deps ---------------------------------------------------------------------------------------------------
 
-def build_bin(out):
+def cmake_program():
+    """CMake from PATH, else from MSYS2 UCRT64 (mingw-w64-ucrt-x86_64-cmake); the GitHub Windows runner has it on PATH."""
+    found = shutil.which('cmake') or shutil.which('cmake', path=str(MSYS2_UCRT64_BIN))
+    if not found:
+        sys.exit(f'cmake not found on PATH or in {MSYS2_UCRT64_BIN} (MSYS2_UCRT64_BIN): SDL3 is built with it (build_sdl)')
+    return Path(found)
+
+
+def pe_imports(objdump, dll):
+    """The DLL names a PE image imports, as llvm-objdump -p lists them."""
+    r = subprocess.run([str(objdump), '-p', str(dll)], check=True, capture_output=True, text=True)
+    return [line.split(':', 1)[1].strip() for line in r.stdout.splitlines() if line.strip().startswith('DLL Name:')]
+
+
+def build_sdl(llvm_bin, ninja, exe='.exe'):
+    """SDL3 built from its pinned source release with llvm-mingw (llvm_bin: its bin/) and libusb, installed into
+    toolchain/release-work/sdl3-libusb/install (bin/SDL3.dll, lib/libSDL3.dll.a, include/SDL3) and returned; kept
+    there while the source, libusb and llvm-mingw pins stay the same.
+
+    Why: SDL starts the Switch 2 controllers over USB (SDL_hidapi_switch2.c) only through libusb: it sends their
+    start-up commands on the controller's second, non-HID interface. The upstream Windows SDL3.dll and MSYS2's are built
+    without libusb, so a Switch 2 GameCube or Pro Controller on USB showed up as a gamepad that never sent input unless
+    Steam Input woke it (#496). With SDL_HIDAPI_LIBUSB_SHARED, SDL3.dll loads libusb-1.0.dll (MSYS2, LGPL-2.1, shipped
+    unmodified beside it, build_bin) when it is present and does without it otherwise; libusb is not linked in.
+    The configuration follows mkw-recomp's tools/build/windeps.py build_sdl (MIT)."""
+    dest = WORK / 'sdl3-libusb'
+    key = f'{PINS["sdl3-src"][1]} {PINS["libusb"][1]} {LLVM_VERSION}\n'
+    stamp, prefix = dest / '.built', dest / 'install'
+    if stamp.is_file() and stamp.read_text() == key:
+        return prefix
+    shutil.rmtree(dest, ignore_errors=True)
+    src = unpack('sdl3-src') / f'SDL3-{SDL_VERSION}'
+    usb = unpack('libusb') / 'ucrt64'
+    cc = (Path(llvm_bin) / 'x86_64-w64-mingw32-').as_posix()   # forward slashes: CMake reads backslashes as escapes
+    build = dest / 'build'
+    cmake = cmake_program()
+    run([cmake, '-S', src, '-B', build, '-G', 'Ninja', f'-DCMAKE_MAKE_PROGRAM={Path(ninja).as_posix()}',
+         '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_SYSTEM_NAME=Windows', '-DCMAKE_SYSTEM_PROCESSOR=x86_64',
+         f'-DCMAKE_C_COMPILER={cc}clang{exe}', f'-DCMAKE_CXX_COMPILER={cc}clang++{exe}',
+         f'-DCMAKE_RC_COMPILER={cc}windres{exe}', f'-DCMAKE_INSTALL_PREFIX={prefix.as_posix()}',
+         '-DSDL_SHARED=ON', '-DSDL_STATIC=OFF', '-DSDL_TEST_LIBRARY=OFF', '-DSDL_TESTS=OFF', '-DSDL_EXAMPLES=OFF',
+         '-DSDL_HIDAPI_LIBUSB=ON', '-DSDL_HIDAPI_LIBUSB_SHARED=ON',
+         f'-DLibUSB_LIBRARY={(usb / "lib" / "libusb-1.0.dll.a").as_posix()}',
+         f'-DLibUSB_INCLUDE_PATH={(usb / "include" / "libusb-1.0").as_posix()}'], stdout=subprocess.DEVNULL)
+    run([cmake, '--build', build, '--target', 'install'], stdout=subprocess.DEVNULL)
+    config = (build / 'include-config-release' / 'build_config' / 'SDL_build_config.h').read_text(encoding='utf-8')
+    if '#define SDL_LIBUSB_DYNAMIC "libusb-1.0.dll"' not in config:
+        sys.exit('SDL3 was built without libusb: the Switch 2 controllers would not start over USB (#496)')
+    # Only Windows' own DLLs: a libc++ or libunwind import from llvm-mingw would fail to load on the player's PC
+    system = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32'
+    for dll in (prefix / 'bin' / 'SDL3.dll', usb / 'bin' / 'libusb-1.0.dll'):
+        names = pe_imports(Path(llvm_bin) / f'llvm-objdump{exe}', dll)
+        foreign = [n for n in names if not n.lower().startswith('api-ms-win-') and
+                   (os.name != 'nt' or not (system / n).is_file())]
+        if os.name != 'nt':
+            print(f'{dll.name} imports {", ".join(names)}')   # a cross test build: no System32 to look in
+        elif foreign:
+            sys.exit(f'{dll}: imports {", ".join(foreign)}, which Windows does not carry and the release does not ship')
+    stamp.write_text(key)
+    return prefix
+
+
+def build_bin(out, sdl):
     b = out / 'bin'
     b.mkdir(parents=True, exist_ok=True)
     for f in ('dkb_xlate.exe', 'dkb_xlate.id'):
@@ -318,21 +386,18 @@ def build_bin(out):
         shutil.copy2(src, b / f)
     if GAME == 'totk':   # Bananza's installer extracts with its own tools, not hactool
         shutil.copy2(MAIN_ROOT / 'toolchain' / 'hactool' / 'hactool.exe', b / 'hactool.exe')
-    dll = unpack('sdl3-dll') / 'SDL3.dll'
-    if sha256_file(dll) != SDL3_DLL_SHA256:
-        sys.exit(f'{dll}: not the pinned SDL3.dll')
-    shutil.copy2(dll, b / 'SDL3.dll')
+    shutil.copy2(sdl / 'bin' / 'SDL3.dll', b / 'SDL3.dll')
+    shutil.copy2(unpack('libusb') / 'ucrt64' / 'bin' / 'libusb-1.0.dll', b / 'libusb-1.0.dll')   # SDL3.dll loads it
     shutil.copy2(unpack('opus') / 'ucrt64' / 'bin' / 'libopus-0.dll', b / 'libopus-0.dll')
     shutil.copy2(unpack('ninja') / 'ninja.exe', b / 'ninja.exe')
 
 
-def build_deps(out):
+def build_deps(out, sdl):
     """runtime/deps: the headers and import libraries build_game.py --deps expects (include/, lib/)."""
     d = out / 'runtime' / 'deps'
     (d / 'include').mkdir(parents=True, exist_ok=True)
     (d / 'lib').mkdir(parents=True, exist_ok=True)
-    sdl = unpack('sdl3-devel') / f'SDL3-{SDL_VERSION}' / 'x86_64-w64-mingw32'
-    copy_tree(sdl / 'include', d / 'include')
+    copy_tree(sdl / 'include' / 'SDL3', d / 'include' / 'SDL3')
     shutil.copy2(sdl / 'lib' / 'libSDL3.dll.a', d / 'lib')
     for pkg, dirs, libs in (('opus', ['opus'], ['libopus.dll.a']), ('libvpx', ['vpx'], ['libvpx.a']),
                             ('vulkan-headers', ['vulkan', 'vk_video'], []), ('vulkan-loader', [], ['libvulkan-1.dll.a']),
@@ -356,7 +421,9 @@ def collect_licenses(out):
         (unpack('vulkan-headers') / 'ucrt64' / 'share' / 'licenses' / 'vulkan-headers' / 'LICENSE', 'vulkan-headers-LICENSE.txt'),
         (unpack('vulkan-loader') / 'ucrt64' / 'share' / 'licenses' / 'vulkan-loader' / 'LICENSE', 'vulkan-loader-LICENSE.txt'),
         (unpack('vma') / 'ucrt64' / 'share' / 'licenses' / 'VulkanMemoryAllocator' / 'LICENSE', 'vulkan-memory-allocator-LICENSE.txt'),
-        (unpack('sdl3-dll') / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
+        (unpack('sdl3-src') / f'SDL3-{SDL_VERSION}' / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
+        (unpack('libusb') / 'ucrt64' / 'share' / 'licenses' / 'libusb' / 'COPYING', 'libusb-COPYING.txt'),
+        (fetch('libusb-src'), 'mingw-w64-libusb-1.0.30-1.src.tar.zst'),
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
     ]
@@ -653,7 +720,7 @@ def prove(out):
          '--ninja', out / 'bin' / 'ninja.exe', '--version', version, '--gen', gen, '--out', chk, '--exefs', ext / 'exefs',
          '--romfs', ext / 'romfs', '--profile', chk / 'profile'], env=env)
     print(f'prove: build {time.time() - t0:.0f} s')
-    for dll in ('SDL3.dll', 'libopus-0.dll'):
+    for dll in ('SDL3.dll', 'libusb-1.0.dll', 'libopus-0.dll'):
         shutil.copy2(out / 'bin' / dll, chk / dll)
     failed = []
     for probe in PROBES:
@@ -695,8 +762,9 @@ def main():
     out.mkdir(parents=True)
     build_python(out)
     llvm = build_llvm(out)
-    build_bin(out)
-    build_deps(out)
+    sdl = build_sdl(unpack('llvm-mingw') / f'llvm-mingw-{LLVM_VERSION}-ucrt-x86_64' / 'bin', unpack('ninja') / 'ninja.exe')
+    build_bin(out, sdl)
+    build_deps(out, sdl)
     runtime_lib(out, llvm)
     build_sources(out, setup_program='DKB-Setup.exe')
     build_launcher(out, llvm)

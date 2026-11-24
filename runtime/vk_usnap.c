@@ -16,9 +16,8 @@
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
 // with DKB_REPLAY_ASYNC. DKB_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (DKB_AB).
-// DKB_USNAP_FAST=0 runs collect, sort, drop and copy as they were; by default each step takes a shortcut (repeated
-// ranges skipped, fewer radix passes, repeated GPU writes merged, and with a CPU copy one copy into the arena), and its
-// comment says why the result is the same.
+// DKB_USNAP_FAST=0 runs collect, sort, and drop as they were; by default each step takes a shortcut (repeated ranges
+// skipped, fewer radix passes, repeated GPU writes merged), and its comment says why the result is the same.
 // DKB_USNAP_LIST=1 (on by default; "0" turns it off, "ab" alternates per submission) takes each recording's ranges
 // from a merged list built at EndRecording (nvn_api_cmd.c take_recording, nvn_ubo_list_build below, composing callee
 // lists across OP_CALL) instead of walking every op here; DKB_USNAP_LIST_CHECK=1 also walks the full op tree and logs
@@ -37,6 +36,8 @@
 #define MAX_RANGE (64u << 10)
 #define ARENA_MIN (4u << 20)
 #define CALL_DEPTH 16
+#define RNG_C4 1ull             // low bit of Rng.lo (0 after ALIGN): range holds a VS/FS c4 binding (merge_pick)
+#define REG_NO_CPU UINT64_MAX   // Reg.cpu_off when the region is not mirrored into cpu_buf
 
 typedef struct Arena {
     struct Arena *next;
@@ -47,7 +48,7 @@ typedef struct Arena {
 } Arena;
 
 typedef nvn_range Rng;
-typedef struct { uint64_t lo, hi, off, dropped; } Reg;   // dropped: the drop's number (U.dseq), 0 while kept
+typedef struct { uint64_t lo, hi, off, cpu_off, dropped; } Reg;   // dropped: the drop's number (U.dseq), 0 while kept
 typedef struct { uint64_t lo, hi, fence; } Wrote;
 
 static struct {
@@ -57,7 +58,7 @@ static struct {
     uint64_t fence, gen;
     uint64_t dseq;              // drops made so far (vk_usnap_drops)
     Arena *arena;
-    uint8_t *cpu;               // this submission's copy for the CPU (vk_usnap_cpu_reads), as laid out in the arena
+    uint8_t *cpu;               // this submission's cached host copy of c4 regions (at each region's cpu_off)
     Rng *col;                   // collected ranges
     int ncol, ccol;
     Reg *reg;                   // merged, sorted by lo, disjoint
@@ -80,15 +81,16 @@ static struct {
 static void gen_bump(void) { __atomic_add_fetch(&U.gen, 1, __ATOMIC_RELEASE); }
 
 // The arena is written once, in order, and lives in device-local memory through the BAR where the device has it: for
-// the CPU it is uncached, and reading a 256-byte block back takes microseconds. A caller that reads many copied blocks
-// (vk_exec_draw.c merge_pick, DKB_DRAW_MERGE) asks for a second copy in cached host memory, made from the first
-// submission that begins after the call; vk_usnap_bytes reads that one. One submission records at a time
-// (vk_exec_record), so the one buffer, grown as needed, serves every submission.
+// the CPU it is uncached, and reading a 256-byte block back takes microseconds. When DKB_DRAW_MERGE is active for a
+// submission (vk_exec.c record_impl), regions holding VS/FS c4 bindings (index 1, size <= 256) are also mirrored into
+// cached host memory; vk_usnap_bytes and vk_usnap_bytes_aligned read from cpu_buf for those regions and fall back to
+// the arena map for others. One submission records at a time (vk_exec_record), so the one buffer, grown as needed,
+// serves every submission.
 static int cpu_reads;
 static uint8_t *cpu_buf;
 static uint64_t cpu_cap;
 
-void vk_usnap_cpu_reads(void) { __atomic_store_n(&cpu_reads, 1, __ATOMIC_RELAXED); }
+void vk_usnap_cpu_reads(int on) { __atomic_store_n(&cpu_reads, on != 0, __ATOMIC_RELAXED); }
 
 static Arena *free_arenas;
 static PlatMutex free_lock = PLAT_MUTEX_INIT;
@@ -153,12 +155,17 @@ static Rng seen[1 << SEEN_BITS];
 
 static void add_range(Rng r) {
     if (U.fast) {
-        Rng *s = &seen[((r.lo / ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - SEEN_BITS)];
-        if (s->lo == r.lo && s->hi == r.hi) {
-            U.repeats++;
-            return;
+        uint64_t rlo = r.lo & ~RNG_C4;
+        Rng *s = &seen[((rlo / ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - SEEN_BITS)];
+        if ((s->lo & ~RNG_C4) == rlo && s->hi == r.hi) {
+            if ((s->lo & RNG_C4) || !(r.lo & RNG_C4)) {
+                U.repeats++;
+                return;
+            }
+            s->lo |= RNG_C4;
+        } else {
+            *s = r;
         }
-        *s = r;
     }
     if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
     U.col[U.ncol++] = r;
@@ -192,8 +199,13 @@ static void collect(const op_hdr *h, int depth, int allow_callee_lists) {
             const p_bind_buf *b = a;
             if (b->addr && b->size) {
                 uint64_t n = b->size < MAX_RANGE ? b->size : MAX_RANGE;
+                uint64_t c4 = (b->index == 1 &&
+                               (b->stage == NVN_SHADER_STAGE_VERTEX || b->stage == NVN_SHADER_STAGE_FRAGMENT) &&
+                               b->size <= 256)
+                                  ? RNG_C4
+                                  : 0;
                 U.cols++;
-                add_range((Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + n});
+                add_range((Rng){(b->addr & ~(uint64_t)(ALIGN - 1)) | c4, b->addr + n});
             }
         }
         h = nvn_op_next(h);
@@ -201,7 +213,7 @@ static void collect(const op_hdr *h, int depth, int allow_callee_lists) {
 }
 
 static int by_lo(const void *a, const void *b) {
-    uint64_t x = ((const Rng *)a)->lo, y = ((const Rng *)b)->lo;
+    uint64_t x = ((const Rng *)a)->lo & ~RNG_C4, y = ((const Rng *)b)->lo & ~RNG_C4;
     return x < y ? -1 : x > y;
 }
 #define WROTE_LESS(x, y) ((x)->lo < (y)->lo)
@@ -237,14 +249,15 @@ static int list_knob(void) {
 // Lists are built whenever the knob is on or "ab": the A/B decides per submission whether vk_usnap_begin uses them.
 int nvn_ubo_lists_on(void) { return list_knob() != 0; }
 
-#define RNG_LESS(x, y) ((x)->lo < (y)->lo)
+#define RNG_LESS(x, y) (((x)->lo & ~RNG_C4) < ((y)->lo & ~RNG_C4))
 MSORT_DEFINE(sort_rng, Rng, RNG_LESS)   // per recording, on its thread, with a buffer of that thread
 
 // Sorted ranges that overlap or touch merged in place, as vk_usnap_begin merges U.col; returns how many are left.
 static size_t rng_merge(Rng *r, size_t n) {
     size_t m = 0;
     for (size_t i = 0; i < n; i++) {
-        if (m && r[i].lo <= r[m - 1].hi) {
+        if (m && (r[i].lo & ~RNG_C4) <= r[m - 1].hi) {
+            r[m - 1].lo |= r[i].lo & RNG_C4;
             if (r[i].hi > r[m - 1].hi) r[m - 1].hi = r[i].hi;
         } else {
             r[m++] = r[i];
@@ -253,32 +266,34 @@ static size_t rng_merge(Rng *r, size_t n) {
     return m;
 }
 
-// r: n normalized ranges (lo aligned to ALIGN, hi > lo; callee-merged ranges may exceed MAX_RANGE), sorted by lo and
-// merged in place; returns how many are left. Called on any recording thread.
+// r: n normalized ranges (lo & ~RNG_C4 aligned to ALIGN, hi > lo & ~RNG_C4; callee-merged ranges may exceed MAX_RANGE),
+// sorted by lo & ~RNG_C4 and merged in place; returns how many are left. Called on any recording thread.
 size_t nvn_ubo_list_build(nvn_range *r, size_t n) {
     static _Thread_local Rng *tmp;
     static _Thread_local size_t ctmp;
     size_t k = 0;
     for (size_t i = 0; i < n; i++)
-        if (r[i].hi > r[i].lo) r[k++] = r[i];
+        if (r[i].hi > (r[i].lo & ~RNG_C4)) r[k++] = r[i];
     if (k <= 1) return k;
     if (k <= 16) {
         for (size_t i = 1; i < k; i++) {
             Rng v = r[i];
+            uint64_t vlo = v.lo & ~RNG_C4;
             size_t j = i;
-            while (j > 0 && r[j - 1].lo > v.lo) r[j] = r[j - 1], j--;
+            while (j > 0 && (r[j - 1].lo & ~RNG_C4) > vlo) r[j] = r[j - 1], j--;
             r[j] = v;
         }
         return rng_merge(r, k);
     }
     size_t s = 1;
-    while (s < k && r[s].lo >= r[s - 1].lo) s++;
+    while (s < k && (r[s].lo & ~RNG_C4) >= (r[s - 1].lo & ~RNG_C4)) s++;
     if (s >= k) return rng_merge(r, k);
     if (k >= 256 && k <= (size_t)INT32_MAX) {
         uint64_t lo = UINT64_MAX, hi = 0;
         for (size_t i = 0; i < k; i++) {
-            if (r[i].lo < lo) lo = r[i].lo;
-            if (r[i].lo > hi) hi = r[i].lo;
+            uint64_t x = r[i].lo & ~RNG_C4;
+            if (x < lo) lo = x;
+            if (x > hi) hi = x;
         }
         uint64_t span = (hi - lo) / ALIGN;
         if (!(span >> (3 * RADIX_BITS))) {
@@ -293,12 +308,12 @@ size_t nvn_ubo_list_build(nvn_range *r, size_t n) {
             for (int pass = 0; pass < passes; pass++) {
                 int shift = pass * RADIX_BITS;
                 uint32_t count[1 << RADIX_BITS] = {0};
-                for (size_t i = 0; i < k; i++) count[(src[i].lo - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++;
+                for (size_t i = 0; i < k; i++) count[((src[i].lo & ~RNG_C4) - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++;
                 for (size_t b = 0, sum = 0; b < (1u << RADIX_BITS); b++) {
                     uint32_t c = count[b];
                     count[b] = (uint32_t)sum, sum += c;
                 }
-                for (size_t i = 0; i < k; i++) dst[count[(src[i].lo - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++] = src[i];
+                for (size_t i = 0; i < k; i++) dst[count[((src[i].lo & ~RNG_C4) - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++] = src[i];
                 Rng *t = src;
                 src = dst, dst = t;
             }
@@ -318,12 +333,13 @@ static void sort_col(void) {
     static int ctmp;
     int n = U.ncol, s = 1;
     // In order already (one recording's list, DKB_USNAP_LIST): a stable sort would leave it as it is.
-    while (s < n && U.col[s].lo >= U.col[s - 1].lo) s++;
+    while (s < n && (U.col[s].lo & ~RNG_C4) >= (U.col[s - 1].lo & ~RNG_C4)) s++;
     if (s >= n) return;
     uint64_t lo = UINT64_MAX, hi = 0;
     for (int i = 0; i < n; i++) {
-        if (U.col[i].lo < lo) lo = U.col[i].lo;
-        if (U.col[i].lo > hi) hi = U.col[i].lo;
+        uint64_t x = U.col[i].lo & ~RNG_C4;
+        if (x < lo) lo = x;
+        if (x > hi) hi = x;
     }
     if ((hi - lo) / ALIGN >> (3 * RADIX_BITS)) {
         qsort(U.col, (size_t)n, sizeof *U.col, by_lo);
@@ -338,12 +354,12 @@ static void sort_col(void) {
     Rng *src = U.col, *dst = tmp;
     for (int pass = 0; pass < passes; pass++) {
         int shift = pass * RADIX_BITS, count[1 << RADIX_BITS] = {0};
-        for (int i = 0; i < n; i++) count[(src[i].lo - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++;
+        for (int i = 0; i < n; i++) count[((src[i].lo & ~RNG_C4) - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++;
         for (int k = 0, sum = 0; k < 1 << RADIX_BITS; k++) {
             int c = count[k];
             count[k] = sum, sum += c;
         }
-        for (int i = 0; i < n; i++) dst[count[(src[i].lo - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++] = src[i];
+        for (int i = 0; i < n; i++) dst[count[((src[i].lo & ~RNG_C4) - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++] = src[i];
         Rng *t = src;
         src = dst, dst = t;
     }
@@ -530,12 +546,15 @@ static void usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     uint64_t t2 = kern_now_ns();
     U.t_collect += t1 - t0, U.t_sort += t2 - t1;
     // merge, keeping only what lies wholly in one imported pool and no GPU write in flight touches
+    int want_cpu = __atomic_load_n(&cpu_reads, __ATOMIC_RELAXED);
     U.nreg = 0;
-    uint64_t total = 0;
+    uint64_t total = 0, cpu_total = 0;
     for (int i = 0; i < U.ncol;) {
-        uint64_t lo = U.col[i].lo, hi = U.col[i].hi;
-        for (i++; i < U.ncol && U.col[i].lo <= hi; i++)
+        uint64_t lo = U.col[i].lo & ~RNG_C4, hi = U.col[i].hi, c4 = U.col[i].lo & RNG_C4;
+        for (i++; i < U.ncol && (U.col[i].lo & ~RNG_C4) <= hi; i++) {
+            c4 |= U.col[i].lo & RNG_C4;
             if (U.col[i].hi > hi) hi = U.col[i].hi;
+        }
         VkMemSpan sp;
         if (!vk_mem_resolve(lo, hi - lo, &sp) || sp.alloc || !sp.pool || sp.avail < hi - lo ||
             (sp.cls != VK_MCLS_HOST_CACHED && sp.cls != VK_MCLS_HOST_UNC)) {
@@ -548,31 +567,26 @@ static void usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
             continue;
         }
         if (U.nreg == U.creg) U.reg = grow(U.reg, &U.creg, sizeof *U.reg);
-        U.reg[U.nreg++] = (Reg){lo, hi, total, 0};
+        uint64_t coff = (want_cpu && c4) ? cpu_total : REG_NO_CPU;
+        if (coff != REG_NO_CPU) cpu_total += hi - lo;
+        U.reg[U.nreg++] = (Reg){lo, hi, total, coff, 0};
         total += (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     }
     uint64_t t3 = kern_now_ns();
     U.t_merge += t3 - t2;
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
-    if (__atomic_load_n(&cpu_reads, __ATOMIC_RELAXED) && cpu_cap < total) {
+    if (cpu_total && cpu_cap < cpu_total) {
         free(cpu_buf);
-        cpu_cap = (cpu_buf = malloc(total)) ? total : 0;
+        cpu_cap = (cpu_buf = malloc(cpu_total)) ? cpu_total : 0;
     }
-    U.cpu = cpu_cap >= total && __atomic_load_n(&cpu_reads, __ATOMIC_RELAXED) ? cpu_buf : NULL;
-    if (U.cpu && U.fast) {
-        // Each region is read from guest memory once, into the CPU copy at its offset; the arena then takes the whole
-        // span in one copy. Every byte a binding can read ends up at the offset the per-region copy gave it. The padding
-        // between regions is never bound (a binding lies inside one region, vk_usnap_find), so what it holds is unused.
-        for (int i = 0; i < U.nreg; i++)
-            memcpy(U.cpu + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
-        memcpy(U.arena->map, U.cpu, total);
-    } else {
-        for (int i = 0; i < U.nreg; i++) {
-            const void *src = (const void *)(uintptr_t)U.reg[i].lo;
-            if (U.cpu) src = memcpy(U.cpu + U.reg[i].off, src, U.reg[i].hi - U.reg[i].lo);   // the guest's bytes once
-            memcpy(U.arena->map + U.reg[i].off, src, U.reg[i].hi - U.reg[i].lo);
-        }
+    U.cpu = (cpu_total && cpu_cap >= cpu_total) ? cpu_buf : NULL;
+    for (int i = 0; i < U.nreg; i++) {
+        const Reg *r = &U.reg[i];
+        uint64_t len = r->hi - r->lo;
+        const void *src = (const void *)(uintptr_t)r->lo;
+        if (U.cpu && r->cpu_off != REG_NO_CPU) src = memcpy(U.cpu + r->cpu_off, src, len);   // the guest's bytes once
+        memcpy(U.arena->map + r->off, src, len);
     }
     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
     U.on = 1;
@@ -624,17 +638,25 @@ void vk_usnap_quiet(int on) { find_quiet = on; }
 uint64_t vk_usnap_drops(void) { return __atomic_load_n(&U.dseq, __ATOMIC_ACQUIRE); }
 void vk_usnap_view(uint64_t upto) { find_upto = upto; }
 
-int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out) {
-    if (!U.on || !n) return 0;
+static const Reg *usnap_lookup(uint64_t addr, uint64_t n, uint64_t align, uint64_t *delta_out) {
+    if (!U.on || !n) return NULL;
     int i = first_above(addr);
-    if (i >= U.nreg) return 0;
+    if (i >= U.nreg) return NULL;
     const Reg *r = &U.reg[i];
     uint64_t d = __atomic_load_n(&r->dropped, __ATOMIC_ACQUIRE);
-    if ((d && (!find_upto || d < find_upto)) || addr < r->lo || addr + n > r->hi) return 0;
-    uint64_t off = r->off + (addr - r->lo);
-    if (off % align) return 0;
-    *out = (VkDescriptorBufferInfo){U.arena->buf, off, n};
+    if ((d && (!find_upto || d < find_upto)) || addr < r->lo || addr + n > r->hi) return NULL;
+    uint64_t delta = addr - r->lo;
+    if ((r->off + delta) % align) return NULL;
     if (!vk_spec_helper() && !find_quiet) U.hits++;   // the replay thread's count: helpers and slices only read the table
+    *delta_out = delta;
+    return r;
+}
+
+int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out) {
+    uint64_t delta;
+    const Reg *r = usnap_lookup(addr, n, align, &delta);
+    if (!r) return 0;
+    *out = (VkDescriptorBufferInfo){U.arena->buf, r->off + delta, n};
     return 1;
 }
 
@@ -644,9 +666,18 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
 // stored range overlaps a copy (vk_usnap_covers) marks its pass's targets and they are not sliced again
 // (vk_exec_par_order_hazard). A stored range no copy overlaps changes no binding: only the list of writes grows.
 static PlatMutex drop_lock = PLAT_MUTEX_INIT;
-const void *vk_usnap_bytes(uint64_t addr, uint64_t n) {
-    VkDescriptorBufferInfo b;
-    return vk_usnap_find(addr, n, 1, &b) ? (U.cpu ? U.cpu : U.arena->map) + b.offset : NULL;
+
+static const void *usnap_bytes_impl(uint64_t addr, uint64_t n, uint64_t align) {
+    uint64_t delta;
+    const Reg *r = usnap_lookup(addr, n, align, &delta);
+    if (!r) return NULL;
+    return (U.cpu && r->cpu_off != REG_NO_CPU) ? (U.cpu + r->cpu_off + delta) : (U.arena->map + r->off + delta);
+}
+
+const void *vk_usnap_bytes(uint64_t addr, uint64_t n) { return usnap_bytes_impl(addr, n, 1); }
+
+const void *vk_usnap_bytes_aligned(uint64_t addr, uint64_t n, uint64_t align) {
+    return usnap_bytes_impl(addr, n, align);
 }
 
 // 1 when a copy made for this submission overlaps [addr, addr+n): only then does a drop of that range change what a

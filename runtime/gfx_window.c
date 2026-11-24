@@ -22,6 +22,7 @@
 #include "fs.h"
 #include "gfx.h"
 #include "gfx_wsys.h"
+#include "input.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
 
@@ -72,6 +73,7 @@ void gfx_exit_release(void) {
         for (;;) plat_sleep_ms(1000);
     // A hung GPU or driver present must not keep the process alive: end it after a grace period regardless.
     plat_thread_spawn(exit_watchdog, NULL, "exitwd", 0);
+    input_shutdown();   // RenHDrum's pads released before the process ends (ExitProcess runs no atexit handlers)
     // The queued present goes out first, without the start lock: the thread presenting it may be waiting for that lock
     // in gfx_window_start (or for the window thread, which a resize holds there).
     gfx_backend()->exit_wait();
@@ -100,6 +102,7 @@ void gfx_window_closed(void) {
         fs_save_flush();
         gfx_backend()->save();
         prof_write();
+        input_shutdown();
         plat_exit(0);
     }
 }

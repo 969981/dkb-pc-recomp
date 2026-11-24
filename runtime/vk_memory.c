@@ -17,6 +17,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "linux_pressure.h"
 #include "mirror_budget.h"
 #include "mirror_sparse_spv.h"
 #include "nvn_api.h"
@@ -1154,6 +1155,38 @@ static void vram_limit(uint64_t *budget) {
     if (lim && *budget > (uint64_t)lim) *budget = (uint64_t)lim;
 }
 
+// Windows, a GPU that shares system memory (class uma, vk_mem_class_log): the driver charges device-local memory to the
+// commit limit, so the heap budget is capped by what the system can still commit above DKB_MEM_COMMIT_RESERVE_MB
+// (linux_pressure.h lp_uma_budget, #497). The commit figures are read at most every 250 ms. Not on Linux: there
+// Committed_AS passes CommitLimit as a matter of course under the default overcommit, so it says nothing of room.
+static int mem_uma;   // set once by vk_mem_class_log, before any budget query
+static void uma_commit_cap(uint64_t used, uint64_t *budget) {
+#ifdef _WIN32
+    static uint64_t reserve = UINT64_MAX, avail, next_ms;   // racy reads of whole 64-bit words: a stale value is fine
+    static int told;
+    if (!mem_uma) return;
+    if (reserve == UINT64_MAX) reserve = lp_reserve_bytes(cfg_get("DKB_MEM_COMMIT_RESERVE_MB"), LP_COMMIT_RESERVE_MB);
+    if (!reserve) return;
+    uint64_t now = plat_now_ms();
+    if (now >= __atomic_load_n(&next_ms, __ATOMIC_RELAXED)) {
+        double proc, sys, limit;
+        plat_commit_info(&proc, &sys, &limit);
+        if (limit <= 0 || sys < 0) return;
+        __atomic_store_n(&avail, limit > sys ? (uint64_t)((limit - sys) * 1048576.0) : 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&next_ms, now + 250, __ATOMIC_RELAXED);
+    }
+    uint64_t capped = lp_uma_budget(used, *budget, __atomic_load_n(&avail, __ATOMIC_RELAXED), reserve);
+    if (capped < *budget && !__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED))
+        rt_log("vk: shared-memory gpu: the system is near its commit limit (%.0f MiB left, reserve %.0f MiB): the VRAM "
+               "budget drops from %.0f to %.0f MiB so released textures and spare blocks go (DKB_MEM_COMMIT_RESERVE_MB=0 "
+               "turns this off; a larger page file gives more room)", avail / 1048576.0, reserve / 1048576.0,
+               *budget / 1048576.0, capped / 1048576.0);
+    *budget = capped;
+#else
+    (void)used, (void)budget;
+#endif
+}
+
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     VkCtx *c = vk_ctx();
     *used = *budget = 0, *exact = 0;
@@ -1170,6 +1203,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
                 *used += b.heapUsage[h], *budget += b.heapBudget[h];
         *exact = 1;
         vram_limit(budget);
+        uma_commit_cap(*used, budget);
         return *budget != 0;
     }
     VmaBudget vb[VK_MAX_MEMORY_HEAPS];
@@ -1178,6 +1212,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
         if (mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
             *used += vb[h].statistics.blockBytes, *budget += mp->memoryHeaps[h].size;
     vram_limit(budget);
+    uma_commit_cap(*used, budget);
     return *budget != 0;
 }
 
@@ -1630,17 +1665,24 @@ static uint64_t page_hi(const PoolRec *r) { return (r->lo + r->size + 0xfff) & ~
 //   queried for written pages; pages stamped after a pool's sgen are copied in by the CPU.
 // - GPU -> guest: the replay notes each GPU write into CPU-visible memory at record time (vk_mem_gpu_pending) and
 //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
-//   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
+//   copies of later syncs skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
+//   The sync right before the part that makes a write still copies the CPU's bytes there: they come first in queue
+//   order, and a shader's storage write is noted over its whole binding while it may change only some of it. Bananza's
+//   plant culling appends to buffers the game resets on the CPU before each use; skipping the reset left the shadow
+//   with the old list, the culling appended to it, and the write-back put the grown list back in guest memory each
+//   frame (the plant instance pools filled with repeats and the open ground lost its grass, issue #462).
 // DKB_SHADOW=1/0 forces the mode on or off; the default is on for Linux, off where importing is cheap (Windows, and
 // MoltenVK, which imports host memory without Linux's write-watch and page re-protection).
-typedef struct { uint64_t lo, hi; } SRange;
+typedef struct { uint64_t lo, hi; uint32_t sync; } SRange;   // sync: s_syncs_done when the write was noted
 static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
 static int nstouch, cstouch;
-static SRange *spend;                             // shadow_lock: GPU writes recorded and not copied back yet
+static SRange *spend;                             // shadow_lock: GPU writes recorded and not copied back yet, in order
 static int nspend, cspend;
-static SRange *sblocked;                          // shadow_lock: sorted union of spend, rebuilt when it changes
-static int nsblocked, csblocked, spend_dirty;
+static uint32_t s_syncs_done;                     // shadow_lock: vk_mem_shadow_sync calls so far
+// shadow_lock: sorted union of the writes in spend of parts already submitted (noted before the last sync)
+static SRange *sblocked;
+static int nsblocked, csblocked;
 // shadow_lock: spend[0, spend_merged) are in sblocked; -1 after a removal, which has sblocked built again
 static int spend_merged;
 static int64_t s_live_n, s_live_bytes;            // shadow_lock
@@ -1743,18 +1785,22 @@ static int shadow_range_cmp(const void *x, const void *y) {
     return a->lo < b->lo ? -1 : a->lo > b->lo ? 1 : a->hi < b->hi ? -1 : a->hi > b->hi;
 }
 
-// shadow_lock held: the writeback list changes independently of the CPU's dirty-page queries. Build its union once
-// per change, so each copied range searches by address rather than scanning thousands of pending writes.
+// shadow_lock held: the writeback list changes independently of the CPU's dirty-page queries. Build the union of its
+// submitted writes once per change, so each copied range searches by address rather than scanning thousands of pending
+// writes. spend keeps the order the writes were noted in, so the writes of the part about to be submitted (noted since
+// the last sync) are its tail, and the union covers spend[0, p) before them.
 static void shadow_blocked_update(void) {
-    if (!spend_dirty) return;
+    int p = nspend;
+    while (p && spend[p - 1].sync == s_syncs_done) p--;
+    if (spend_merged == p) return;
     // Ranges are added one draw at a time and removed a submission at a time. After additions alone, the new ranges
     // are sorted and merged into the union that is there: sorting the whole list again at every sync that followed a
     // draw's addition was the largest runtime function of the replaying thread in a layer with about 14,000 ranges
     // pending.
-    if (spend_merged >= 0 && spend_merged <= nspend && nspend - spend_merged < nspend / 4) {
+    if (spend_merged >= 0 && spend_merged <= p && p - spend_merged < p / 4) {
         static SRange *add, *out;   // shadow_lock
         static int cadd, cout;
-        int k = nspend - spend_merged;
+        int k = p - spend_merged;
         while (cadd < k) grow((void **)&add, &cadd, sizeof *add);
         while (cout < nsblocked + k) grow((void **)&out, &cout, sizeof *out);
         memcpy(add, spend + spend_merged, (size_t)k * sizeof *add);
@@ -1768,25 +1814,25 @@ static void shadow_blocked_update(void) {
         }
         while (csblocked < n) grow((void **)&sblocked, &csblocked, sizeof *sblocked);
         memcpy(sblocked, out, (size_t)n * sizeof *out);
-        nsblocked = n, spend_merged = nspend, spend_dirty = 0;
+        nsblocked = n, spend_merged = p;
         return;
     }
-    while (csblocked < nspend) grow((void **)&sblocked, &csblocked, sizeof *sblocked);
-    if (nspend) {
-        memcpy(sblocked, spend, (size_t)nspend * sizeof *spend);
-        qsort(sblocked, (size_t)nspend, sizeof *sblocked, shadow_range_cmp);
+    while (csblocked < p) grow((void **)&sblocked, &csblocked, sizeof *sblocked);
+    if (p) {
+        memcpy(sblocked, spend, (size_t)p * sizeof *spend);
+        qsort(sblocked, (size_t)p, sizeof *sblocked, shadow_range_cmp);
     }
     nsblocked = 0;
-    for (int i = 0; i < nspend; i++) {
+    for (int i = 0; i < p; i++) {
         SRange r = sblocked[i];
         if (nsblocked && r.lo <= sblocked[nsblocked - 1].hi) {
             if (r.hi > sblocked[nsblocked - 1].hi) sblocked[nsblocked - 1].hi = r.hi;
         } else sblocked[nsblocked++] = r;
     }
-    spend_dirty = 0, spend_merged = nspend;
+    spend_merged = p;
 }
 
-// shadow_lock held: copy guest [a, b) except for bytes a pending GPU write will replace at its fence.
+// shadow_lock held: copy guest [a, b) except for bytes a submitted part's pending GPU write will replace at its fence.
 static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
     int lo = 0, hi = nsblocked;
     while (lo < hi) {
@@ -1861,6 +1907,7 @@ void vk_mem_shadow_sync(void) {
         s_syncs += (uint64_t)nstouch;
         nstouch = 0;
     }
+    s_syncs_done++;   // the part this sync precedes is submitted next: its writes are skipped from the next sync on
     s_ticks += qpc() - t0;
     plat_mutex_unlock(&shadow_lock);
 }
@@ -1869,8 +1916,7 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
     if (!shadow_on || !size) return;
     plat_mutex_lock(&shadow_lock);
     if (nspend == cspend) grow((void **)&spend, &cspend, sizeof *spend);
-    spend[nspend++] = (SRange){addr, addr + size};
-    spend_dirty = 1;
+    spend[nspend++] = (SRange){addr, addr + size, s_syncs_done};
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -1886,8 +1932,9 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
             s_wb_bytes += size;
         }
         for (int i = 0; i < nspend; i++)
-            if (spend[i].lo == addr && spend[i].hi == addr + size) {
-                spend[i] = spend[--nspend], spend_dirty = 1, spend_merged = -1;
+            if (spend[i].lo == addr && spend[i].hi == addr + size) {   // spend keeps its order: shadow_blocked_update
+                memmove(spend + i, spend + i + 1, (size_t)(nspend - i - 1) * sizeof *spend);
+                nspend--, spend_merged = -1;
                 break;
             }
         plat_mutex_unlock(&shadow_lock);
@@ -2036,8 +2083,24 @@ static WbPage *wb_find(uint64_t page, int insert) {
 }
 
 // wb_lock held: the page gets what it is owed and is open for a while.
+// A lazy range the last batch left wholly sealed, with its bytes owed, is the same this time unless one of its pages
+// was opened since: wb_gen counts the openings by 2 MiB region (hashed), and the range keeps the counts it saw. A hit
+// spares the walk over the range's pages (a lookup and an owed-range merge each) where the game's shaders rewrite the
+// same few thousand storage buffers every frame; that walk runs on the completion thread, inside the wait for the
+// frame's sync.
+#define WB_GEN_N 4096
+#define WB_RANGE_N 32768
+static uint32_t wb_gen[WB_GEN_N];                                   // wb_lock
+typedef struct { uint64_t lo, hi; const uint8_t *src; uint32_t g0, g1; } WbRange;
+static WbRange wb_range[WB_RANGE_N];                                // wb_lock: direct-mapped by the range's hash
+static inline uint32_t *wb_gen_of(uint64_t a) { return &wb_gen[(a >> 21) * 0x9E3779B1u >> 20 & (WB_GEN_N - 1)]; }
+static inline WbRange *wb_range_of(uint64_t lo, uint64_t hi) {
+    return &wb_range[((lo >> 4) * 0x9E3779B97F4A7C15ull ^ hi * 0xC2B2AE3D27D4EB4Full) >> 40 & (WB_RANGE_N - 1)];
+}
+
 static void wb_open_page(WbPage *e) {
     if (e->state != WB_SEALED) return;
+    ++*wb_gen_of(e->page);
     plat_mem_seal(e->page, 0x1000, 0);
     for (int i = 0; i < e->nseg; i++) {
         memcpy((void *)(uintptr_t)(e->page + e->seg[i][0]), e->src + e->seg[i][0],
@@ -2181,6 +2244,15 @@ void vk_gpu_written_many(const VkGpuWrite *in, int n) {
             cp[ncp++] = (WbCopy){a, b, src};
             continue;
         }
+        // (a range over more than two regions is not kept: it has no single pair of counts)
+        WbRange *wr = ((b - 1) >> 21) - (a >> 21) <= 1 ? wb_range_of(a, b) : NULL;
+        if (wr && wr->lo == a && wr->hi == b && wr->src == src && wr->g0 == *wb_gen_of(a) &&
+            wr->g1 == *wb_gen_of(b - 1)) {
+            wb_skipped += b - a;
+            w[i][2] = 2;   // every page still sealed with these bytes owed: nothing to copy, seal or stamp
+            continue;
+        }
+        int whole = 1;
         for (uint64_t pg = a & ~0xfffull; pg < b; pg += 0x1000) {
             uint64_t lo = pg > a ? pg : a, hi = pg + 0x1000 < b ? pg + 0x1000 : b;
             WbPage *e = wb_find(pg, 1);
@@ -2207,9 +2279,12 @@ void vk_gpu_written_many(const VkGpuWrite *in, int n) {
                 }
                 continue;
             }
+            whole = 0;
             if (ncp == ccp) grow((void **)&cp, &ccp, sizeof *cp);
             cp[ncp++] = (WbCopy){lo, hi, src + (lo - a)};
         }
+        // Kept after the walk, whose own openings (a page with too many pieces, a pool that changed) have counted.
+        if (wr && whole) *wr = (WbRange){a, b, src, *wb_gen_of(a), *wb_gen_of(b - 1)};
     }
     if (lazy) {
         // A page sealed above and opened again by a later range of this batch (too many pieces) stays open.
@@ -2269,7 +2344,7 @@ void vk_gpu_written_many(const VkGpuWrite *in, int n) {
         if (removed < m && lo < m && !wb_cmp(w[lo], key)) gone[lo] = 1, removed++;
         else spend[kept++] = spend[i];
     }
-    if (kept != nspend) nspend = kept, spend_dirty = 1, spend_merged = -1;
+    if (kept != nspend) nspend = kept, spend_merged = -1;
     plat_mutex_unlock(&shadow_lock);
     plat_mutex_unlock_shared(&pool_lock);
     plat_mutex_lock(&gen_lock);
@@ -2280,7 +2355,7 @@ void vk_gpu_written_many(const VkGpuWrite *in, int n) {
     // it, and that read copied everything owed to it back at once: where the same buffers are rewritten every frame,
     // the lazy write-back then copied as much as the copy at the fence, by faults.
     for (int i = 0; i < m; i++) {
-        if (nvn_gpu_only(w[i][0])) continue;
+        if (nvn_gpu_only(w[i][0]) || w[i][2] == 2) continue;
         for (uint64_t a = w[i][0] & ~0xfffull, hi = (w[i][1] + 0xfff) & ~0xfffull; a < hi;
              a += 1ull << GEN_PAGE_SHIFT) {
             if (nowed && bsearch(&a, owed, (size_t)nowed, sizeof *owed, u64_cmp)) continue;
@@ -5008,7 +5083,7 @@ static void mirror_create(PoolRec *r, BigMirror *fill) {
     uint64_t t1 = qpc();
     uint64_t used, budget;
     int exact;
-    if (vk_mem_vram(&used, &budget, &exact) && used + n + budget / 8 > budget) {
+    if (vk_mem_vram(&used, &budget, &exact) && !mirror_fits(used, n, budget)) {
         char why[128];
         snprintf(why, sizeof why, "its %.1f MiB mirror does not fit the VRAM budget (%.0f of %.0f MiB in use)",
                  n / 1048576.0, used / 1048576.0, budget / 1048576.0);
@@ -6170,6 +6245,7 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
     else if (host_heap < 0) cls = "uma", why = "every heap is device-local";
     else cls = "discrete", why = "device-local heap separate from host memory";
     int discrete = cls[0] == 'd';
+    mem_uma = !discrete;
     char line[2048];
     size_t k = (size_t)snprintf(line, sizeof line, "mem: class %s (%s; device type %d %s, %s)", cls, why, t, tn, p->deviceName);
     for (uint32_t h = 0; h < m->memoryHeapCount; h++)
@@ -6661,7 +6737,7 @@ void vk_mem_shutdown(void) {
     nm = npend = nwbl = 0;   // mirrors went with their pools
     for (WbLocal *w = wb_locals; w; w = w->next) w->n = w->nk = w->ns = 0;   // pending ranges point at pools just freed
     plat_mutex_lock(&shadow_lock);
-    nstouch = nspend = nsblocked = spend_dirty = spend_merged = 0;   // shadows too
+    nstouch = nspend = nsblocked = spend_merged = 0;   // shadows too
     s_live_n = s_live_bytes = 0;
     plat_mutex_unlock(&shadow_lock);
     for (int i = 0; i < nretiring; i++) destroy_rec(c, retiring[i]);   // finalized ones whose callback never ran

@@ -6,6 +6,7 @@
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
 // thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`.
 #include <math.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -24,6 +25,9 @@
 #include "platform/platform.h"
 #include "switch_rumble.h"
 #include "switch2.h"
+#ifdef _WIN32
+#include "third_party/renhdrum/renhdrum_recomp_bridge.h"
+#endif
 
 enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
 
@@ -31,10 +35,14 @@ static PlatMutex lock = PLAT_MUTEX_INIT;
 static int state;                    // 0 not started, 1 running, -1 disabled or SDL failed
 static int hd_sent, hd_failed;   // under lock: HD packets went out; a disconnect followed them (#363)
 static SDL_Gamepad *pad;
+static volatile int32_t hd_loaded;   // renhdrum.dll loaded and its version accepted (RenHDrum, Windows only)
+static volatile int32_t hd_enabled = -1;   // last input_hd_set_enabled value, -1 before the first call
 static uint64_t next_scan;
 static unsigned pad_device_seen;
 static InputHoldGate pad_fullscreen_gate;
 static int pad_fullscreen_pending;   // taken under lock; fullscreen request is posted after unlocking
+static int pad_dropped;              // the open gamepad's inputs count for nothing at the moment (pad_background = 0)
+static int pad_bg_latch, pad2_bg_latch;   // input_background_gate's state for player 1's and player 2's gamepads
 static void start(void);
 static int pad_switch;               // the open gamepad is a Switch Pro Controller or Joy-Con (HD rumble packets)
 static int pad_rumble;               // the open gamepad has rumble motors
@@ -514,6 +522,37 @@ int input_pad_automatic(void) {
     return automatic;
 }
 
+#ifdef _WIN32
+// Host services the RenHDrum bridge calls (renhdrum_recomp_bridge.c).
+void hos_log(const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    rt_log("%s", buf);
+}
+int64_t hos_now_ns(void) { return (int64_t)plat_now_ns(); }
+int hos_sdl_init(uint32_t subsystems) { return SDL_InitSubSystem(subsystems) ? 1 : 0; }
+
+static int hd_is_loaded(void) { return plat_cas32(&hd_loaded, 0, 0); }
+static void hd_attach(SDL_Gamepad *p) { if (hd_is_loaded()) rh_attach(p); }
+static void hd_detach(SDL_Gamepad *p) { if (hd_is_loaded()) rh_detach(p); }
+// Under lock: RenHDrum plays this pad's vibration (a DualSense, Switch Pro Controller or Xbox pad it claimed), so none of
+// the paths below may drive it as well.
+static int pad_hd_claimed(void) {
+    if (!hd_is_loaded() || !pad || !rh_is_active(pad)) return 0;
+    // rh_is_active is 1 for a wired DualSense even while its speaker stream is closed, and rh_vibration plays only
+    // once the pad is claimed. Only `pad` is ever passed to rh_attach, so any claimed slot is this pad's.
+    for (int i = 0; i < 8; i++) if (rh_pad_claimed(i)) return 1;
+    return 0;
+}
+#else
+static void hd_attach(SDL_Gamepad *p) { (void)p; }
+static void hd_detach(SDL_Gamepad *p) { (void)p; }
+static int pad_hd_claimed(void) { return 0; }
+#endif
+
 static SDL_Gamepad *pad2;
 static int pad2_east_a;
 static uint64_t pad2_next_scan;
@@ -557,6 +596,7 @@ static void scan_pads(void) {
     if (pad) {
         SDL_RumbleGamepad(pad, 0, 0, 0);
         SDL_RumbleGamepadTriggers(pad, 0, 0, 0);
+        hd_detach(pad);
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
         pad_rumble = pad_switch = 0;
         motion_restart(motion_global());
@@ -572,6 +612,7 @@ static void scan_pads(void) {
     }
     pad = next;
     if (!pad) return;
+    hd_attach(pad);
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
     SDL_GamepadType gt = SDL_GetGamepadType(pad);
     // SDL types the Switch 2 controllers (Nintendo, 0x2066 to 0x2073; over USB SDL_hidapi_switch2.c, over Bluetooth
@@ -674,6 +715,18 @@ static void start(void) {
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (DKB_INPUT=none)"); return; }
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
+#ifdef _WIN32
+    if (state == 1) {   // before the first scan, so the pad found there is attached
+        if (!strcmp(cfg_value("DKB_RENHDRUM"), "off")) rt_log("input: RenHDrum off (renhdrum = off)");
+        else {
+            rh_set_switch_gen(rt_game_version ? 1 : 2);   // Switch 2 mode for Bananza
+            plat_xchg32(&hd_loaded, rh_load());
+            int en = plat_cas32(&hd_enabled, -1, -1);
+            if (hd_is_loaded() && en >= 0) rh_set_enabled(en);   // a setting applied before the library loaded
+            rt_log(hd_is_loaded() ? "input: RenHDrum loaded (%s)" : "input: RenHDrum not used (%s)", rh_status_line());
+        }
+    }
+#endif
     if (state == 1) test_pad_attach();
     if (state == 1) switch2_start();   // Switch 2 controllers over Bluetooth, as virtual gamepads (DKB_SWITCH2)
     if (state == 1) {
@@ -695,10 +748,24 @@ static void pick(int32_t *x, int32_t *y, int32_t kx, int32_t ky) {
     if (b > a) { *x = kx; *y = ky; }
 }
 
+// pad_background = 0 (DKB_PAD_BACKGROUND, live): the gamepads count only while the game window is in front, as the
+// keyboard always does (ikb_foreground). With 1, the default, they also play while another window is in front.
+static int pad_in_background(void) {
+    return !cfg_bool("DKB_PAD_BACKGROUND") && !ikb_foreground();
+}
+
+static int pad_any_held(const uint8_t pd[PAD_COUNT]) {
+    for (int p = PAD_SOUTH; p < PAD_COUNT; p++)
+        if (pd[p]) return 1;
+    return 0;
+}
+
 // Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
+// While pad_background = 0 drops them (pad_dropped), pd stays all zero and the result is still 1: the pad is connected.
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
     if (pad_device_seen != cfg_version() || plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
     SDL_UpdateGamepads();
+    pad_dropped = 0;
     if (!pad || !SDL_GamepadConnected(pad)) {
         uint64_t empty = 0;
         input_hold_gate(&pad_fullscreen_gate, 0, plat_now_ns(), &empty);
@@ -709,10 +776,20 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
     pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
     pd[PAD_ZR] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
     for (int p = PAD_ZR + 1; p < PAD_COUNT; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);   // false without paddles
+    // The guide button counts as held too: the press that opened the Xbox Game Bar must not open the menu on return.
+    int held = pad_any_held(pd) || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
+    if (input_background_gate(&pad_bg_latch, pad_in_background(), held)) {
+        memset(pd, 0, PAD_COUNT);
+        uint64_t empty = 0;
+        input_hold_gate(&pad_fullscreen_gate, 0, plat_now_ns(), &empty);
+        pad_fullscreen_pending = 0;
+        pad_dropped = 1;
+        return 1;
+    }
     SDL_JoystickID id = SDL_GetGamepadID(pad);
     if (pad_fullscreen_gate.device != id) pad_fullscreen_pending = 0;
     uint64_t shortcut = (pd[PAD_START] ? 1ull << B_PLUS : 0) | (pd[PAD_BACK] ? 1ull << B_MINUS : 0);
-    if (cfg_bool("DKB_PAD_FULLSCREEN_HOLD"))
+    if (cfg_bool("DKB_PAD_SHORTCUTS") && cfg_bool("DKB_PAD_FULLSCREEN_HOLD"))
         pad_fullscreen_pending |= input_hold_gate(&pad_fullscreen_gate, id, plat_now_ns(), &shortcut);
     else {
         pad_fullscreen_gate = (InputHoldGate){0};
@@ -736,6 +813,7 @@ static int pad_fullscreen_take(void) {
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
+    if (pad_dropped) return 1;   // connected, nothing held, sticks centred
     *b |= input_map_pad_buttons(pd, pad_layout_get());
     float dead = stick_dead_get();
     stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, dead, sl);
@@ -756,7 +834,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (state == 1) {
             pad_read(&b, sl, sr);
             // The guide button (Xbox, PS) opens or closes the menu on its press edge and is no game input (TotK Recomp #826).
-            int g = pad && SDL_GamepadConnected(pad) && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
+            int g = cfg_bool("DKB_PAD_SHORTCUTS") && !pad_dropped && pad && SDL_GamepadConnected(pad) && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
             guide_toggle = g && !guide_held;
             guide_held = g;
         }
@@ -792,14 +870,15 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     int32_t st[4] = {sl[0], sl[1], sr[0], sr[1]};
     // Keep the original merged Minus+Plus settings shortcut unless fullscreen is opted in.
     int toggle = 0;
-    if (!cfg_bool("DKB_PAD_FULLSCREEN_HOLD"))
+    int shortcuts = cfg_bool("DKB_PAD_SHORTCUTS");   // 0: the controller has no shortcuts, every button goes to the game
+    if (shortcuts && !cfg_bool("DKB_PAD_FULLSCREEN_HOLD"))
         toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
     else {
         combo_held = 0;
         if (menu_is_open()) { b = 0; st[0] = st[1] = st[2] = st[3] = 0; }
     }
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
-    int overlay = input_overlay_gate(&overlay_held, &b);
+    int overlay = shortcuts ? input_overlay_gate(&overlay_held, &b) : 0;
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
     plat_mutex_unlock(&lock);
     if (fullscreen) gfx_window_toggle_fullscreen();
@@ -937,10 +1016,12 @@ int input_poll2(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
             pd[PAD_ZL] = SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
             pd[PAD_ZR] = SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
             for (int p = PAD_ZR + 1; p < PAD_COUNT; p++) pd[p] = SDL_GetGamepadButton(pad2, pad_sdl[p]);
-            b = input_map_pad_buttons(pd, input_pad_layout_pick(cfg_value("DKB_PAD_LAYOUT"), pad2_east_a));
-            float dead = stick_dead_get();
-            input_pad_stick(SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFTX), -(int32_t)SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFTY), dead, sl);
-            input_pad_stick(SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHTX), -(int32_t)SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHTY), dead, sr);
+            if (!input_background_gate(&pad2_bg_latch, pad_in_background(), pad_any_held(pd))) {
+                b = input_map_pad_buttons(pd, input_pad_layout_pick(cfg_value("DKB_PAD_LAYOUT"), pad2_east_a));
+                float dead = stick_dead_get();
+                input_pad_stick(SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFTX), -(int32_t)SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFTY), dead, sl);
+                input_pad_stick(SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHTX), -(int32_t)SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHTY), dead, sr);
+            }
         }
     }
     if (cfg_bool("DKB_COOP")) on |= live_read(&live2, &b, sl, sr);
@@ -993,9 +1074,17 @@ int input_sony_pad_present(void) {
     if (sony) rt_log("input: PlayStation pad at start: \"%s\" (after %d ms)", seen, waited);
     else if (n) rt_log("input: no PlayStation pad at start (\"%s\"): Switch prompts", seen);
     else rt_log("input: no gamepad listed within %d ms of start: Switch prompts", waited);
-    // The probe runs on whichever thread opens the RomFS first, and SDL ties its device-notification window to the
-    // thread that initialised the subsystem: release it so start() initialises it again on the input thread.
+    // The probe runs on whichever thread opens the RomFS first. On Windows and macOS SDL ties its device notification
+    // (a message window, a run loop) to the thread that initialised the subsystem: release it so start() initialises
+    // it again on the input thread.
+    // On Linux keep it. There SDL has one udev monitor for all its subsystems, and the window thread polls it from its
+    // event pump (SDL_PumpEvents, SDL_UDEV_Poll in SDL's core/linux/SDL_udev.c). Gamepads hold the only reference, so
+    // this quit frees the monitor while that poll may be reading it: an input device added at that moment (a
+    // controller, or the touchscreen a streaming host such as Sunshine adds when a client connects) crashed the game
+    // in libSDL3 about a second after start. start() initialising the subsystem again only counts up.
+#ifndef __linux__
     SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+#endif
     return sony;
 }
 
@@ -1050,6 +1139,42 @@ static int pad_s2(void) {
     return state == 1 && pad && switch2_owns(SDL_GetGamepadID(pad));
 }
 
+int input_hd_vibration(int side, float al, float fl, float ah, float fh) {
+#ifdef _WIN32
+    return hd_is_loaded() ? rh_vibration(side, al, fl, ah, fh) : 0;
+#else
+    (void)side; (void)al; (void)fl; (void)ah; (void)fh;
+    return 0;
+#endif
+}
+
+void input_hd_permit(int on) {
+#ifdef _WIN32
+    if (hd_is_loaded()) rh_permit(on);
+#else
+    (void)on;
+#endif
+}
+
+void input_hd_set_enabled(int on) {
+#ifdef _WIN32
+    plat_xchg32(&hd_enabled, on);
+    if (hd_is_loaded()) rh_set_enabled(on);
+#else
+    (void)on;
+#endif
+}
+
+void input_shutdown(void) {
+#ifdef _WIN32
+    if (!hd_is_loaded()) return;
+    plat_mutex_lock(&lock);   // not the crash path: it may stop pads the input thread is using
+    rh_shutdown();
+    plat_xchg32(&hd_loaded, 0);
+    plat_mutex_unlock(&lock);
+#endif
+}
+
 int input_rumble_stream(const float v[2][4]) {
     int ok = 0;
     plat_mutex_lock(&lock);
@@ -1060,7 +1185,7 @@ int input_rumble_stream(const float v[2][4]) {
 
 // Under lock: the open pad takes HD packets (a Switch pad, DKB_RUMBLE_HD not off).
 static int pad_hd(void) {
-    return state == 1 && pad && pad_switch && !hd_failed && strcmp(cfg_value("DKB_RUMBLE_HD"), "off") != 0 && !pad_s2();
+    return state == 1 && pad && pad_switch && !hd_failed && strcmp(cfg_value("DKB_RUMBLE_HD"), "off") != 0 && !pad_s2() && !pad_hd_claimed();
 }
 
 int input_rumble_hd(const float v[2][4], uint32_t ms) {
@@ -1084,7 +1209,7 @@ int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
     static unsigned seen;
     if (triggers < 0 || seen != cfg_version()) seen = cfg_version(), triggers = input_rumble_triggers_enabled();
     plat_mutex_lock(&lock);
-    if (state == 1 && pad && pad_rumble && !pad_hd() && !pad_s2()) {
+    if (state == 1 && pad && pad_rumble && !pad_hd() && !pad_s2() && !pad_hd_claimed()) {
         ok = SDL_RumbleGamepad(pad, low, high, ms);
         if (triggers) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
     }
@@ -1148,8 +1273,8 @@ int input_motion_enabled(void) {
 }
 
 // 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
-// fusion. Without a gamepad with sensors, or with motion off (DKB_MOTION=0, live), nothing is fed and the six-axis
-// sensor reads at rest.
+// fusion. Without a gamepad with sensors, with motion off (DKB_MOTION=0, live), or while pad_background = 0 drops the
+// gamepad, nothing is fed and the six-axis sensor reads at rest.
 static void motion_main(void *arg) {
     (void)arg;
     for (;;) {
@@ -1159,7 +1284,7 @@ static void motion_main(void *arg) {
         plat_mutex_lock(&lock);
         if (pad && SDL_GamepadConnected(pad)) {
             SDL_UpdateGamepads();
-            have = sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
+            have = !pad_dropped && sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
                    SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
         }
         plat_mutex_unlock(&lock);

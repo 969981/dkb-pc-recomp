@@ -490,23 +490,53 @@ static void next_jitter(uint32_t w, uint32_t ow) {
 
 static uint64_t frames_now(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED); }
 
-// J.depth is read by the helper translators (vk_spec.h) and the threads recording slices of parallel passes while the
-// replay thread may clear it, here or in the release below, so it is loaded and stored atomically; a slice thread may
-// clear it here too. J.used is set by the replay thread and the slice threads, atomically. The rest of J is written
-// only where no helper part or slice is translated.
+// J.depth is read by the helper translators (vk_spec.h) while the replay thread may clear it, here or in the release
+// below, so it is loaded and stored atomically, as J.used is set. The threads recording slices of parallel passes read
+// none of J: they draw with their pass's jitter view (below). The rest of J is written only where no helper part is
+// translated.
 static VkImage jdepth(void) { return __atomic_load_n(&J.depth, __ATOMIC_RELAXED); }
 static void jdepth_set(VkImage v) { __atomic_store_n(&J.depth, v, __ATOMIC_RELAXED); }
 
-void vk_dlss_jitter(VkImage depth, float j[2]) {
+// 1 when draws into depth take the jitter, with j set to it.
+static int jitter_of(VkImage depth, float j[2]) {
     VkImage d = jdepth();
-    if (!d || depth != d || (state <= 0 && !vk_fsr_wanted())) return;
+    if (!d || depth != d || (state <= 0 && !vk_fsr_wanted())) return 0;
     if (frames_now() - J.frame > 2) {   // DLSS has stopped running (a menu without the upscaler, a failure)
         if (!vk_spec_helper()) jdepth_set(VK_NULL_HANDLE);
-        return;
+        return 0;
     }
     j[0] = J.jx, j[1] = J.jy;
     if (vk_spec_helper()) used_h[vk_spec_here - 1] = 1;
-    else __atomic_store_n(&J.used, 1, __ATOMIC_RELAXED);   // the replay thread or a thread recording slices
+    else __atomic_store_n(&J.used, 1, __ATOMIC_RELAXED);
+    return 1;
+}
+
+// A slice of a sliced pass whose end is held back (vk_exec.c par_defer) may be recorded after the walk has gone past
+// the pass and through the frame's evaluation, whose vk_temporal_done moves the jitter on for the next frame. A slice
+// that read J then drew its part of the scene with the next frame's offset, a sub-pixel away from the rest, and now
+// and then the lit scene came out black for a frame while depth, sky and HUD stayed (#479). So the replay thread takes
+// a sliced pass's jitter where the pass begins, as its first draw would have taken it (vk_dlss_jitter_take, which also
+// tells the evaluation that the scene took it), and the slices draw with that (vk_dlss_jitter_view), as they read the
+// uniform copies (vk_usnap_view) and the texture cache (vk_texture_view) as of the pass's start.
+static _Thread_local VkDlssJitterView jview;
+static _Thread_local int jview_on;
+
+void vk_dlss_jitter_take(VkImage depth, VkDlssJitterView *v) {
+    v->depth = depth, v->j[0] = v->j[1] = 0;
+    v->on = depth && jitter_of(depth, v->j);
+}
+
+void vk_dlss_jitter_view(const VkDlssJitterView *v) {
+    jview_on = v != NULL;
+    if (v) jview = *v;
+}
+
+void vk_dlss_jitter(VkImage depth, float j[2]) {
+    if (jview_on) {
+        if (jview.on && depth == jview.depth) j[0] = jview.j[0], j[1] = jview.j[1];
+        return;
+    }
+    jitter_of(depth, j);
 }
 
 int vk_dlss_scene_draw(const VkExec *ex) {

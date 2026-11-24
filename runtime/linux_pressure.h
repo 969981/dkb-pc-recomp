@@ -72,6 +72,20 @@ static inline uint64_t lp_shortfall(uint64_t avail, uint64_t swap_free, uint64_t
     return a > c ? a : c;
 }
 
+// The device-local budget of a GPU that shares system memory (class uma, vk_memory.c vk_mem_vram), capped by what the
+// system can still commit: on such a GPU every device-local byte is system memory, and on Windows the driver charges it
+// to the commit limit, so the driver's heap budget (the size of the shared heap) can show gigabytes free while the
+// next allocation fails (#497: an Iris Xe lost the device at 17.6 of 18.5 GB committed with its 8 GB heap half used).
+// The cap is the use plus what can be committed above the reserve, so the callers that shed memory under VRAM pressure
+// (released textures, the headroom block, pool mirrors) start once the system is within the reserve of its limit.
+// commit_avail: bytes the system can still commit; reserve 0 turns the cap off.
+static inline uint64_t lp_uma_budget(uint64_t used, uint64_t budget, uint64_t commit_avail, uint64_t reserve) {
+    if (!reserve) return budget;
+    uint64_t room = commit_avail > reserve ? commit_avail - reserve : 0;
+    uint64_t cap = used <= UINT64_MAX - room ? used + room : UINT64_MAX;
+    return cap < budget ? cap : budget;
+}
+
 // A pressure episode runs from the first sample with a shortfall to the first without. Within it the renderer gives
 // memory back at the start, again when the shortfall has grown by LP_CLEAR_MARGIN past its deepest, and at the latest
 // every LP_RETRY_MS, so a system that hovers just under its reserve is not trimmed at every sample.

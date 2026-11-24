@@ -476,6 +476,19 @@ int input_hold_gate(InputHoldGate *gate, uint32_t device, uint64_t now_ns, uint6
     return edge;
 }
 
+// The gamepad while the game window is in the background (pad_background = 0): its inputs are dropped, and once the
+// window is in front again they stay dropped until every input is released. A press made for another window (the
+// Steam overlay, a launcher, a browser) is then never seen by the game as a fresh press when the window returns.
+int input_background_gate(int *latch, int background, int held) {
+    if (background) {
+        *latch = 1;
+        return 1;
+    }
+    if (*latch && held) return 1;
+    *latch = 0;
+    return 0;
+}
+
 // Both stick clicks held together step the performance overlay as F10 does (a gamepad has no F10: the Steam Deck in
 // Game Mode). The game sees neither click while its existing immediate latch holds.
 int input_overlay_gate(int *held, uint64_t *buttons) {

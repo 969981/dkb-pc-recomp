@@ -208,6 +208,8 @@
 # changes), recommended (from your GPU memory, RAM and processors) or 1 Minimum, 2 Low, 3 Medium, 4 High, 5 Ultra
 # (docs/dkb-testing.md). A key you set here wins over it. Read at start.
 # preset = custom
+# auto chooses mip levels for the upscaled size with a temporal upscaler below full scene resolution. Restart to apply.
+# lod_bias = off
 # Sharpening of the finished picture, 0 (off) to 100, at any window size, the game resolution's size included, and on the
 # game's own HDR picture too. Takes effect at once.
 # sharpness = 80
@@ -308,6 +310,13 @@
 # Default: Plus + Minus opens settings. Opt in to a physical Start + Back fullscreen hold instead (0.5 s).
 # Guide/Home and keyboard F1 still open settings in either mode.
 # pad_fullscreen_hold = 0
+# 0: the controller has no shortcuts (no Plus + Minus, Guide/Home or L3 + R3) and every button goes to the game, e.g. on
+# Steam Deck where Steam uses them. Keyboard F1 still opens settings.
+# pad_shortcuts = 1
+# 1: the gamepads keep playing while another window is in front (the Steam overlay, a browser). 0: they count only
+# while the game window is in front, as the keyboard does; a button still held when the window comes back counts once
+# released. Changes take effect at once.
+# pad_background = 1
 # Gamepad motion controls (0 = off) and vibration (0 = off).
 # motion = 1
 # rumble = 1
@@ -318,6 +327,9 @@
 # rumble_triggers = 0
 # HD rumble (Switch Pro Controller / Joy-Con): auto uses it on genuine pads, off (the default) sends plain rumble; several third-party Switch Pro pads broke with it (#363, #383).
 # rumble_hd = off
+# Detailed haptics through RenHDrum (DualSense, Switch Pro, Xbox pads) on Windows: auto uses renhdrum.dll when it sits next to dkb.exe (RenHDrum 0.5), off never loads it.
+# It sends HD packets to any 057E:2009 pad regardless of rumble_hd; a third-party Switch Pro pad that drops with rumble_hd = auto will do the same, set renhdrum = off.
+# renhdrum = auto
 # Switch 2 controllers (Pro Controller 2, Joy-Con 2) over Bluetooth LE, with HD rumble: 1 on, 0 off, 2 on and logs
 # every advertising Bluetooth device once (for a report when one is not found). Hold Sync on a controller with the game
 # open to pair it with this PC; after that any button reconnects it. Do not pair it in the system's Bluetooth settings.

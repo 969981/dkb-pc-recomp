@@ -328,6 +328,7 @@ static uint64_t ubo_live;   // lists held by copies, live or released and waitin
 
 #define UBO_ALIGN 256u
 #define UBO_MAX_RANGE (64u << 10)
+#define UBO_RNG_C4 1ull   // low bit of lo (0 after UBO_ALIGN): matches vk_usnap.c RNG_C4 for VS/FS c4 bindings
 #define UBO_SEEN_BITS 8
 #define UBO_SEEN_MIN 16
 
@@ -336,19 +337,32 @@ static uint64_t ubo_live;   // lists held by copies, live or released and waitin
 static inline void ubo_buf_add(nvn_range r, nvn_range seen[1 << UBO_SEEN_BITS], int *seen_on,
                                nvn_range **buf, size_t *n, size_t *cap) {
     if (*seen_on) {
-        nvn_range *s = &seen[((r.lo / UBO_ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - UBO_SEEN_BITS)];
-        if (s->lo == r.lo && s->hi == r.hi) return;
-        *s = r;
+        uint64_t rlo = r.lo & ~UBO_RNG_C4;
+        nvn_range *s = &seen[((rlo / UBO_ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - UBO_SEEN_BITS)];
+        if ((s->lo & ~UBO_RNG_C4) == rlo && s->hi == r.hi) {
+            if ((s->lo & UBO_RNG_C4) || !(r.lo & UBO_RNG_C4)) return;
+            s->lo |= UBO_RNG_C4;
+        } else {
+            *s = r;
+        }
     } else if (*n >= UBO_SEEN_MIN) {
         memset(seen, 0, sizeof(nvn_range) * (1u << UBO_SEEN_BITS));
         for (size_t i = 0; i < *n; i++) {
             nvn_range e = (*buf)[i];
-            seen[((e.lo / UBO_ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - UBO_SEEN_BITS)] = e;
+            uint64_t elo = e.lo & ~UBO_RNG_C4;
+            nvn_range *s = &seen[((elo / UBO_ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - UBO_SEEN_BITS)];
+            if ((s->lo & ~UBO_RNG_C4) == elo && s->hi == e.hi) s->lo |= e.lo & UBO_RNG_C4;
+            else *s = e;
         }
         *seen_on = 1;
-        nvn_range *s = &seen[((r.lo / UBO_ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - UBO_SEEN_BITS)];
-        if (s->lo == r.lo && s->hi == r.hi) return;
-        *s = r;
+        uint64_t rlo = r.lo & ~UBO_RNG_C4;
+        nvn_range *s = &seen[((rlo / UBO_ALIGN) * 0x9E3779B97F4A7C15ull) >> (64 - UBO_SEEN_BITS)];
+        if ((s->lo & ~UBO_RNG_C4) == rlo && s->hi == r.hi) {
+            if ((s->lo & UBO_RNG_C4) || !(r.lo & UBO_RNG_C4)) return;
+            s->lo |= UBO_RNG_C4;
+        } else {
+            *s = r;
+        }
     }
     if (*n == *cap) {
         size_t c = *cap ? *cap * 2 : 1024;
@@ -577,7 +591,12 @@ static uint8_t *take_recording(cmd_t *o) {
             memcpy(&b, p + at + sizeof h, sizeof b);
             if (b.addr && b.size) {
                 uint64_t sz = b.size < UBO_MAX_RANGE ? b.size : UBO_MAX_RANGE;
-                ubo_buf_add((nvn_range){b.addr & ~(uint64_t)(UBO_ALIGN - 1), b.addr + sz},
+                uint64_t c4 = (b.index == 1 &&
+                               (b.stage == NVN_SHADER_STAGE_VERTEX || b.stage == NVN_SHADER_STAGE_FRAGMENT) &&
+                               b.size <= 256)
+                                  ? UBO_RNG_C4
+                                  : 0;
+                ubo_buf_add((nvn_range){(b.addr & ~(uint64_t)(UBO_ALIGN - 1)) | c4, b.addr + sz},
                             seen, &seen_on, &ubo_buf, &nubo, &ubo_cap);
             }
         }

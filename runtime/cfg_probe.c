@@ -435,6 +435,8 @@ int probe_cfg(void) {
     plat_setenv("DKB_OUTPUT_RES", NULL);
     CHECK(EQ(cfg_value("DKB_OUTPUT_RES"), rt_game_version ? "1920x1080" : "2880x1620"),
           "default: preserve the game's stock output resolution");
+    plat_setenv("DKB_RENHDRUM", NULL);
+    CHECK(EQ(cfg_value("DKB_RENHDRUM"), "auto"), "default: RenHDrum is used when its library is present");
     CHECK(EQ(cfg_value("DKB_VK_PRESENT"), "mailbox") && cfg_int("DKB_SPLIT_DRAWS") == 64, "default: text and integer");
     plat_setenv("DKB_MOUSE_SENS", "2.5");
     CHECK(cfg_double("DKB_MOUSE_SENS") == 2.5, "double: the environment value");

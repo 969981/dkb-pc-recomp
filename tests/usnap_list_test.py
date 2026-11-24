@@ -50,8 +50,8 @@ def main():
     source = (ROOT / 'runtime' / 'vk_usnap.c').read_text(encoding='utf-8')
     parts = [PRELUDE]
     parts += [line(source, start) for start in ('#define ALIGN ', '#define MAX_RANGE ', '#define CALL_DEPTH ',
-                                                '#define RADIX_BITS ', '#define SEEN_BITS ', 'static Rng seen[',
-                                                '#define RNG_LESS', 'MSORT_DEFINE(sort_rng')]
+                                                '#define RNG_C4 ', '#define RADIX_BITS ', '#define SEEN_BITS ',
+                                                'static Rng seen[', '#define RNG_LESS', 'MSORT_DEFINE(sort_rng')]
     parts += [function(source, start) for start in
               ('static void *grow(', 'static void add_range(', 'static void col_append(', 'static void collect(',
                'static int by_lo(', 'static int radix_passes(', 'static size_t rng_merge(',

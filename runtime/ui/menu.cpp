@@ -817,6 +817,10 @@ static void rows_render_options(const MenuTarget &target) {
     const bool no_sharpen = sized && !wf_sharpens(filter, native_hdr, target.image_w, target.image_h, fitted[2], fitted[3]);
     opt_slider("DKB_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%",
                no_sharpen ? menu_text(UI_MENU_SHARPNESS_NO_EFFECT) : nullptr);
+    if (!rt_game_version) {   // the mip bias of a temporal upscale (vk_texture.c make_sampler), read at start
+        static const UiTextId bias[] = {UI_MENU_OFF, UI_MENU_AUTO};
+        opt_choice("DKB_LOD_BIAS", UI_MENU_LOD_BIAS, bias, 2, UI_MENU_LOD_BIAS_DESC);
+    }
     static const UiTextId smaa[] = {UI_MENU_OFF, UI_MENU_SMAA_LOW, UI_MENU_SMAA_MEDIUM, UI_MENU_SMAA_HIGH};
     opt_choice("DKB_SMAA", UI_MENU_SMAA, smaa, 4, UI_MENU_SMAA_DESC);
     // CRT filter and CRT lines after SMAA, the order of the present chain (vk_crt.c); the game's own HDR picture
@@ -1017,7 +1021,9 @@ static void rows_controller(void) {
     opt_toggle("DKB_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
     opt_toggle("DKB_SWITCH2", UI_MENU_SWITCH2, UI_MENU_SWITCH2_DESC);   // switch2.c, at the next start
     opt_slider("DKB_STICK_DEADZONE", UI_MENU_STICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%");
+    opt_toggle("DKB_PAD_SHORTCUTS", UI_MENU_PAD_SHORTCUTS, UI_MENU_PAD_SHORTCUTS_DESC);
     opt_toggle("DKB_PAD_FULLSCREEN_HOLD", UI_MENU_PAD_FULLSCREEN_HOLD, UI_MENU_PAD_FULLSCREEN_HOLD_DESC);
+    opt_toggle("DKB_PAD_BACKGROUND", UI_MENU_PAD_BACKGROUND, UI_MENU_PAD_BACKGROUND_DESC);
 }
 
 static void tab_controls(float scale) {

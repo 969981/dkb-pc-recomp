@@ -205,6 +205,12 @@ void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
 // (vk_exec.c par_launch, par_join).
 int vk_dlss_scene_draw(const VkExec *ex);
 void vk_dlss_jitter(VkImage depth, float j[2]);
+// The jitter of a sliced pass's draws: vk_dlss_jitter_take on the replay thread where the pass begins (vk_exec.c
+// par_start), vk_dlss_jitter_view on a thread recording one of its slices (par_record; NULL after), whose
+// vk_dlss_jitter calls then answer from it, so a slice recorded after the frame's evaluation keeps its pass's offset.
+typedef struct { VkImage depth; int on; float j[2]; } VkDlssJitterView;
+void vk_dlss_jitter_take(VkImage depth, VkDlssJitterView *v);
+void vk_dlss_jitter_view(const VkDlssJitterView *v);
 void vk_dlss_part_begin(int k);
 void vk_dlss_part_taken(int k);
 void vk_dlss_image_gone(VkImage image);

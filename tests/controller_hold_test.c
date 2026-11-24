@@ -74,6 +74,25 @@ int main(void) {
     sample(3, 16000000000ull, 0, 0, 0);
     sample(3, 17000000000ull, both, 0, 0);
     sample(3, 17500000000ull, both, 1, 0);
+
+    // pad_background = 0: nothing passes while the window is in the background, held or not; after it returns a held
+    // input keeps being dropped until everything is released, then input passes again.
+    int latch = 0;
+    assert(!input_background_gate(&latch, 0, 0) && !latch);
+    assert(!input_background_gate(&latch, 0, 1));   // in front, a held button passes
+    assert(input_background_gate(&latch, 1, 0) && latch);
+    assert(input_background_gate(&latch, 1, 1));
+    assert(input_background_gate(&latch, 0, 1));    // back in front, still held: dropped
+    assert(input_background_gate(&latch, 0, 1));
+    assert(!input_background_gate(&latch, 0, 0) && !latch);   // released: passes from this poll on
+    assert(!input_background_gate(&latch, 0, 1));   // a fresh press passes
+    assert(input_background_gate(&latch, 1, 1));    // a press made in the background, released there
+    assert(input_background_gate(&latch, 1, 0));
+    assert(!input_background_gate(&latch, 0, 0));   // returns with nothing held: passes at once
+    // pad_background = 1 never reports the background, so input always passes.
+    latch = 0;
+    for (int held_now = 0; held_now < 2; held_now++) assert(!input_background_gate(&latch, 0, held_now) && !latch);
     puts("controller shortcuts: original menu chord and opt-in fullscreen timing, release, isolation and reconnect passed");
+    puts("controller background gate: drop in the background, hold-over latch until release passed");
     return 0;
 }

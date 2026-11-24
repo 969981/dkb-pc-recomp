@@ -297,22 +297,22 @@ RUNTIME = ROOT / 'runtime'   # --runtime: a copy of runtime/ lets a task build w
 
 
 def other_os(name):
-    """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, dkb.rc) off Windows, the SDL window's
+    """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, dkb.rc, RenHDrum's bridge) off Windows, the SDL window's
     (*_sdl.*), platform/linux.c and platform/darwin.c on Windows, platform/darwin.c on Linux. On Darwin
     platform/darwin.c replaces both win32.c and linux.c."""
     stem = name.rsplit('.', 1)[0]
     if WIN:
         return stem.endswith('_sdl') or name in ('linux.c', 'darwin.c')
     if DARWIN:
-        return stem.endswith('_win') or name in ('win32.c', 'dkb.rc', 'linux.c')
-    return stem.endswith('_win') or name in ('win32.c', 'dkb.rc', 'darwin.c')
+        return stem.endswith('_win') or name in ('win32.c', 'dkb.rc', 'linux.c', 'renhdrum_recomp_bridge.c')
+    return stem.endswith('_win') or name in ('win32.c', 'dkb.rc', 'darwin.c', 'renhdrum_recomp_bridge.c')
 
 
 def runtime_sources(skip=()):
     """Every runtime/*.c, *.cpp, platform/*.c, *.rc, the in-game menu (ui/*.cpp) and Dear ImGui of this OS except the
     names in skip, so a task adds a file without editing this script."""
     pats = ('*.c', '*.cpp', 'platform/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
-            'third_party/imgui/backends/*.cpp')
+            'third_party/imgui/backends/*.cpp', 'third_party/renhdrum/*.c')
     found = sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
     listing = RUNTIME / 'sources.txt'   # written by make_release.py: a release unpacked over an older one leaves
     if listing.exists():                # files the new release dropped, and compiling them breaks the link

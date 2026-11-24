@@ -9,7 +9,7 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
     llvm/                   llvm-mingw (bin/clang.exe)
     runtime/                libdkbrt.a, the headers, install-side sources (romfs.c, patches.c, ov_zstd.c) and dkb.ico; runtime/deps/ holds
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
-    bin/                    dkb_xlate.exe (+ dkb_xlate.id), hactool.exe, ninja.exe, SDL3.dll, libopus-0.dll
+    bin/                    dkb_xlate.exe (+ dkb_xlate.id), hactool.exe, ninja.exe, SDL3.dll, libusb-1.0.dll, libopus-0.dll
     data/shader_list.tsv    the MacNativeGames shader list
     dkb.ini.example
     VERSION                 the release version, one line

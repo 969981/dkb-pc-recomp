@@ -81,19 +81,21 @@ uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
 
 static uint64_t rnd(void) { static uint64_t x = 88172645463325252ull; x ^= x << 13, x ^= x >> 7, x ^= x << 17; return x; }
 
-typedef struct { uint64_t addr, size; } Bind;
+typedef struct { uint64_t addr, size; int c4; } Bind;
 
 // A binding as the walk makes it (vk_usnap.c collect): none without an address or a size, aligned down, at most
-// MAX_RANGE from the address.
+// MAX_RANGE from the address, with RNG_C4 on VS/FS slot 1 bindings of at most 256 bytes.
 static int norm(Bind b, Rng *out) {
     if (!b.addr || !b.size) return 0;
     uint64_t n = b.size < MAX_RANGE ? b.size : MAX_RANGE;
-    *out = (Rng){b.addr & ~(uint64_t)(ALIGN - 1), b.addr + n};
+    uint64_t c4 = (b.c4 && b.size <= 256) ? RNG_C4 : 0;
+    *out = (Rng){(b.addr & ~(uint64_t)(ALIGN - 1)) | c4, b.addr + n};
     return 1;
 }
 static int by_lo_hi(const void *a, const void *b) {
     const Rng *x = a, *y = b;
-    return x->lo != y->lo ? (x->lo < y->lo ? -1 : 1) : x->hi != y->hi ? (x->hi < y->hi ? -1 : 1) : 0;
+    uint64_t xl = x->lo & ~RNG_C4, yl = y->lo & ~RNG_C4;
+    return xl != yl ? (xl < yl ? -1 : 1) : x->hi != y->hi ? (x->hi < y->hi ? -1 : 1) : 0;
 }
 // The expected list: every binding normalised, sorted, and the ranges that overlap or touch merged (brute force).
 static size_t expect(const Bind *b, size_t n, Rng *out) {
@@ -101,7 +103,8 @@ static size_t expect(const Bind *b, size_t n, Rng *out) {
     for (size_t i = 0; i < n; i++) k += norm(b[i], &out[k]);
     qsort(out, k, sizeof *out, by_lo_hi);
     for (size_t i = 0; i < k; i++) {
-        if (m && out[i].lo <= out[m - 1].hi) {
+        if (m && (out[i].lo & ~RNG_C4) <= out[m - 1].hi) {
+            out[m - 1].lo |= out[i].lo & RNG_C4;
             if (out[i].hi > out[m - 1].hi) out[m - 1].hi = out[i].hi;
         } else {
             out[m++] = out[i];
@@ -114,7 +117,7 @@ static int list_is(const nvn_range_list *l, const Rng *want, size_t n) {
     for (size_t i = 0; i < n; i++)
         if (l->r[i].lo != want[i].lo || l->r[i].hi != want[i].hi) return 0;
     for (size_t i = 1; i < n; i++)   // sorted, and no two overlap or touch: each range is there once
-        if (l->r[i].lo <= l->r[i - 1].hi) return 0;
+        if ((l->r[i].lo & ~RNG_C4) <= l->r[i - 1].hi) return 0;
     return 1;
 }
 
@@ -125,7 +128,7 @@ static Bind random_bind(void) {
     if (rnd() % 3 == 0) size = ALIGN - addr % ALIGN + ALIGN * (rnd() % 3);   // ends on a line another range starts on
     if (rnd() % 64 == 0) addr = 0;
     if (rnd() % 128 == 0) size = ~0ull - rnd() % 64;   // a size that wraps the address: clamped like any other
-    return (Bind){addr, size};
+    return (Bind){addr, size, (int)(rnd() % 3 == 0)};
 }
 
 static void begin(NVNcommandBuffer *cmd, void *control, size_t control_size) {
@@ -135,12 +138,14 @@ static void begin(NVNcommandBuffer *cmd, void *control, size_t control_size) {
 }
 static void bind_all(NVNcommandBuffer *cmd, const Bind *b, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        if (i % 3 == 0 && i + 1 < n) {   // two at once through BindUniformBuffers
+        if (b[i].c4) {
+            CALL(nvnCommandBufferBindUniformBuffer, UP(cmd), (uint64_t)(i & 1), 1, b[i].addr, b[i].size);
+        } else if (i % 3 == 0 && i + 1 < n && !b[i + 1].c4) {   // two non-c4 at once through BindUniformBuffers
             NVNbufferRange r[2] = {{b[i].addr, b[i].size}, {b[i + 1].addr, b[i + 1].size}};
-            CALL(nvnCommandBufferBindUniformBuffers, UP(cmd), 0, (uint64_t)(i % 14), 2, UP(r));
+            CALL(nvnCommandBufferBindUniformBuffers, UP(cmd), 0, (uint64_t)(2 + (i % 10)), 2, UP(r));
             i++;
         } else {
-            CALL(nvnCommandBufferBindUniformBuffer, UP(cmd), 1, (uint64_t)(i % 14), b[i].addr, b[i].size);
+            CALL(nvnCommandBufferBindUniformBuffer, UP(cmd), 1, (uint64_t)(2 + (i % 12)), b[i].addr, b[i].size);
         }
         if (i % 5 == 0) CALL(nvnCommandBufferBindStorageBuffer, UP(cmd), 0, 0, 0x7000000ull, 64);   // not a uniform
     }
@@ -187,8 +192,8 @@ static void fixed_list(void) {
     NVNcommandBuffer cmd = {0};
     _Alignas(16) uint8_t control[0x1000];
     begin(&cmd, control, sizeof control);
-    static const Bind b[] = {{0x30000310, 0x20}, {0x30000000, 0x100}, {0x30000100, 0x40}, {0x30000310, 0x20},
-                             {0x30000020, 0x10}, {0x30001000, 0x30000}, {0, 0x100}, {0x30000400, 0}};
+    static const Bind b[] = {{0x30000310, 0x20, 0}, {0x30000000, 0x100, 0}, {0x30000100, 0x40, 0}, {0x30000310, 0x20, 0},
+                             {0x30000020, 0x10, 0}, {0x30001000, 0x30000, 0}, {0, 0x100, 0}, {0x30000400, 0, 0}};
     static const Rng r[] = {{0x30000000, 0x30000140}, {0x30000300, 0x30000330}, {0x30001000, 0x30011000}};
     CALL(nvnCommandBufferBeginRecording, UP(&cmd));
     bind_all(&cmd, b, sizeof b / sizeof *b);
@@ -212,7 +217,7 @@ static void called_lists(void) {
     CHECK(list_is(nvn_handle_ubo_list(empty_h), NULL, 0), "empty callee has an empty list");
 
     // Callee with two overlapping 64 KiB bindings that merge into a single 96 KiB range (> MAX_RANGE).
-    static const Bind wide_b[] = {{0x40000000ull, 0x10000}, {0x40008000ull, 0x10000}};
+    static const Bind wide_b[] = {{0x40000000ull, 0x10000, 0}, {0x40008000ull, 0x10000, 0}};
     static const Rng wide_r[] = {{0x40000000ull, 0x40018000ull}};
     CALL(nvnCommandBufferBeginRecording, UP(&cmd));
     bind_all(&cmd, wide_b, 2);
@@ -274,9 +279,9 @@ static void async_lists(void) {
     begin(&other, control2, sizeof control2);
     replayed = nvn_submit_count();
     for (size_t i = 0; i < 40; i++) binds[i] = random_bind();
-    binds[0] = (Bind){0x20000040ull, 64};   // guarantee >= 3 disjoint ranges so h uses a heap list
-    binds[1] = (Bind){0x21000040ull, 64};
-    binds[2] = (Bind){0x22000040ull, 64};
+    binds[0] = (Bind){0x20000040ull, 64, 0};   // guarantee >= 3 disjoint ranges so h uses a heap list
+    binds[1] = (Bind){0x21000040ull, 64, 0};
+    binds[2] = (Bind){0x22000040ull, 64, 0};
     CALL(nvnCommandBufferBeginRecording, UP(&cmd));
     bind_all(&cmd, binds, 40);
     CALL(nvnCommandBufferPushGraphicsConstantsDeferred, UP(&cmd), 0, 0, 16, UP(source));   // makes the copy clonable
@@ -314,7 +319,7 @@ static void radix_and_span_cases(void) {
             uint64_t base = 0x10000000ull + (rnd() % 512) * cases[c].stride;
             base &= ~(uint64_t)(ALIGN - 1);
             uint64_t sz = 64 + (rnd() % 4096);
-            in[i] = ref[i] = (Rng){base, base + sz};
+            in[i] = ref[i] = (Rng){base | (rnd() & RNG_C4), base + sz};
         }
         qsort(ref, n, sizeof *ref, by_lo_hi);
         size_t m_ref = rng_merge(ref, n);
@@ -379,7 +384,7 @@ static void inline_and_lazy_seen_cases(void) {
     uint64_t live0 = nvn_ubo_lists_live();
 
     // n == 1: inline in copy_prefix, 0 heap allocations.
-    static const Bind b1[] = {{0x50000120ull, 64}};
+    static const Bind b1[] = {{0x50000120ull, 64, 0}};
     static const Rng r1[] = {{0x50000100ull, 0x50000160ull}};
     CALL(nvnCommandBufferBeginRecording, UP(&cmd));
     bind_all(&cmd, b1, 1);
@@ -388,8 +393,8 @@ static void inline_and_lazy_seen_cases(void) {
     CHECK(nvn_ubo_lists_live() == live0, "1-range inline list takes no heap allocation");
 
     // n == 2 (from 5 out-of-order/duplicate/touching bindings): inline in copy_prefix, 0 heap allocations.
-    static const Bind b2[] = {{0x51000400ull, 64}, {0x51000000ull, 256}, {0x51000100ull, 64},
-                              {0x51000400ull, 64}, {0x51000020ull, 32}};
+    static const Bind b2[] = {{0x51000400ull, 64, 0}, {0x51000000ull, 256, 0}, {0x51000100ull, 64, 0},
+                              {0x51000400ull, 64, 0}, {0x51000020ull, 32, 0}};
     static const Rng r2[] = {{0x51000000ull, 0x51000140ull}, {0x51000400ull, 0x51000440ull}};
     CALL(nvnCommandBufferBeginRecording, UP(&cmd));
     bind_all(&cmd, b2, 5);
@@ -398,7 +403,7 @@ static void inline_and_lazy_seen_cases(void) {
     CHECK(nvn_ubo_lists_live() == live0, "2-range inline list takes no heap allocation");
 
     // n == 3: heap-allocated, live increments by 1.
-    static const Bind b3[] = {{0x52002000ull, 64}, {0x52000000ull, 64}, {0x52001000ull, 64}};
+    static const Bind b3[] = {{0x52002000ull, 64, 0}, {0x52000000ull, 64, 0}, {0x52001000ull, 64, 0}};
     static const Rng r3[] = {{0x52000000ull, 0x52000040ull}, {0x52001000ull, 0x52001040ull},
                              {0x52002000ull, 0x52002040ull}};
     CALL(nvnCommandBufferBeginRecording, UP(&cmd));
@@ -410,10 +415,10 @@ static void inline_and_lazy_seen_cases(void) {
     // Lazy seen[] transition across index 16: duplicates before 16, exact trigger at 16, duplicates after 16.
     Bind b17[32];
     size_t k = 0;
-    for (int i = 0; i < 12; i++) b17[k++] = (Bind){0x53000000ull + (uint64_t)i * 0x1000, 64};
+    for (int i = 0; i < 12; i++) b17[k++] = (Bind){0x53000000ull + (uint64_t)i * 0x1000, 64, 0};
     for (int i = 0; i < 4; i++) b17[k++] = b17[i];   // duplicates before index 16 (nubo reaches 16)
     b17[k++] = b17[2];                                // duplicate right at transition (nubo == 16 -> seen_on = 1)
-    for (int i = 12; i < 20; i++) b17[k++] = (Bind){0x53000000ull + (uint64_t)i * 0x1000, 64};
+    for (int i = 12; i < 20; i++) b17[k++] = (Bind){0x53000000ull + (uint64_t)i * 0x1000, 64, 0};
     for (int i = 0; i < 7; i++) b17[k++] = b17[i * 2];   // duplicates after seen_on == 1
     CALL(nvnCommandBufferBeginRecording, UP(&cmd));
     bind_all(&cmd, b17, k);
@@ -435,7 +440,7 @@ static void recycled_block_clears_ubo(void) {
     begin(&cmd, control, sizeof control);
     // 2500 uniform binds (~85 KiB) lands in the 128 KiB block class and hands over its recording buffer as the copy.
     for (size_t i = 0; i < 2500; i++)
-        binds[i] = (Bind){0x60000000ull + (i % 8) * 0x1000, 64};
+        binds[i] = (Bind){0x60000000ull + (i % 8) * 0x1000, 64, 0};
     CALL(nvnCommandBufferBeginRecording, UP(&cmd));
     bind_all(&cmd, binds, 2500);
     uint64_t seg1 = UP(((const cmd_t *)(const void *)&cmd)->seg);
@@ -459,6 +464,137 @@ static void recycled_block_clears_ubo(void) {
     CALL(nvnCommandBufferFinalize, UP(&cmd));
 }
 
+// RNG_C4 propagation through ubo_buf_add (before, across, and after UBO_SEEN_MIN), nvn_ubo_list_build (insertion,
+// presorted, merge, radix, >33-bit span), rng_merge (overlapping & touching), sort_col (presorted, radix, qsort),
+// and list_check.
+static void c4_flag_cases(void) {
+    NVNcommandBuffer cmd = {0};
+    _Alignas(16) uint8_t control[0x4000];
+    begin(&cmd, control, sizeof control);
+
+    // (a) Non-c4 then c4 on identical range: both below UBO_SEEN_MIN and after seen_on == 1, plus right at the
+    //     lazy seen[] transition (index 16). Also check c4 then non-c4, size > 256 at slot 1, and compute stage slot 1.
+    CALL(nvnCommandBufferBeginRecording, UP(&cmd));
+    // Range A (0x70000000): non-c4 first, then c4 after seen_on == 1 -> must upgrade and carry RNG_C4.
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 0, 0, 0x70000000ull, 128);
+    // Range B (0x70001000): c4 first, then non-c4 -> must keep RNG_C4.
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 1, 1, 0x70001000ull, 256);
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 0, 2, 0x70001000ull, 256);
+    // Range C (0x70002000): slot 1 with size > 256 -> NOT c4.
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 0, 1, 0x70002000ull, 512);
+    // Range D (0x70003000): compute stage (stage 5) slot 1 size <= 256 -> NOT c4.
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 5, 1, 0x70003000ull, 128);
+    // Range E (0x70004000): non-c4 before UBO_SEEN_MIN, upgraded right at index 16 transition.
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 1, 3, 0x70004000ull, 64);
+    // Push 11 more unique non-c4 ranges so nubo reaches 16 (5+1+10 = 16 -> next bind triggers seen[] lazy init).
+    for (int i = 0; i < 10; i++)
+        CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 0, 4, 0x70010000ull + (uint64_t)i * 0x1000, 64);
+    // Now nubo == 16: upgrade Range E right at the lazy seen[] transition!
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 0, 1, 0x70004000ull, 64);
+    // Now seen_on == 1: upgrade Range A after seen_on == 1 (slot already holds non-c4 Range A)!
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 1, 1, 0x70000000ull, 128);
+    // Repeat non-c4 on Range A after c4 upgrade: must remain c4.
+    CALL(nvnCommandBufferBindUniformBuffer, UP(&cmd), 0, 0, 0x70000000ull, 128);
+    uint64_t hc4 = CALL(nvnCommandBufferEndRecording, UP(&cmd));
+    const nvn_range_list *lc4 = nvn_handle_ubo_list(hc4);
+    CHECK(lc4 && lc4->n == 15, "c4 recording produced 15 disjoint ranges");
+    if (lc4 && lc4->n == 15) {
+        CHECK(lc4->r[0].lo == (0x70000000ull | RNG_C4) && lc4->r[0].hi == 0x70000080ull,
+              "non-c4 then c4 after seen_on preserves RNG_C4");
+        CHECK(lc4->r[1].lo == (0x70001000ull | RNG_C4) && lc4->r[1].hi == 0x70001100ull,
+              "c4 then non-c4 preserves RNG_C4");
+        CHECK(lc4->r[2].lo == 0x70002000ull && lc4->r[2].hi == 0x70002200ull,
+              "slot 1 size > 256 does not set RNG_C4");
+        CHECK(lc4->r[3].lo == 0x70003000ull && lc4->r[3].hi == 0x70003080ull,
+              "compute stage slot 1 does not set RNG_C4");
+        CHECK(lc4->r[4].lo == (0x70004000ull | RNG_C4) && lc4->r[4].hi == 0x70004040ull,
+              "non-c4 then c4 right at UBO_SEEN_MIN transition preserves RNG_C4");
+    }
+    // list_check verifies take_recording matches collect() on both bounds and RNG_C4 bits.
+    U.fast = 1;
+    U.list_bad = 0;
+    list_check(&hc4, 1);
+    CHECK(U.list_bad == 0, "list_check agrees on bounds and RNG_C4 bits");
+
+    // (b) Overlapping and touching non-c4 + c4 ranges merge via rng_merge with RNG_C4 ORed.
+    Rng ov[4] = {
+        {0x80000000ull, 0x80000100ull},                 // non-c4
+        {0x80000100ull | RNG_C4, 0x80000180ull},        // touching at 0x80000100 with RNG_C4
+        {0x80001000ull, 0x80001400ull},                 // wide non-c4
+        {0x80001100ull | RNG_C4, 0x80001200ull},        // overlapping interior c4
+    };
+    size_t mov = rng_merge(ov, 4);
+    CHECK(mov == 2 &&
+          ov[0].lo == (0x80000000ull | RNG_C4) && ov[0].hi == 0x80000180ull &&
+          ov[1].lo == (0x80001000ull | RNG_C4) && ov[1].hi == 0x80001400ull,
+          "rng_merge merges touching and overlapping non-c4 + c4 ranges with RNG_C4 ORed");
+
+    // (c) Presorted, insertion sort (k <= 16), and radix sort (k >= 256) in nvn_ubo_list_build + sort_col:
+    //     same base address with c4 before non-c4 must still sort by lo & ~RNG_C4 and preserve RNG_C4.
+    Rng ins[5] = {
+        {0x81002000ull, 0x81002080ull},
+        {0x81001000ull | RNG_C4, 0x81001080ull},
+        {0x81000000ull, 0x81000100ull},
+        {0x81001000ull, 0x81001100ull},
+        {0x81002000ull | RNG_C4, 0x81002040ull},
+    };
+    size_t mins = nvn_ubo_list_build(ins, 5);
+    CHECK(mins == 3 &&
+          ins[0].lo == 0x81000000ull && ins[0].hi == 0x81000100ull &&
+          ins[1].lo == (0x81001000ull | RNG_C4) && ins[1].hi == 0x81001100ull &&
+          ins[2].lo == (0x81002000ull | RNG_C4) && ins[2].hi == 0x81002080ull,
+          "insertion sort in nvn_ubo_list_build masks RNG_C4 and ORs on merge");
+
+    // Presorted fast path (k == 20 > 16) with c4 before non-c4 at the same masked lo.
+    Rng pre[20];
+    for (int i = 0; i < 10; i++) {
+        uint64_t b = 0x82000000ull + (uint64_t)i * 0x1000;
+        pre[2 * i] = (Rng){b | RNG_C4, b + 0x40};
+        pre[2 * i + 1] = (Rng){b, b + 0x80};
+    }
+    size_t mpre = nvn_ubo_list_build(pre, 20);
+    int pre_ok = mpre == 10;
+    for (int i = 0; pre_ok && i < 10; i++) {
+        uint64_t b = 0x82000000ull + (uint64_t)i * 0x1000;
+        pre_ok &= pre[i].lo == (b | RNG_C4) && pre[i].hi == b + 0x80;
+    }
+    CHECK(pre_ok, "presorted path in nvn_ubo_list_build masks RNG_C4 and preserves flag");
+
+    // sort_col: presorted, radix, and >33-bit qsort paths with mixed RNG_C4.
+    U.fast = 1;
+    // Presorted path in sort_col (c4 before non-c4 at identical masked lo).
+    U.ncol = 0;
+    while (U.ccol < 4) U.col = grow(U.col, &U.ccol, sizeof *U.col);
+    U.col[0] = (Rng){0x83000000ull | RNG_C4, 0x83000040ull};
+    U.col[1] = (Rng){0x83000000ull, 0x83000080ull};
+    U.col[2] = (Rng){0x83001000ull, 0x83001040ull};
+    U.col[3] = (Rng){0x83001000ull | RNG_C4, 0x83001080ull};
+    U.ncol = 4;
+    sort_col();
+    size_t msc = rng_merge(U.col, (size_t)U.ncol);
+    CHECK(msc == 2 &&
+          U.col[0].lo == (0x83000000ull | RNG_C4) && U.col[0].hi == 0x83000080ull &&
+          U.col[1].lo == (0x83001000ull | RNG_C4) && U.col[1].hi == 0x83001080ull,
+          "sort_col presorted path masks RNG_C4 and preserves flag");
+
+    // qsort fallback (>33-bit span) in sort_col with mixed RNG_C4.
+    U.col[0] = (Rng){0x40000000000ull | RNG_C4, 0x40000000080ull};
+    U.col[1] = (Rng){0x100000000ull, 0x100000080ull};
+    U.col[2] = (Rng){0x100000000ull | RNG_C4, 0x100000100ull};
+    U.col[3] = (Rng){0x40000000000ull, 0x40000000100ull};
+    U.ncol = 4;
+    sort_col();
+    msc = rng_merge(U.col, (size_t)U.ncol);
+    CHECK(msc == 2 &&
+          U.col[0].lo == (0x100000000ull | RNG_C4) && U.col[0].hi == 0x100000100ull &&
+          U.col[1].lo == (0x40000000000ull | RNG_C4) && U.col[1].hi == 0x40000000100ull,
+          "sort_col qsort fallback masks RNG_C4 and preserves flag");
+
+    replayed = nvn_submit_count();
+    CALL(nvnCommandBufferAddControlMemory, UP(&cmd), UP(control), sizeof control);
+    CALL(nvnCommandBufferFinalize, UP(&cmd));
+}
+
 int main(void) {
     fixed_list();
     recorded_lists();
@@ -467,6 +603,7 @@ int main(void) {
     called_lists();
     async_lists();
     radix_and_span_cases();
+    c4_flag_cases();
     failures += union_cases();
     printf("usnap lists (DKB_CALL_REF %d): %d checks, %d failures\n", nvn_call_ref_on(), checks, failures);
     return failures != 0;

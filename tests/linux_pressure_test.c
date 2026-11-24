@@ -68,6 +68,12 @@ int main(void) {
     CHECK(lp_sample_due(6000, &next));
     CHECK(next == 7000);
 
+    // uma budget: capped by what can be committed above the reserve, never raised, off with a reserve of 0
+    CHECK(lp_uma_budget(4000 * MB, 8000 * MB, 10000 * MB, 2560 * MB) == 8000 * MB);    // plenty of commit
+    CHECK(lp_uma_budget(4000 * MB, 8000 * MB, 3560 * MB, 2560 * MB) == 5000 * MB);     // 1000 MB above the reserve
+    CHECK(lp_uma_budget(4000 * MB, 8000 * MB, 900 * MB, 2560 * MB) == 4000 * MB);      // inside the reserve: no room
+    CHECK(lp_uma_budget(4000 * MB, 8000 * MB, 900 * MB, 0) == 8000 * MB);              // turned off
+
     if (!failures) printf("linux pressure: all checks passed\n");
     return failures ? 1 : 0;
 }

@@ -98,6 +98,7 @@ static int par_unmerged;   // slices recorded whose contexts' frame counters wai
 static void par_room(VkExec *ex);
 static uint64_t par_usd[VK_EXEC_UPD_SNAPS];   // vk_usnap_drops at the start of the pass of each update snapshot
 static uint64_t par_ttb[VK_EXEC_UPD_SNAPS];   // vk_texture_takebacks at the start of the pass of each update snapshot
+static VkDlssJitterView par_jit[VK_EXEC_UPD_SNAPS];   // the upscaler's jitter for the pass of each update snapshot
 static uint64_t par_t0;
 static volatile int64_t par_rec[2][3];          // slices recorded by the submitting thread [0] and workers [1]: count, draws, ns
 static volatile int64_t par_slow[2], par_slow_ns, par_slow_draws;   // slices over 1 ms by each, the longest and its draws
@@ -2156,10 +2157,12 @@ static int par_nworkers;
 
 // At a draw outside a pass: 1 when the pass it opens is sliced (the pass is then open, with secondary contents).
 // DKB_REPLAY_THREADS (0: off), read once. Unset, it is 6 when the process may run on 12 or more logical processors, 4
-// on 8 to 11, 3 on 4 to 7 and 0 below that. On 6 and 4 (a Ryzen 7 5700X held to its first 6 or 4 logical processors,
+// on 6 to 11, 3 on 4 and 5 and 0 below that. On 6 and 4 (a Ryzen 7 5700X held to its first 6 or 4 logical processors,
 // RTX 5060 Ti, the layer -200 recording at 1920x1080, 60 fps limit), 3 threads cut the first minute's frames over 50 ms
 // from 155 to 169 to 15 to 17 (6) and from 148 to 203 to 47 (4), at 43 against 40 fps and 41 against 38; 2 threads
-// gave nothing and 4 on 6 matched 3. Above that: in the layer -101 scene (RTX 5060 Ti, 1920x1080, 60 fps limit) 4 threads gave 57.0 and
+// gave nothing and 4 on 6 matched 3 there. In the 1.0.0 tutorial cave (same machine and settings, three runs each,
+// interleaved) 4 threads on 6 held 58.6 to 58.8 fps against 55.7 to 56.3 with 3, so 6 and 7 take 4; on 4, 4 threads
+// gave 49.8 against 49.3, within the spread, and 0, 1 and 2 gave 37.6, 37.7 and 46.2, so 4 and 5 keep 3. Above that: in the layer -101 scene (RTX 5060 Ti, 1920x1080, 60 fps limit) 4 threads gave 57.0 and
 // 57.2 fps and 63 to 77 frames over 25 ms a minute, against 52.7 and 53.6 fps and 177 to 226 frames without
 // (docs/dkb-lowend.md). On 16 (Ryzen 7 9800X3D, RTX 5090) the Hilltop Layer of Surf Hills (3.2.0, 28,500 draws a frame)
 // replayed in 12.4 ms a frame with 6 against 14.9 with 4 (45 to 47 fps against 42), the route's Lake Level in 5.9 to 6.0
@@ -2179,7 +2182,7 @@ static int par_threads(void) {
     if (par_mode < 0) {
         const char *e = cfg_get("DKB_REPLAY_THREADS");
         uint32_t cpus = plat_cpu_usable();
-        par_mode = e && *e ? atoi(e) : vk_caps.amd && !vk_caps.amd_slices ? 0 : cpus >= 12 ? 6 : cpus >= 8 ? 4 : cpus >= 4 ? 3 : 0;
+        par_mode = e && *e ? atoi(e) : vk_caps.amd && !vk_caps.amd_slices ? 0 : cpus >= 12 ? 6 : cpus >= 6 ? 4 : cpus >= 4 ? 3 : 0;
         if (par_mode < 0) par_mode = 0;
         if (par_mode) rt_log("vk: passes of %d or more draws are recorded in slices of up to %d draws into secondary command buffers "
                              "(DKB_REPLAY_THREADS=%d%s: recorded by that many threads)", PAR_MIN_DRAWS, PAR_SLICE_DRAWS, par_mode,
@@ -2257,6 +2260,7 @@ static int par_start(VkExec *ex) {
     par_pass_take(&par_pass[PC.upd], ex);
     par_usd[PC.upd] = vk_usnap_drops();   // the uniform copies as of the pass's start (vk_usnap_view)
     par_ttb[PC.upd] = vk_texture_takebacks();   // non-waiting render-target takebacks before this pass (vk_texture_view)
+    vk_dlss_jitter_take(ex->depth.image, &par_jit[PC.upd]);   // its draws' jitter, before the evaluation moves it
     vk_exec_draw_slices_begin(par_nworkers + 1, PC.upd);   // the pass's slices read the inline uniform updates noted so far
     vk_exec_draw_twins_snap(ex, PC.upd, twins);            // and the depth twins copied above
     uint32_t *x = par_expect(par_piece_key(sig, 0), 0);
@@ -2510,6 +2514,7 @@ static void par_record(int i, ParPool *pp, VkExec *w, struct DrawCtx *dc) {
     vk_exec_draw_slice_view(dc, PC.supd[i]);
     vk_usnap_view(par_usd[PC.supd[i]] + 1);   // the drops made before the pass began
     vk_texture_view(par_ttb[PC.supd[i]] + 1);   // hide non-waiting takebacks made after the pass began
+    vk_dlss_jitter_view(&par_jit[PC.supd[i]]);   // the jitter as of the pass's start (vk_dlss.c vk_dlss_jitter_take)
     par_slice = 1, par_hazard = 0, par_ntw = 0;
     VkSyncNote *note = vk_sync_slice_note_begin(PC.snote[i]);   // not the part's note, which the replay keeps writing
     vk_mem_count_quiet(1), vk_usnap_quiet(1);
@@ -2524,6 +2529,7 @@ static void par_record(int i, ParPool *pp, VkExec *w, struct DrawCtx *dc) {
     par_slice = 0;
     vk_sync_slice_note_end();
     vk_mem_count_quiet(0), vk_usnap_quiet(0), vk_usnap_view(0), vk_texture_view(0);
+    vk_dlss_jitter_view(NULL);
     if (vkEndCommandBuffer(cb) != VK_SUCCESS) rt_fatal("vk: secondary command buffer end failed");
     par_out[i] = (ParOut){{pp, cb}, w->fb_dirty, w->recorded, par_hazard, w->views, w->nviews, note, par_ntw};
     memcpy(par_out[i].tw, par_tw, sizeof par_tw);
@@ -3376,7 +3382,11 @@ static int record_impl(VkCommandBuffer cb, const uint64_t *handles, int n, uint6
     npiece = 0;   // par_piece_key counts the pieces of each target set per submission
     x_here = 1;
     int memory = n || work;
-    if (memory) vk_mem_mirror_begin(), vk_usnap_begin(handles, n, fence);
+    if (memory) {
+        vk_usnap_cpu_reads(n && vk_exec_draw_merge_on());
+        vk_mem_mirror_begin();
+        vk_usnap_begin(handles, n, fence);
+    }
     P.next = NULL;
     if (work) work(ex, context);
     else {

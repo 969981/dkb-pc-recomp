@@ -43,6 +43,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
         "Newly connected controllers take over automatically. If the active controller disconnects, another available controller takes over.\n\n"
         "Manual choices apply immediately and are saved for startup. Auto starts with the first available controller. Later connections can still take over.\n\n"
         "Keyboard and mouse remain available.",
+    [UI_MENU_PAD_SHORTCUTS] = "Controller shortcuts",
+    [UI_MENU_PAD_SHORTCUTS_DESC] = "On: Plus + Minus or Guide/Home opens settings, L3 + R3 steps the performance overlay.\n\nOff: the controller has no shortcuts and every button goes to the game (useful on Steam Deck, whose own shortcuts use these buttons). Keyboard F1 still opens settings.",
     [UI_MENU_PAD_FULLSCREEN_HOLD] = "Fullscreen hold shortcut",
     [UI_MENU_PAD_FULLSCREEN_HOLD_DESC] = "Off: Plus + Minus opens or closes settings.\n\nOn: hold Plus + Minus for 0.5 seconds to toggle fullscreen instead.\n\nGuide/Home and keyboard F1 remain available in either mode.",
     [UI_MENU_SHORTCUT_SETTINGS_COMBO_DESC] = "Press both displayed Plus and Minus bindings together to open or close settings.\n\nThis shortcut follows the current button bindings.\n\nKeyboard equivalent: F1.",
@@ -105,6 +107,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                    "Automatic allows a quarter of the card, at most 3 GiB, and an eighth on a card of 4.5 GiB or less. "
                                    "Memory refused a copy is read by the GPU from system memory instead. Try it when the game slows down after a while on a card with 8 GB or less.",
     [UI_MENU_MIRROR_BUDGET_NONE] = "No limit", [UI_MENU_FMT_MIB] = "%s MiB",
+    [UI_MENU_LOD_BIAS] = "Texture detail with upscaling (experimental)",
+    [UI_MENU_LOD_BIAS_DESC] = "With FSR 3.1, FSR 4 or DLSS and 3D scene resolution not Full, textures are chosen for the small picture and stay soft after upscaling.\n\n"
+                              "Off: the game's own texture detail. Automatic: textures are chosen for the upscaled size, so surfaces and text on them are sharper; "
+                              "fine patterns can shimmer more. It has no effect with the game's own upscaler.\n\nApplies after a restart.",
     [UI_MENU_GPU] = "Graphics card", [UI_MENU_GPU_DESC] = "Choose which graphics card runs the game. Use Automatic unless you need to select a specific card.",
     [UI_MENU_GPU_AUTO] = "Automatic",
     [UI_MENU_PERF_OVERLAY] = "Performance overlay",
@@ -295,6 +301,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_PROMPTS_RESTART] = "prompts change after restart",
     [UI_MENU_STICK_DEADZONE] = "Stick dead zone",
     [UI_MENU_STICK_DEADZONE_DESC] = "Sets how far either stick must move before it registers. Raise it if the character or camera drifts.",
+    [UI_MENU_PAD_BACKGROUND] = "Controller input in background",
+    [UI_MENU_PAD_BACKGROUND_DESC] = "On: the controller keeps playing while another window is in front.\n\n"
+                                   "Off: the game ignores the controller until its window is in front again, as it does with the keyboard. "
+                                   "Buttons held when the window comes back count once released.",
     [UI_MENU_MOUSE_CAMERA] = "Direct mouse camera",
     [UI_MENU_MOUSE_CAMERA_DESC] = "Mouse movement turns the follow camera directly. Other camera modes interpret mouse movement as stick input.",
     [UI_MENU_MOUSE_SENS] = "Mouse sensitivity",
@@ -382,7 +392,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_REPLAY_ASYNC] = "GPU frame prep on its own thread",
     [UI_MENU_REPLAY_ASYNC_DESC] = "Prepares frames for the GPU on a separate thread instead of the game thread. Adds up to one frame of latency.",
     [UI_MENU_REPLAY_THREADS] = "Threads recording big render passes",
-    [UI_MENU_REPLAY_THREADS_DESC] = "Records the draws of big render passes on this many threads at once. Automatic uses 6 threads on 12 or more logical processors and 4 on 8 to 11 (on AMD only dedicated cards on the proprietary driver, where it was measured); Off records them on one thread. Faster in busy areas on CPUs with many cores.",
+    [UI_MENU_REPLAY_THREADS_DESC] = "Records the draws of big render passes on this many threads at once. Automatic uses 6 threads on 12 or more logical processors and 4 on 6 to 11 (on AMD only dedicated cards on the proprietary driver, where it was measured); Off records them on one thread. Faster in busy areas on CPUs with many cores.",
     [UI_MENU_TIMER_1MS] = "1 ms Windows timer",
     [UI_MENU_TIMER_1MS_DESC] = "Raises the system timer resolution to 1 ms for steadier frame pacing.",
     [UI_MENU_PIPE_WAIT] = "Waiting draw handling",
@@ -540,6 +550,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                    "«Автоматически» — четверть памяти видеокарты, но не больше 3 ГиБ, и восьмая часть на карте с 4,5 ГиБ и меньше. "
                                    "Память, которой отказано в копии, GPU читает из системной памяти. Попробуйте, если на карте с 8 ГБ и меньше игра со временем замедляется.",
     [UI_MENU_MIRROR_BUDGET_NONE] = "Без предела", [UI_MENU_FMT_MIB] = "%s МиБ",
+    [UI_MENU_LOD_BIAS] = "Детализация текстур при апскейлинге (экспериментально)",
+    [UI_MENU_LOD_BIAS_DESC] = "С FSR 3.1, FSR 4 или DLSS и разрешении 3D-сцены не «Полное» текстуры выбираются для маленького изображения и остаются мягкими после апскейлинга.\n\n"
+                              "Выкл.: детализация текстур игры. Автоматически: текстуры выбираются для увеличенного размера, поверхности и текст на них чётче; "
+                              "мелкие узоры могут мерцать сильнее. С собственным апскейлером игры не действует.\n\nПрименяется после перезапуска.",
     [UI_MENU_GPU] = "Видеокарта", [UI_MENU_GPU_DESC] = "Устройство Vulkan, которое рисует игру.",
     [UI_MENU_GPU_AUTO] = "Автоматически",
     [UI_MENU_PERF_OVERLAY] = "Индикатор производительности",
@@ -741,6 +755,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
     [UI_MENU_STICK_DEADZONE] = "Мёртвая зона стиков",
     [UI_MENU_STICK_DEADZONE_DESC] = "Насколько нужно отклонить стик геймпада, чтобы игра это заметила. Увеличьте, если персонаж или камера двигаются сами.",
+    [UI_MENU_PAD_BACKGROUND] = "Геймпад в фоне",
+    [UI_MENU_PAD_BACKGROUND_DESC] = "Включено: геймпад управляет игрой, даже когда впереди другое окно.\n\n"
+                                   "Выключено: игра не реагирует на геймпад, пока её окно не окажется впереди, как и с клавиатурой. "
+                                   "Кнопки, зажатые при возврате к окну, срабатывают после того, как их отпустят.",
     [UI_MENU_MOUSE_CAMERA] = "Прямое управление камерой мышью",
     [UI_MENU_MOUSE_CAMERA_DESC] = "Движение мыши напрямую поворачивает камеру слежения. "
                                  "В других режимах камеры мышь имитирует правый стик.",
@@ -831,7 +849,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_REPLAY_ASYNC] = "Подготовка кадра для GPU в отдельном потоке",
     [UI_MENU_REPLAY_ASYNC_DESC] = "Кадр для GPU готовится в отдельном потоке, а не в потоке игры. Добавляет до одного кадра задержки.",
     [UI_MENU_REPLAY_THREADS] = "Потоки записи больших проходов",
-    [UI_MENU_REPLAY_THREADS_DESC] = "Отрисовки больших проходов записываются сразу в столько потоков. «Автоматически» — 6 потоков при 12 и более логических процессорах и 4 при 8–11 (из AMD только дискретные видеокарты на проприетарном драйвере, где это измерено); «Выкл.» — в одном потоке. Быстрее в насыщенных местах на процессорах с большим числом ядер.",
+    [UI_MENU_REPLAY_THREADS_DESC] = "Отрисовки больших проходов записываются сразу в столько потоков. «Автоматически» — 6 потоков при 12 и более логических процессорах и 4 при 6–11 (из AMD только дискретные видеокарты на проприетарном драйвере, где это измерено); «Выкл.» — в одном потоке. Быстрее в насыщенных местах на процессорах с большим числом ядер.",
     [UI_MENU_TIMER_1MS] = "Таймер Windows 1 мс",
     [UI_MENU_TIMER_1MS_DESC] = "Повышает точность системного таймера до 1 мс для ровного темпа кадров.",
     [UI_MENU_PIPE_WAIT] = "Обработка ожидающих отрисовок",

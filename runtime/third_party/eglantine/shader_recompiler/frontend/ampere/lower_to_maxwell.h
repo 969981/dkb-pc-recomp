@@ -1422,13 +1422,20 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
                 (data != 255 && ((size == 5 && (data & 1)) || (size == 6 && (data & 3)) ||
                                  data + (size < 4 ? 1U : 1U << (size - 4)) > 246)))
                 return fail(index, "native global store size");
+            u32 address = insn.Bits(24, 8);
             if (data == 255 && size > 4) {
                 // Zeros wider than one register: store from zeroed scratch registers (aligned to the
-                // access: R248-R251 for 128 bits, R250-R251 for 64).
-                data = size == 6 ? 248 : 250;
+                // access: R248-R251 for 128 bits, R248-R249 for 64).
+                // DKB Recomp: R248-R249 for 64 bits, not R250-R251: the register-plus-uniform address of
+                // the 0x986 form below is summed into R250-R251, so the store wrote its own address
+                // instead of zeros (#439: the muck vertices' normals started from address bits). The
+                // 128-bit zeros overlap that address pair, so that form is refused; Bananza 3.2.0 has
+                // none.
+                if (size == 6 && opcode == 0x986 && address != 255)
+                    return fail(index, "native global store of 128-bit zeros to a register plus uniform address");
+                data = 248;
                 for (u32 i = 0; i < (1U << (size - 4)); ++i) mov_imm(data + i, 0);
             }
-            u32 address = insn.Bits(24, 8);
             bool extended = insn.Bits(72, 1) != 0;
             bool strong_gpu = false;
             if (opcode == 0x986) {

@@ -17,7 +17,8 @@ def main():
     ap.add_argument('--opt', default='1')
     args = ap.parse_args()
     source = (ROOT / 'runtime/vk_texture.c').read_text(encoding='utf-8')
-    for needle in ('sampler_admit(c, &key)', 'maxSamplerAllocationCount', 'vk_sync_fence_done()', 'sb_pin(&book',
+    for needle in ('upscale_bias', 'si.mipLodBias = fmaxf(-lim, fminf(lim, d->lod_bias + upscale_bias))',
+                   'sampler_admit(c, &key)', 'maxSamplerAllocationCount', 'vk_sync_fence_done()', 'sb_pin(&book',
                    'sb_admit(&book'):
         if needle not in source:
             raise SystemExit(f'vk_texture.c: missing {needle!r}')
