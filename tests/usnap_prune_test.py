@@ -37,7 +37,7 @@ typedef struct { uint64_t lo, hi, fence; } Wrote;
 typedef struct { uint64_t lo, hi; } Rng;
 #define ALIGN 256u
 #define RNG_C4 1ull
-static struct { Wrote *wr; int nwr, cwr; int fast; Rng *col; int ncol, ccol; uint64_t repeats; int mode, on;
+static struct { Wrote *wr; int nwr, cwr; int fast, opt; Rng *col; int ncol, ccol; uint64_t repeats; int mode, on;
                 uint64_t wr_added, wr_coalesced, fence; } U;
 static void *grow(void *p, int *cap, size_t elem) {
     int n = *cap ? *cap * 2 : 1024;
@@ -58,6 +58,8 @@ static PlatMutex drop_lock;
 static void plat_mutex_lock(PlatMutex *m) { if ((*m)++) rt_fatal("FAIL: a lock taken while held (a deadlock)"); }
 static void plat_mutex_unlock(PlatMutex *m) { (*m)--; }
 static int drop_local;
+static int rt_knob(const char *name, const char *def) { (void)name; return *def == '1'; }   // wr_prune: DKB_RESET_FAST on
+#define RT_KNOB_ON(mode) (mode)
 static int vk_usnap_covers(uint64_t addr, uint64_t n) { (void)addr, (void)n; return 0; }
 static uint64_t marks;
 static void mark(uint64_t addr, uint64_t n) { (void)addr, (void)n, marks++; }
@@ -465,23 +467,80 @@ static int drop_many_cases(void) {
     return fails;
 }
 
+// wr_prune with a long already-sorted prefix (>= 256 ranges, as vk_usnap_drop_many appends) followed by an unsorted
+// tail: the 3-way merge path must produce the exact same merged list as sorting all ranges together.
+static int sorted_prefix_cases(void) {
+    int fails = 0;
+    Wrote *wr = U.wr;
+    int cwr = U.cwr;
+    done_fence = 0;
+    for (int round = 0; round < 32; round++) {
+        int nold = (int)(rnd() % 600), npref = 256 + (int)(rnd() % 1024), ntail = (int)(rnd() % 800);
+        uint64_t f = (uint64_t)(round + 10);
+        done_fence = f - 3;
+        int n0 = 0, n1 = 0;
+        uint64_t cur = 0x700000000ull;
+        for (int i = 0; i < nold; i++) {
+            cur += 32 + (rnd() % 256);
+            Wrote w = {cur, cur + 16 + (rnd() % 20), f - (rnd() % 5)};
+            ref_wr[n0++] = w, loc_wr[n1++] = w;
+        }
+        cur = 0x700000000ull;
+        for (int i = 0; i < npref; i++) {
+            cur += 20 + (rnd() % 64);
+            Wrote w = {cur, cur + 20, f - (rnd() % 5 == 0 ? 4 : 0)};
+            loc_wr[n1++] = w;
+            ref_wr[n0++] = w;
+        }
+        // Put a reversed pair at the front of ref_wr's new entries so ref_wr always takes the standard full-sort path.
+        for (int i = 0; i < ntail; i++) {
+            uint64_t lo = 0x700000000ull + (rnd() % (1 << 16)) * 4;
+            Wrote w = {lo, lo + 4 + (rnd() % 128), f - (rnd() % 4)};
+            loc_wr[n1++] = w;
+            ref_wr[n0++] = w;
+        }
+        if (npref >= 2) {
+            Wrote tmp = ref_wr[nold];
+            ref_wr[nold] = ref_wr[nold + npref - 1];
+            ref_wr[nold + npref - 1] = tmp;
+        }
+        U.wr = ref_wr, U.cwr = 400000, U.nwr = n0, nwr_sorted = nold, wr_prune();
+        int nr0 = U.nwr;
+        U.wr = loc_wr, U.cwr = 400000, U.nwr = n1, nwr_sorted = nold, wr_prune();
+        int nr1 = U.nwr;
+        checks++;
+        if (nr0 != nr1 || memcmp(ref_wr, loc_wr, (size_t)nr0 * sizeof *ref_wr)) {
+            fails++, printf("FAIL: sorted_prefix round %d: %d vs %d ranges\n", round, nr1, nr0);
+            break;
+        }
+    }
+    U.wr = wr, U.cwr = cwr, U.nwr = 0, nwr_sorted = 0;
+    return fails;
+}
+
 int main(void) {
     int fails = 0;
     U.cwr = 2000000, U.wr = malloc(sizeof *U.wr * (size_t)U.cwr);
     if (!U.wr) return 2;
-    for (int fast = 0; fast < 2; fast++) {
-        U.fast = fast;
-        fails += prune_cases();
-    }
-    fails += sort_cases();
-    fails += col_cases();
-    fails += seen_cases();
-    fails += c4_seen_cases();
-    for (int fast = 0; fast < 2; fast++) {
-        U.fast = fast;
-        fails += coalesce_cases();
-        fails += drop_local_cases();
-        fails += drop_many_cases();
+    for (int opt = 0; opt < 2; opt++) {
+        U.opt = opt;
+        for (int fast = 0; fast < 2; fast++) {
+            U.fast = fast;
+            fails += prune_cases();
+        }
+        fails += sort_cases();
+        if (!opt) {
+            fails += col_cases();
+            fails += seen_cases();
+            fails += c4_seen_cases();
+        }
+        for (int fast = 0; fast < 2; fast++) {
+            U.fast = fast;
+            fails += coalesce_cases();
+            fails += drop_local_cases();
+            fails += drop_many_cases();
+            fails += sorted_prefix_cases();   // wr_prune's sorted-prefix merge (DKB_RESET_FAST), with U.opt 0 and 1
+        }
     }
     printf("usnap prune: %d checks, %d failures\n", checks, fails);
     return fails != 0;

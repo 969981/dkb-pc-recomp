@@ -354,6 +354,7 @@ void vk_mem_pick(VkMemSpan *sp);
 #define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
 #define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
+void vk_mem_gpu_wrote_many(void *pool, VkBuffer buffer, const uint64_t (*runs)[2], uint32_t n);
 int vk_mem_gpu_kept(const VkMemSpan *sp, uint64_t size);    // as vk_mem_gpu_wrote, but whole pages stay in the mirror; 0: none did
 int vk_mem_kept_overlaps(uint64_t addr, uint64_t size);     // a kept GPU write lies in the range
 uint64_t vk_mem_mirror_gen(void);   // changes whenever a mirror is made or dropped, and with every submission
@@ -392,7 +393,9 @@ int vk_mem_wb_early_min(void);
 uint32_t vk_mem_wb_tag(uint32_t tag);
 void vk_mem_mirror_wb_held(uint64_t fence, uint32_t upto, uint64_t min_bytes);
 int vk_mem_mirror_pending(void);
-void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence);   // fence: the value of the part's submission
+int vk_mem_mirror_pending_for(uint32_t upto);
+void vk_mem_mirror_part_done(uint32_t upto);
+void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence, uint32_t upto);   // fence: the value of the part's submission
 // Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
 // write into CPU-visible memory at record time (vk_mem_gpu_pending) and reports it at the fence with vk_gpu_written,
 // which copies the bytes back into guest memory before telling the texture cache (vk_guest_written).
@@ -427,6 +430,10 @@ const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
 void vk_headroom_start(void);
 void vk_headroom_stop(void);   // before vmaDestroyAllocator
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when all of [addr, addr+size) is backed
+// As vk_mem_resolve, and when the pool overlaps no other index entry sets [*lo_out, *hi_out) and *base_out so a caller
+// scanning addresses in the same pool_gen can reuse the span without resolving each one; zeros them otherwise.
+int vk_mem_resolve_range(uint64_t addr, uint64_t size, VkMemSpan *out,
+                         uint64_t *lo_out, uint64_t *hi_out, uint64_t *base_out);
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
 uint64_t vk_mem_gen(void);
@@ -774,7 +781,7 @@ VkCommandBuffer vk_sync_split_wait(void);
 // held-back calls into the oldest held part on the calling thread, ends it and submits it ahead of every later part:
 // the replay finishes every held part before any other split and before its submission ends, and does nothing in
 // between that needs a held part on the GPU.
-VkCommandBuffer vk_sync_split_defer(void);
+VkCommandBuffer vk_sync_split_defer(uint32_t wb_tag);
 void vk_sync_split_finish(void (*tail)(VkCommandBuffer cb, void *arg), void *arg);
 // DKB_TRACE=perf: the replay notes each draw or dispatch of the part being timed (kind 0 draw, 1 indirect draw, 2
 // dispatch, 3 indirect dispatch; a, b: the NVN 2 names of its vertex and fragment stages, or its compute stage and 0;

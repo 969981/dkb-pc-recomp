@@ -661,6 +661,7 @@ static void resolve_rt(VkExec *ex) {
     ex->pass_ncolor = (uint32_t)n;
     ex->pass_samples = samples ? samples : 1;
     ex->pipe.samples = (uint8_t)ex->pass_samples;
+    ex->pipe_serial++;
 }
 
 // The attachment view of a target. A registered texture's view lives as long as its image (vk_exec_target_view); any
@@ -1053,11 +1054,40 @@ VkBuffer vk_exec_inline_buffer(VkDeviceSize size) {
     return t->b;
 }
 
+// Bananza ultrawide (runtime/dkb_wide.c, set dkbwide): the dkbwide UI sites divide the x row of every fresh UI
+// projection by aspect / 16:9, so the 1920x1080 layout canvas lands in a 16:9 band centred on the display. ui2d scissor
+// panes (HudStatus S_Scissor_00, which clips the Bananza badges next to the Bananergy ring) still get a pixel rectangle
+// computed for a canvas that fills the whole width, so the clip lands outside the narrowed HUD: the selected badge
+// inside the ring is clipped away and the badge row is cut. Apply the same mapping to a narrower scissor of a draw that
+// covers the whole width of a display-shaped target (the UI pass, at output_res or at the 2/3 render3d size), so the clip follows the HUD. Full-width
+// scissors, other targets and draws with a smaller viewport (the 3D scene, captures) keep the game's rectangle.
+static void dkb_wide_ui_scissor(const VkExec *ex, int64_t *x0, int64_t *x1) {
+    unsigned out[2];
+    if (!dkb_wide_output(out) || out[0] * 9 <= out[1] * 16) return;
+    int64_t w = ex->pass_w, h = ex->pass_h;
+    if (*x0 <= 0 && *x1 >= w) return;   // full-width scissor: nothing to map
+    // the HUD is drawn into the display-sized image or, with render3d (scene_res auto), into the 2/3 one
+    // (2293x960 at 3440x1440): accept any target with the display's shape, at least half its width
+    int64_t skew = w * (int64_t)out[1] - h * (int64_t)out[0];
+    int same_size = w * 2 >= (int64_t)out[0] && (skew < 0 ? -skew : skew) <= (int64_t)out[0];
+    // viewport spans the whole target width (the y row may be flipped, so only x and width are compared)
+    int vp_full = !ex->has_vp ||
+                  (fabs(fmin(ex->vp[0][0], ex->vp[0][0] + ex->vp[0][2])) < 0.5 && fabs(fabs(ex->vp[0][2]) - w) < 0.5);
+    int apply = same_size && vp_full;
+    if (!apply) return;
+    double factor = ((double)out[0] / out[1]) / (16.0 / 9.0), cx = w * 0.5;
+    *x0 = (int64_t)floor(cx + ((double)*x0 - cx) / factor);
+    *x1 = (int64_t)ceil(cx + ((double)*x1 - cx) / factor);
+    static int logged;
+    if (!logged) logged = 1, rt_log("vk_exec: ultrawide UI scissor follows the narrowed HUD (factor %.4f)", factor);
+}
+
 VkRect2D vk_exec_scissor(const VkExec *ex) {
     int64_t w = ex->pass_w, h = ex->pass_h;
     if (!ex->has_scissor) return (VkRect2D){{0, 0}, {(uint32_t)w, (uint32_t)h}};
     int64_t x0 = ex->scissor.x, y0 = ex->scissor.y;
     int64_t x1 = x0 + ex->scissor.w, y1 = y0 + ex->scissor.h;
+    dkb_wide_ui_scissor(ex, &x0, &x1);
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 > w) x1 = w;
@@ -1220,6 +1250,7 @@ static void maybe_split(VkExec *ex) {
     split_draws = 0;
     if (ex->recorded == part_start) return;
     ex->cb = vk_sync_split();
+    vk_mem_wb_tag(++wb_tag_walk);   // the walk's writes from here on are in later parts
     part_start = ex->recorded;
     part_t0 = kern_now_ns();
     ex->dirty = VK_EXEC_DIRTY_ALL;
@@ -1264,6 +1295,7 @@ int vk_exec_read_buffer(VkExec *ex, uint64_t addr, uint64_t size, void *out) {
     VK_MEM_BOUND(source);
     par_settle_all(ex);   // the held parts belong to the prefix
     ex->cb = vk_sync_split_wait();   // this prefix, not ex->fence (only the final part signals that value)
+    vk_mem_wb_tag(++wb_tag_walk);   // the walk's writes from here on are in later parts
     split_draws = 0;
     part_start = ex->recorded;
     part_t0 = kern_now_ns();
@@ -1327,12 +1359,12 @@ static int state_op(VkExec *ex, uint32_t op, const void *a) {
         memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
         ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
         break;
-    case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
-    case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
+    case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; ex->pipe_serial++; break;
+    case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; ex->pipe_serial++; break;
     case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;
     case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
-    case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
-    case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
+    case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++, ex->fs_tex_serial++; break;
+    case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++, ex->fs_tex_serial++; break;
     default: return 0;
     }
     return 1;
@@ -1818,8 +1850,9 @@ static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
         return h;
     }
     // This thread's part if it recorded one, then the helper's, then a new command buffer for what follows.
-    if (!behind) ex->cb = vk_sync_split(), n_parts++;
+    if (!behind) ex->cb = vk_sync_split(), vk_mem_wb_tag(++wb_tag_walk), n_parts++;
     vk_sync_split_insert(p->H.cb);
+    vk_mem_wb_tag(++wb_tag_walk);
     n_parts++;
     for (int j = 0; j < PW[i].n; j++) {
         vk_texture_gpu_written_late(PW[i].w[j].t.tex);
@@ -1833,12 +1866,14 @@ static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
     // The replay state after the part is the helper's: everything from the render targets to the bindings. The command
     // buffer is new, the targets are resolved again, and no memo of this thread's translator knows the state.
     uint32_t tex_serial = (ex->tex_serial > p->H.tex_serial ? ex->tex_serial : p->H.tex_serial) + 1;
+    uint32_t fs_tex_serial = (ex->fs_tex_serial > p->H.fs_tex_serial ? ex->fs_tex_serial : p->H.fs_tex_serial) + 1;
+    uint32_t pipe_serial = (ex->pipe_serial > p->H.pipe_serial ? ex->pipe_serial : p->H.pipe_serial) + 1;
     uint32_t pass_serial = (ex->pass_serial > p->H.pass_serial ? ex->pass_serial : p->H.pass_serial) + 1;
     memcpy((char *)ex + offsetof(VkExec, rt), (const char *)&p->H + offsetof(VkExec, rt),
            offsetof(VkExec, views) - offsetof(VkExec, rt));
     ex->in_pass = 0, ex->dirty = VK_EXEC_DIRTY_ALL, ex->rt_resolved = 0;
     ex->nfbl = 0, ex->fbl_mask = 0, ex->fb_dirty = 0, ex->fb_fs = NULL;
-    ex->tex_serial = tex_serial, ex->pass_serial = pass_serial;
+    ex->tex_serial = tex_serial, ex->fs_tex_serial = fs_tex_serial, ex->pipe_serial = pipe_serial, ex->pass_serial = pass_serial;
     vk_exec_draw_rebase(ex);
     split_draws = 0;
     part_start = ex->recorded;
@@ -2511,7 +2546,7 @@ static void par_record(int i, ParPool *pp, VkExec *w, struct DrawCtx *dc) {
     w->fb_dirty = 0x1ff;
     w->views = NULL, w->nviews = 0, w->cap_views = 0;   // the slice's own; merged into the primary's after
     w->barrier_at = w->cs_tail = w->cs_barrier_at = -1, w->game_barrier = 0;
-    w->fb_fs = NULL, w->fb_serial = w->fb_pass = w->fb_sampled = 0, w->tex_serial = 0;
+    w->fb_fs = NULL, w->fb_serial = w->fb_pass = w->fb_sampled = 0, w->tex_serial = 0, w->fs_tex_serial = 0, w->pipe_serial = 0;
     vk_exec_draw_rebase(w);   // the context's memos and bindings were made from another slice's copy of the state
     vk_exec_draw_slice_view(dc, PC.supd[i]);
     vk_usnap_view(par_usd[PC.supd[i]] + 1);   // the drops made before the pass began
@@ -2706,7 +2741,7 @@ static void par_flush(VkExec *ex) {
     }
     if (!PC.on) return;
     PC.on = 0;
-    ex->tex_serial++;
+    ex->tex_serial++, ex->fs_tex_serial++, ex->pipe_serial++;
     vk_exec_draw_binds_dirty(ex);
     par_passes++, par_slices += (uint64_t)PC.nslices, par_sliced_draws += (uint64_t)PC.draws;
     uint64_t t1 = kern_now_ns();
@@ -2830,7 +2865,7 @@ static void par_defer(VkExec *ex) {
     }
     d->cap_hi = rec_capture_end();
     vk_mem_wb_tag(++wb_tag_walk);   // the walk's writes from here on are in later parts
-    ex->cb = vk_sync_split_defer();
+    ex->cb = vk_sync_split_defer(d->tag);
     part_start = ex->recorded;
     part_t0 = kern_now_ns();
     split_draws = 0;
@@ -3096,6 +3131,7 @@ static void la_set_rt(VkExec *s, const p_set_rt *r) {
     s->pipe.depth_fmt = r->depth ? r->depth->d.format : 0;
     if (r->depth && !samples) samples = r->depth->d.samples;
     s->pipe.samples = (uint8_t)(samples > 1 ? samples : 1);
+    s->pipe_serial++;
     s->rt = *r, s->rt_resolved = 0;
 }
 
@@ -3714,6 +3750,8 @@ static int record_impl(VkCommandBuffer cb, const uint64_t *handles, int n, uint6
     x_here = 1;
     int memory = n || work;
     if (memory) {
+        wb_tag_walk = 0;
+        vk_mem_wb_tag(0);
         vk_usnap_cpu_reads(n && vk_exec_draw_merge_on());
         vk_mem_mirror_begin();
         vk_usnap_begin(handles, n, fence);
