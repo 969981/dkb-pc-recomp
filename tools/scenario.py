@@ -318,9 +318,13 @@ def run_env(s, env_extra, out, base):
     """The environment of one run: base, the scenario's [env], then env_extra (--env and the variant). {run} in a value
     is the run's folder, so repeated runs do not overwrite each other's outputs (DKB_DUMP_DIR={run}/dump). perf is
     always traced, because the perf verdict needs it; other DKB_TRACE categories asked for are added to it. Runs are
-    muted (DKB_VOLUME=0) unless the caller's environment, the scenario or --env sets a volume."""
+    muted (DKB_VOLUME=0) unless the caller's environment, the scenario or --env sets a volume, and pipelines are built as
+    in a player's game (DKB_SHOT_ASYNC=1)."""
     env = dict(base)
     env.setdefault('DKB_VOLUME', '0')
+    # --shot alone builds pipelines on the drawing thread (runtime/boot.c boot_main), which a player never does: keep the
+    # background builds and the boot prebuild so the timings are the player's. DKB_SHOT_ASYNC=0 turns that off.
+    env.setdefault('DKB_SHOT_ASYNC', '1')
     env['DKB_INPUT_SCRIPT'] = str(ROOT / s['input'])
     env.update({k: str(v) for k, v in s['env'].items()})
     env.update({k: str(v) for k, v in env_extra.items()})
@@ -435,6 +439,9 @@ def run_once(s, exe, out, env_extra, args, warp=None):
         log.flush()
         try:
             p = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            if args.cpus and os.name == 'nt':   # as tools/lowend_bench.py: the first N logical processors only
+                import ctypes
+                ctypes.windll.kernel32.SetProcessAffinityMask(ctypes.c_void_p(int(p._handle)), ctypes.c_size_t((1 << args.cpus) - 1))
             finished = None   # when the game logged its end-of-run screenshot (runtime/boot.c)
             tail = LogTail(out / 'game.log')
             last_write = time.monotonic()
@@ -557,6 +564,8 @@ def main(argv=None):
     ap.add_argument('--ab', metavar='VARIANTS', help='the scenario\'s [variants.<name>] table to alternate')
     ap.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='extra environment for every run')
     ap.add_argument('--seconds', type=float, help="override the scenario's game time")
+    ap.add_argument('--cpus', type=int, help='run the game on the first N logical processors only (Windows), as a '
+                    'weaker CPU would')
     ap.add_argument('--keep-profile', action='store_true', help='keep the run\'s profile copy (for a save to inspect)')
     ap.add_argument('--force', action='store_true', help='run even while another game process is running')
     ap.add_argument('--sweep', metavar='REGEX', help='run once per stage whose name matches, e.g. LevelStage$ for the '
