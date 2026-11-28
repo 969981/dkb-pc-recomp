@@ -54,6 +54,17 @@ static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
 static int motion_thread;            // 0 not started, 1 running, -1 off (DKB_MOTION=0, no SDL)
+// Steam Input (from TotK Recomp's input.c, patch by St5sz2Jk, upstream issue #1282; ours is #551): a game Steam starts
+// gets SDL_GAMECONTROLLER_IGNORE_DEVICES, the vendor/product pairs of the controllers Steam reads itself, and sees
+// Steam's virtual gamepad in their place. That pad has no motion sensors, so a Steam Controller, a Steam Deck or a
+// DualSense under Steam Input gives no gyro. steam_reveal keeps the list here and clears the hint: buttons and sticks
+// still come from the virtual pad (gamepad_ids leaves the listed devices out while another gamepad is there, so
+// Steam's remapping holds and nothing is read twice), and only the sensors come from the real controller (motion_source).
+enum { STEAM_HIDDEN_MAX = 64 };
+static uint16_t steam_hidden[STEAM_HIDDEN_MAX][2];   // vendor, product
+static int steam_hidden_n;
+static SDL_Gamepad *motion_extra;    // the hidden controller opened for its sensors only, NULL none
+static uint64_t next_motion_scan;
 
 // SDL buttons of the gamepad inputs (input_map.h PAD_*), by position; PAD_ZL and PAD_ZR are the triggers (axes).
 static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
@@ -405,6 +416,68 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
     input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
 }
 
+// Before SDL_Init: keep the controllers Steam hid (steam_hidden) and let SDL open them. The list is
+// "0xVVVV/0xPPPP,..." (SDL's own format). With motion off (DKB_MOTION=0 at start) Steam's list stays in force.
+static void steam_reveal(void) {
+    const char *e = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
+    if (!e || !*e || !cfg_bool("DKB_MOTION")) return;
+    for (const char *s = e; *s && steam_hidden_n < STEAM_HIDDEN_MAX;) {
+        unsigned v, p;
+        int used = 0;
+        if (sscanf(s, " %x/%x%n", &v, &p, &used) == 2 && used > 0) {
+            steam_hidden[steam_hidden_n][0] = (uint16_t)v;
+            steam_hidden[steam_hidden_n][1] = (uint16_t)p;
+            steam_hidden_n++;
+            s += used;
+        }
+        const char *c = strchr(s, ',');
+        if (!c) break;
+        s = c + 1;
+    }
+    if (!steam_hidden_n) return;
+    // The environment outranks a hint of normal priority, so this one overrides it
+    SDL_SetHintWithPriority(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, "", SDL_HINT_OVERRIDE);
+    rt_log("input: Steam Input hides %d controller type(s); buttons stay on Steam's virtual gamepad, motion is read "
+           "from the controller itself", steam_hidden_n);
+}
+
+// The ids the device itself reports. SDL_GetGamepadVendorForID and ...ProductForID give a Steam virtual pad the ids of
+// the controller behind it, which would make it look like a controller Steam hid; the GUID keeps the device's own.
+static void raw_ids(SDL_JoystickID id, uint16_t *v, uint16_t *p) {
+    SDL_GetJoystickGUIDInfo(SDL_GetGamepadGUIDForID(id), v, p, NULL, NULL);
+}
+
+static int steam_hidden_id(SDL_JoystickID id) {
+    uint16_t v, p;
+    raw_ids(id, &v, &p);
+    for (int i = 0; i < steam_hidden_n; i++)
+        if (steam_hidden[i][0] == v && steam_hidden[i][1] == p) return 1;
+    return 0;
+}
+
+// Steam's virtual gamepad: Valve's vendor id with product 0x11ff in the device's own ids (raw_ids; SDL's
+// SDL_IsJoystickSteamVirtualGamepad is not public)
+static int steam_virtual(SDL_Gamepad *g) {
+    uint16_t v, p;
+    raw_ids(SDL_GetGamepadID(g), &v, &p);
+    return v == 0x28de && p == 0x11ff;
+}
+
+// SDL_GetGamepads without the controllers Steam hid, unless nothing else is there (Steam's virtual pad can come up
+// after the game starts): those are read for motion only (motion_source).
+static SDL_JoystickID *gamepad_ids(int *n) {
+    SDL_JoystickID *ids = SDL_GetGamepads(n);
+    if (!ids || !steam_hidden_n) return ids;
+    int kept = 0;
+    for (int i = 0; i < *n; i++) kept += !steam_hidden_id(ids[i]);
+    if (!kept) return ids;
+    int w = 0;
+    for (int i = 0; i < *n; i++)
+        if (!steam_hidden_id(ids[i])) ids[w++] = ids[i];
+    *n = w;
+    return ids;
+}
+
 // Stable across sessions for devices with serial numbers. Without a serial, identical devices
 // use their enumeration ordinal (SDL instance IDs themselves are only valid for this session).
 static uint64_t device_hash(const char *s) {
@@ -424,7 +497,7 @@ static int device_cache_count;
 static int devices_locked(InputPadDevice **devices) {
     *devices = NULL;
     int n = 0;
-    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    SDL_JoystickID *ids = gamepad_ids(&n);
     if (!n) {
         free(device_cache); device_cache = NULL; device_cache_count = 0;
         SDL_free(ids);
@@ -497,6 +570,27 @@ static SDL_Gamepad *open_pad_locked(uint32_t id) {
     return opened;
 }
 
+static SDL_Gamepad *open_next_pad_locked(const InputPadDevice *devices, int count, uint32_t tried,
+                                         uint32_t excluded) {
+    for (int i = 0; i < count; i++) {
+        uint32_t id = devices[i].id;
+        if (id == tried || id == excluded) continue;
+        SDL_Gamepad *next = open_pad_locked(id);
+        if (next) return next;
+    }
+    return NULL;
+}
+
+// Keep a working Player 1. If it is temporarily occupying the saved Player 2 device, try every spare.
+static SDL_Gamepad *open_pad1_locked(const InputPadDevice *devices, int count, uint32_t wanted,
+                                    uint32_t current, uint32_t reserved) {
+    SDL_Gamepad *next = wanted ? open_pad_locked(wanted) : NULL;
+    if (next || (current && current != reserved)) return next;
+    next = open_next_pad_locked(devices, count, wanted, reserved);
+    if (!next && !current && reserved) next = open_pad_locked(reserved);
+    return next;
+}
+
 int input_pad_devices(InputPadDevice **devices) {
     plat_mutex_lock(&lock);
     if (!state) start();
@@ -556,6 +650,7 @@ static int pad_hd_claimed(void) { return 0; }
 static SDL_Gamepad *pad2;
 static int pad2_east_a;
 static uint64_t pad2_next_scan;
+static unsigned pad2_config_seen;
 
 // Under lock. Stop any remaining player 2 vibration before this gamepad changes roles.
 static void pad2_release(void) {
@@ -571,23 +666,22 @@ static void pad2_release(void) {
 // disconnections fall back, and an explicit preference applies at startup or when changed by the user.
 static void scan_pads(void) {
     pad_device_seen = cfg_version();
-    const char *preferred = cfg_value("DKB_PAD_DEVICE");
+    const int coop = cfg_bool("DKB_COOP");
+    const char *preferred = cfg_value(coop ? "DKB_COOP_PAD_DEVICE" : "DKB_PAD_DEVICE");
     InputPadDevice *devices;
     int n = devices_locked(&devices);
     uint32_t current = pad && SDL_GamepadConnected(pad) ? SDL_GetGamepadID(pad) : 0;
     if (!n && current) { free(devices); return; }   // do not interpret a failed snapshot as a topology change
-    pad_selection.keep = cfg_bool("DKB_COOP");   // a second gamepad joins as player 2 instead of taking player 1 over
-    uint32_t wanted = input_pad_choose(&pad_selection, devices, n, preferred, current);
+    pad_selection.keep = coop;
+    uint32_t wanted = input_pad_choose(&pad_selection, devices, n, preferred,
+                                      coop ? cfg_value("DKB_PAD2_DEVICE") : "auto", current);
     if (current && current == wanted) { free(devices); return; }
-    SDL_Gamepad *next = wanted ? open_pad_locked(wanted) : NULL;
+    SDL_Gamepad *next = open_pad1_locked(devices, n, wanted, current, pad_selection.reserved);
     if (!next && current) {   // a failed arrival must not discard a still-working controller
         pad_selection.automatic = 1;
         free(devices);
         return;
     }
-    if (!next)
-        for (int i = 0; i < n && !next; i++)
-            if (devices[i].id != wanted) next = open_pad_locked(devices[i].id);
     if (next && SDL_GetGamepadID(next) != wanted) pad_selection.automatic = 1;
     free(devices);
     if (pad != next) pad2_next_scan = 0;
@@ -713,6 +807,7 @@ static void start(void) {
     binds_refresh();
     const char *e = cfg_get("DKB_INPUT");
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (DKB_INPUT=none)"); return; }
+    steam_reveal();
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
 #ifdef _WIN32
@@ -979,22 +1074,32 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     return ok;
 }
 
-// Player 2 (coop = 1, ov_input.c): the first connected gamepad in SDL's order that is not player 1's. With no gamepad
-// on player 1 there is no player 2 either, so one gamepad always plays player 1. Under lock.
+// Player 2 uses a saved controller or the first eligible SDL gamepad in Auto. Player 1 always has priority. Under lock.
 static void pad2_scan(void) {
     SDL_JoystickID p1 = pad && SDL_GamepadConnected(pad) ? SDL_GetGamepadID(pad) : 0;
-    if (p1 && pad2 && SDL_GamepadConnected(pad2) && SDL_GetGamepadID(pad2) != p1) return;
-    pad2_release();
+    SDL_JoystickID current = pad2 && SDL_GamepadConnected(pad2) ? SDL_GetGamepadID(pad2) : 0;
+    if (!p1 || !current || current == p1) {
+        pad2_release();
+        current = 0;
+    }
     if (!p1) return;
+    unsigned version = cfg_version();
     uint64_t now = plat_now_ns() / 1000000u;
-    if (now < pad2_next_scan) return;
-    pad2_next_scan = now + RESCAN_MS;
+    if (pad2_config_seen == version && pad2_next_scan && (current || now < pad2_next_scan)) return;
+    pad2_config_seen = version;
     InputPadDevice *devices;
     int n = devices_locked(&devices);
-    uint32_t want = input_pad2_choose(devices, n, p1, 0);
+    const char *preferred = cfg_value("DKB_PAD2_DEVICE");
+    uint32_t want = input_pad2_choose(devices, n, p1, current, preferred);
+    if (want != current) {
+        pad2_release();
+        if (want) pad2 = open_pad_locked(want);
+        if (!pad2 && !strcmp(preferred, "auto"))
+            pad2 = open_next_pad_locked(devices, n, want, p1);
+    }
     free(devices);
-    if (want) pad2 = open_pad_locked(want);
-    if (!pad2) return;
+    pad2_next_scan = now + RESCAN_MS;
+    if (want == current || !pad2) return;
     pad2_east_a = SDL_GetGamepadButtonLabel(pad2, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
     rt_log("input: player 2 gamepad \"%s\" (ID %u; player 1 is ID %u, its rumble goes to it, motion follows player 1)",
            SDL_GetGamepadName(pad2), (unsigned)SDL_GetGamepadID(pad2), (unsigned)p1);
@@ -1220,7 +1325,7 @@ int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
 int input_rumble2(uint16_t low, uint16_t high, uint32_t ms) {
     int ok = 0;
     plat_mutex_lock(&lock);
-    if (state == 1 && pad2 && pad && SDL_GamepadConnected(pad) &&
+    if (state == 1 && cfg_bool("DKB_COOP") && pad2 && pad && SDL_GamepadConnected(pad) &&
         SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad2), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false))
         ok = SDL_RumbleGamepad(pad2, low, high, ms);
     plat_mutex_unlock(&lock);
@@ -1243,21 +1348,71 @@ void input_motion_axes(const float a[3], const float g[3], double acc[3], double
     gyro[2] = g[1];
 }
 
-// Under lock: (re)enable the sensors when the open gamepad changed; 1 if it has both and they are on.
-static int sensors_ready(void) {
-    SDL_JoystickID id = SDL_GetGamepadID(pad);
+static int has_motion(SDL_Gamepad *g) {
+    return SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(g, SDL_SENSOR_ACCEL);
+}
+
+// Under lock: the gamepad the sensors are read from, NULL without one. The open pad when it has a gyro and an
+// accelerometer, or when Steam hid nothing. Otherwise (Steam's virtual pad, which has neither) the first controller
+// Steam hid that has both, looked for once a RESCAN_MS; one without them is not opened again until it reconnects.
+static SDL_Gamepad *motion_source(void) {
+    static SDL_JoystickID rejected[8];
+    if (motion_extra && !SDL_GamepadConnected(motion_extra)) {
+        rt_log("input: \"%s\" (motion only) disconnected", SDL_GetGamepadName(motion_extra));
+        SDL_CloseGamepad(motion_extra);
+        motion_extra = NULL;
+    }
+    int pad_on = pad && SDL_GamepadConnected(pad);
+    // Newer Steam clients give the virtual pad motion too, but already corrected by Steam (and gated by the layout's
+    // gyro settings). Under Steam Input the real controller's raw sensors come first; the virtual pad's are the fallback.
+    if (pad_on && has_motion(pad) && !(steam_hidden_n && steam_virtual(pad))) {
+        if (motion_extra) { SDL_CloseGamepad(motion_extra); motion_extra = NULL; }
+        return pad;
+    }
+    if (!motion_extra && steam_hidden_n && plat_now_ns() / 1000000u >= next_motion_scan) {
+        next_motion_scan = plat_now_ns() / 1000000u + RESCAN_MS;
+        int n = 0;
+        SDL_JoystickID *ids = SDL_GetGamepads(&n), skip = pad_on ? SDL_GetGamepadID(pad) : 0;
+        for (int i = 0; ids && i < n && !motion_extra; i++) {
+            int seen = 0;
+            for (int r = 0; r < 8; r++) seen |= rejected[r] == ids[i];
+            if (ids[i] == skip || seen || !steam_hidden_id(ids[i])) continue;
+            SDL_Gamepad *g = SDL_OpenGamepad(ids[i]);
+            if (g && has_motion(g)) {
+                motion_extra = g;
+                rt_log("input: motion from \"%s\" (%04x:%04x), the controller behind Steam Input's virtual gamepad",
+                       SDL_GetGamepadName(g), SDL_GetGamepadVendor(g), SDL_GetGamepadProduct(g));
+            } else {
+                if (g) SDL_CloseGamepad(g);
+                memmove(rejected + 1, rejected, sizeof rejected - sizeof rejected[0]);
+                rejected[0] = ids[i];
+            }
+        }
+        SDL_free(ids);
+    }
+    return motion_extra ? motion_extra : pad_on ? pad : NULL;
+}
+
+// Under lock: (re)enable the sensors when the motion source changed; 1 if it has both and they are on.
+static int sensors_ready(SDL_Gamepad *src) {
+    SDL_JoystickID id = SDL_GetGamepadID(src);
     if (id == sensor_pad) return sensor_ok;
     sensor_pad = id;
     // Nothing drains the SDL event queue: no event per sample (the data still updates, SDL_SendJoystickSensor)
     SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
-    sensor_ok =SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) &&
-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
-    if (sensor_ok) rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
+    sensor_ok = has_motion(src) &&
+                SDL_SetGamepadSensorEnabled(src, SDL_SENSOR_GYRO, true) &&
+                SDL_SetGamepadSensorEnabled(src, SDL_SENSOR_ACCEL, true);
+    if (sensor_ok) {
+        rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
+               (double)SDL_GetGamepadSensorDataRate(src, SDL_SENSOR_GYRO),
+               (double)SDL_GetGamepadSensorDataRate(src, SDL_SENSOR_ACCEL));
+        motion_restart(motion_global());   // another source: its own orientation, from its first reading
+    } else if (has_motion(src))   // the SDL error, not "no sensors", when enabling them failed
+        rt_log("input: \"%s\" has a gyro and an accelerometer but SDL could not turn them on (%s): the six-axis sensor "
+               "reads a controller at rest", SDL_GetGamepadName(src), SDL_GetError());
     else rt_log("input: \"%s\" has no gyro and accelerometer: the six-axis sensor reads a controller at rest",
-                SDL_GetGamepadName(pad));
+                SDL_GetGamepadName(src));
     return sensor_ok;
 }
 
@@ -1282,10 +1437,11 @@ static void motion_main(void *arg) {
         float a[3], g[3];
         int have = 0;
         plat_mutex_lock(&lock);
-        if (pad && SDL_GamepadConnected(pad)) {
+        SDL_Gamepad *src = motion_source();
+        if (src) {
             SDL_UpdateGamepads();
-            have = !pad_dropped && sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
-                   SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
+            have = !pad_dropped && sensors_ready(src) && SDL_GetGamepadSensorData(src, SDL_SENSOR_ACCEL, a, 3) &&
+                   SDL_GetGamepadSensorData(src, SDL_SENSOR_GYRO, g, 3);
         }
         plat_mutex_unlock(&lock);
         if (!have || !input_motion_enabled()) continue;

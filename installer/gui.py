@@ -2,10 +2,10 @@
 
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the game language and the
 install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Decisions live in guilogic.py;
-this file only draws. The window text is in installer/text/<en|ru>.json under "ui.*" and "launcher.*" ids.
+this file only draws. The window text is in installer/text/<en|ru|zh>.json under "ui.*" and "launcher.*" ids.
 
-    --selftest [--shots DIR]   build every screen in both languages and close by itself (PNG per screen with --shots)
-    --lang en|ru               window language (default: the Windows display language)
+    --selftest [--shots DIR]   build every screen in each language and close by itself (PNG per screen with --shots)
+    --lang en|ru|zh            window language (default: the Windows display language)
 
 Started by the launcher (installer/launcher/launcher.c: --base <DKB-Recomp> --launcher <exe>) the window also has a
 home screen: Play, the release check at start (off with the screen's tick box, --no-update-check or
@@ -32,6 +32,7 @@ try:
 except ImportError:
     ImageGrab = None
 
+from . import amiibo
 from . import bananza
 from . import dlss
 from . import fsr4
@@ -39,10 +40,10 @@ from . import ini
 from . import layout as layouts
 from . import update
 from .runner import InstallError
-from .guilogic import (DKB_STEP_ORDER, DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, Launcher, Model,
+from .guilogic import (DKB_STEP_ORDER, DONE, FAILED, GAME_EXE, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, Launcher, Model,
                        Process, Settings, amount, default_dest, default_game_language, describe_event, install_state,
-                       parse_line, play_command, previous_version, release_page, update_status,
-                       windows_ui_language)
+                       libraries_failed, parse_line, play_command, previous_version, release_page, run_precompile,
+                       update_status, warm_command, windows_ui_language, _run_precompile_proc)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -105,6 +106,7 @@ def apply_theme(root, ui_font):
                     bordercolor=BANANA)
     style.configure('Err.TLabel', foreground=RED_TEXT)
     style.configure('Warn.TLabel', foreground=BANANA)
+    style.configure('Link.TLabel', foreground=MUTED, font=(ui_font, 9, 'underline'))
     style.configure('Version.TLabel', background=FRAME, foreground=MUTED)
     return style
 
@@ -151,6 +153,9 @@ def fix_dpi_awareness():
         set_context(ctypes.c_void_p(-4))   # PER_MONITOR_AWARE_V2; an already configured process keeps its context
 
 
+SUPPORT_URL = 'https://ko-fi.com/lucasblippng'   # fixed: never user or remote data, so webbrowser may open it directly
+
+
 def open_page(url):
     """A release page in the browser. Only a https://github.com/ link (guilogic.release_page): the link comes from
     GitHub's answer, and webbrowser hands anything else, a file path too, to the shell to open."""
@@ -169,6 +174,16 @@ class App:
         self.update_line = (('ui.update_checking' if check_updates else 'ui.update_off'), {})
         self.update_offered = False
         self.update_stop = threading.Event()
+        self.precompile_stop = threading.Event()
+        self.precompile_running = False
+        self.precompile_after = None
+        self.precompile_closing = False
+        self.precompile_skip = False
+        self.precompile_dest = ''
+        self.precompile_return_screen = 'form'
+        self.precompile_step = ('', {})
+        self.precompile_fraction = None
+        self.precompile_failure = None
         self.cat = Catalog(ui_lang, game)
         self.model = Model(DKB_STEP_ORDER if game == 'bananza' else None)
         self.process = None
@@ -198,6 +213,8 @@ class App:
             root.iconphoto(True, self.icon)
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         self.ui_font = 'Segoe UI' if os.name == 'nt' else 'DejaVu Sans'
+        if self.cat.lang == 'zh' and os.name == 'nt':   # Segoe UI draws Chinese through a fallback Tk cannot
+            self.ui_font = 'Microsoft YaHei UI'
         self.mono_font = 'Consolas' if os.name == 'nt' else 'DejaVu Sans Mono'
         apply_theme(root, self.ui_font)
 
@@ -217,13 +234,20 @@ class App:
         sw = ttk.Frame(top, style='Header.TFrame')
         sw.pack(side='right')
         self.ui_var = tk.StringVar(value=self.cat.lang)
+        labels = {'zh': '中文'}   # the codes are Latin; Chinese reads better as itself
         for code in UI_LANGUAGES:
-            ttk.Radiobutton(sw, text=code.upper(), value=code, variable=self.ui_var, style='Toolbutton',
-                            command=self.switch_language).pack(side='left', padx=1)
+            ttk.Radiobutton(sw, text=labels.get(code, code.upper()), value=code, variable=self.ui_var,
+                            style='Toolbutton', command=self.switch_language).pack(side='left', padx=1)
         tk.Frame(root, height=4, bg=RED).pack(fill='x')   # the DK tie's red under the strip
         self.body = ttk.Frame(root, padding=PAD)
         self.body.pack(fill='both', expand=True)
-        self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
+        support = self.label(self.body, 'ui.support', style='Link.TLabel')
+        support.configure(cursor='hand2')
+        support.bind('<Button-1>', lambda _e: webbrowser.open(SUPPORT_URL))
+        support.pack(side='bottom', anchor='e')
+        self.amiibo_rows = []                      # (label, folder getter) of each amiibo row, for refresh_amiibo
+        self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish(),
+                       'precompile': self.build_precompile()}
         if launcher:
             self.run_args.setdefault('temp', launcher.temp)
             self.frames.update(home=self.build_home(), update=self.build_update())
@@ -290,6 +314,7 @@ class App:
         self.refresh_form()
         self.refresh_run()
         self.refresh_finish()
+        self.refresh_precompile()
         if self.launcher:
             self.refresh_home()
             self.refresh_update()
@@ -398,6 +423,11 @@ class App:
             self.dlss_box.pack(anchor='w', pady=(8, 0))
         self.update_hint = ttk.Label(f, wraplength=620, justify='left')
         self.update_hint.pack(anchor='w', pady=(8, 0))
+        # Shown once the install folder holds an installation (refresh_form): the setup window opened by the Linux
+        # AppImage or the setup zip has no home screen, so the form is where the player finds it.
+        self.form_amiibo = None
+        if self.game == 'bananza':
+            self.form_amiibo = self.amiibo_row(f, lambda: self.vars['dest'].get().strip())
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=620, justify='left')
         self.form_error.pack(anchor='w', pady=(8, 0))
         if self.game != 'bananza':
@@ -476,6 +506,8 @@ class App:
         self.home_text.pack(anchor='w', pady=(8, 0))
         self.home_tools = ttk.Label(f, wraplength=620, justify='left', foreground=MUTED)
         self.home_tools.pack(anchor='w', pady=(4, 0))
+        if self.game == 'bananza':
+            self.amiibo_row(f, lambda: self.settings.dest).pack(fill='x', pady=(10, 0))
         self.update_box = ttk.Frame(f)
         self.update_box.pack(fill='both', expand=True, pady=(14, 0))
         self.update_text = ttk.Label(self.update_box, wraplength=620, justify='left', style='Warn.TLabel')
@@ -518,6 +550,136 @@ class App:
         self.update_closing = False                # the window was closed during it: it closes when the worker ends
         return f
 
+    def build_precompile(self):
+        f = ttk.Frame(self.body)
+        bar = ttk.Frame(f)
+        bar.pack(side='bottom', fill='x', pady=(12, 0))
+        self.precompile_cancel = self.button(bar, 'ui.cancel', self.cancel_precompile)
+        self.precompile_cancel.pack(side='right')
+        self.precompile_skip_btn = self.button(bar, 'ui.skip_and_play', self.skip_precompile)
+        self.precompile_back = self.button(bar, 'ui.back', self.back_from_precompile)
+        self.precompile_play_anyway = self.button(bar, 'ui.play_anyway', lambda: self.launch_game(self.precompile_dest),
+                                                  style='Accent.TButton')
+        self.precompile_title = self.label(f, 'ui.precompile_title', style='Title.TLabel', wraplength=620, justify='left')
+        self.precompile_title.pack(anchor='w')
+        self.precompile_note = self.label(f, 'ui.precompile_note', wraplength=620, justify='left')
+        self.precompile_note.pack(anchor='w', pady=(6, 4))
+        self.precompile_phase = ttk.Label(f, wraplength=620, justify='left')
+        self.precompile_phase.pack(anchor='w', pady=(8, 4))
+        self.precompile_bar = ttk.Progressbar(f, mode='indeterminate', maximum=1000)
+        self.precompile_bar.pack(fill='x', pady=(4, 6))
+        self.precompile_error = ttk.Label(f, style='Err.TLabel', wraplength=620, justify='left')
+        self.precompile_error.pack(anchor='w', pady=(8, 0))
+        return f
+
+    def refresh_precompile(self):
+        sid, params = self.precompile_step
+        self.precompile_phase.configure(text=self.cat(sid, **params) if sid else '')
+        if self.precompile_failure:
+            self.precompile_error.configure(text=self.cat('ui.precompile_failed', detail=self.precompile_failure))
+        else:
+            self.precompile_error.configure(text='')
+        frac = self.precompile_fraction
+        if self.precompile_running and frac is None:
+            if str(self.precompile_bar.cget('mode')) != 'indeterminate':
+                self.precompile_bar.configure(mode='indeterminate')
+                self.precompile_bar.start(15)
+        else:
+            if str(self.precompile_bar.cget('mode')) == 'indeterminate':
+                self.precompile_bar.stop()
+                self.precompile_bar.configure(mode='determinate')
+            self.precompile_bar.configure(value=(frac or 0.0) * 1000)
+        for btn in (self.precompile_cancel, self.precompile_skip_btn, self.precompile_back, self.precompile_play_anyway):
+            btn.pack_forget()
+        if self.precompile_running:
+            self.precompile_cancel.pack(side='right')
+            self.precompile_cancel.state(['!disabled'])
+            self.precompile_skip_btn.pack(side='right', padx=(0, 8))
+            self.precompile_skip_btn.state(['!disabled'])
+        elif self.precompile_failure:
+            self.precompile_back.pack(side='left')
+            self.precompile_play_anyway.pack(side='right')
+        self.fit()
+
+    def show_precompile_if_busy(self):
+        if self.precompile_running and self.screen != 'precompile':
+            self.refresh_precompile()
+            self.show('precompile')
+
+    def enter_precompile_phase(self, phase):
+        if not self.precompile_running:
+            return
+        self.precompile_step = (f'ui.precompile_{phase}', {})
+        self.precompile_fraction = None
+        self.show_precompile_if_busy()
+        self.refresh_precompile()
+
+    def update_precompile_progress(self, done, total):
+        if not self.precompile_running:
+            return
+        if done is not None and total:
+            self.precompile_step = ('ui.precompile_warm_count', {'done': done, 'total': total})
+            self.precompile_fraction = max(0.0, min(1.0, done / total))
+        else:
+            self.precompile_fraction = None
+        self.refresh_precompile()
+
+    def cancel_precompile(self):
+        if not self.precompile_running:
+            return
+        self.precompile_cancel.state(['disabled'])
+        self.precompile_skip_btn.state(['disabled'])
+        self.precompile_stop.set()
+
+    def skip_precompile(self):
+        if not self.precompile_running:
+            return
+        self.precompile_skip = True
+        self.precompile_cancel.state(['disabled'])
+        self.precompile_skip_btn.state(['disabled'])
+        self.precompile_stop.set()
+
+    def precompile_failed(self, detail):
+        self.precompile_running = False
+        self.precompile_failure = detail or 'unknown error'
+        self.set_play_enabled(True)
+        self.refresh_precompile()
+        self.show('precompile')
+
+    def back_from_precompile(self):
+        self.precompile_failure = None
+        self.precompile_bar.stop()
+        if self.launcher and self.precompile_return_screen == 'home' and install_state(self.settings.dest):
+            self.show_home()
+        else:
+            target = self.precompile_return_screen if self.precompile_return_screen in self.frames else 'form'
+            self.show(target)
+
+    def set_play_enabled(self, enabled):
+        flag = ['!disabled'] if enabled else ['disabled']
+        if hasattr(self, 'play_button'):
+            self.play_button.state(flag)
+        if hasattr(self, 'play_after'):
+            self.play_after.state(flag)
+
+    def finish_precompile(self, status, detail):
+        self.precompile_running = False
+        if self.precompile_after:
+            self.root.after_cancel(self.precompile_after)
+            self.precompile_after = None
+        self.precompile_bar.stop()
+        self.set_play_enabled(True)
+        if self.precompile_closing:
+            self.root.destroy()
+            return
+        if self.precompile_skip or status in ('ready', 'ok'):
+            self.launch_game(self.precompile_dest)
+            return
+        if status == 'cancelled':
+            self.back_from_precompile()
+            return
+        self.precompile_failed(detail)
+
     def show_home(self):
         self.refresh_home()
         self.show('home')
@@ -528,6 +690,7 @@ class App:
         state = install_state(self.settings.dest)
         self.home_title.configure(text=self.cat('ui.home_ready' if state == 'ready' else 'ui.home_unfinished'))
         self.home_text.configure(text=self.cat('ui.home_text', dest=self.settings.dest))
+        self.refresh_amiibo()
         self.home_tools.configure(text=self.cat('ui.home_tools', version=self.layout.release, base=self.launcher.base))
         self.play_button.state(['!disabled' if state == 'ready' else 'disabled'])
         id, params = self.update_line
@@ -723,7 +886,7 @@ class App:
             self.update_error.configure(text='')
         self.fit()
 
-    def play(self, dest):
+    def launch_game(self, dest):
         """The built game, started from its folder; the launcher closes (an update needs the game closed)."""
         if not dest or install_state(dest) != 'ready':
             return
@@ -735,6 +898,77 @@ class App:
             messagebox.showerror(self.cat('ui.title'), f'{play_command(dest)[0]}: {e}')
             return
         self.root.destroy()
+
+    # ---- amiibo files (Bananza) ----------------------------------------------------------------------------------
+
+    def amiibo_row(self, parent, dest):
+        """A row for the player's own amiibo tag files (installer/amiibo.py): how many the game folder holds, and
+        buttons that copy more in or open the folder. dest() gives the game folder at the time of the click; the caller
+        packs the row."""
+        row = ttk.Frame(parent)
+        text = ttk.Label(row, wraplength=300, justify='left')
+        text.pack(side='left')
+        self.button(row, 'dkb.ui.amiibo_open', lambda: self.open_amiibo(dest())).pack(side='right')
+        adders = (('dkb.ui.amiibo_add_folder', self.add_amiibo_folder),
+                  ('dkb.ui.amiibo_add_files', self.add_amiibo_files))
+        for id, act in adders:
+            self.button(row, id, lambda act=act: act(dest())).pack(side='right', padx=(0, 8))
+        self.amiibo_rows.append((text, dest))
+        return row
+
+    def refresh_amiibo(self):
+        for text, dest in self.amiibo_rows:
+            if dest():
+                text.configure(text=self.cat('dkb.ui.amiibo_count', n=amiibo.count(dest())))
+
+    def amiibo_done(self, dest, copied, skipped):
+        self.refresh_amiibo()
+        id = 'dkb.ui.amiibo_added' if copied or not skipped else 'dkb.ui.amiibo_none'
+        messagebox.showinfo(self.cat('ui.title'), self.cat(id, n=copied, skipped=skipped, folder=amiibo.folder(dest)))
+
+    def add_amiibo_files(self, dest):
+        types = [(self.cat('dkb.ui.type_amiibo'), '*.bin *.nfc'), (self.cat('ui.type_all'), '*.*')]
+        paths = filedialog.askopenfilenames(title=self.cat('dkb.ui.amiibo_add_files'), filetypes=types)
+        if paths and dest:
+            self.amiibo_done(dest, *amiibo.add_files(dest, paths))
+
+    def add_amiibo_folder(self, dest):
+        path = filedialog.askdirectory(title=self.cat('dkb.ui.amiibo_add_folder'), mustexist=True)
+        if path and dest:
+            self.amiibo_done(dest, *amiibo.add_folder(dest, path))
+
+    def open_amiibo(self, dest):
+        if dest:
+            amiibo.folder(dest).mkdir(parents=True, exist_ok=True)
+            self.open_path(str(amiibo.folder(dest)))
+    def play(self, dest):
+        """Precompile missing shader pipelines if needed, then start the built game."""
+        if not dest or install_state(dest) != 'ready' or self.process or getattr(self, 'update_running', False) or self.precompile_running:
+            return
+        if self.game != 'bananza':
+            self.launch_game(dest)
+            return
+        self.precompile_stop.clear()
+        self.precompile_running = True
+        self.precompile_closing = False
+        self.precompile_skip = False
+        self.precompile_dest = dest
+        self.precompile_return_screen = self.screen or ('home' if self.launcher else 'finish')
+        self.precompile_step = ('ui.precompile_checking', {})
+        self.precompile_fraction = None
+        self.precompile_failure = None
+        self.set_play_enabled(False)
+        self.precompile_after = self.root.after(500, self.show_precompile_if_busy)
+
+        def work():
+            status, detail = run_precompile(
+                dest, layout=self.layout,
+                on_phase=lambda phase: self.later(self.enter_precompile_phase, phase),
+                on_progress=lambda done, total: self.later(self.update_precompile_progress, done, total),
+                cancelled=self.precompile_stop)
+            self.later(self.finish_precompile, status, detail)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def open_path(self, dest):
         if dest and Path(dest).is_dir():
@@ -862,6 +1096,12 @@ class App:
                 self.vars['lang'].set(self.lang_label(recorded))
         else:
             self.update_hint.configure(text='')
+        if self.form_amiibo is not None:
+            if state is not None:
+                self.refresh_amiibo()
+                self.form_amiibo.pack(fill='x', pady=(8, 0), after=self.update_hint)
+            else:
+                self.form_amiibo.pack_forget()
         self.fit()
 
     def pick_file(self, name, pick_id):
@@ -1046,6 +1286,12 @@ class App:
             self.process.cancel()
 
     def on_close(self):
+        if self.precompile_running:
+            if not self.precompile_closing and messagebox.askyesno(self.cat('ui.title'),
+                                                                   self.cat('ui.confirm_cancel_precompile')):
+                self.precompile_closing = True
+                self.precompile_stop.set()
+            return
         if self.launcher and self.update_running:
             # The download stops at its next block and its .part file is deleted (update.fetch_to); an unpack is not
             # cut half way, and a finished one starts nothing. The window closes when the worker is done.
@@ -1196,7 +1442,7 @@ def grab(root, path):
 
 
 def selftest(layout, shots=None, game='totk'):
-    """Every screen in both languages; the window closes itself. Returns 0 when nothing raised."""
+    """Every screen in every language; the window closes itself. Returns 0 when nothing raised."""
     fix_tcl_paths()
     fix_dpi_awareness()
     root = tk.Tk()
@@ -1237,7 +1483,22 @@ def selftest(layout, shots=None, game='totk'):
         app.show_offer(None, 'no answer')
         app.show_home()
         shot(f'home-offline-{tag}')
-        return all(app.cat(i) != i for i in ('ui.home_ready', 'ui.play', 'ui.check_updates', 'ui.updating'))
+        app.precompile_running = True
+        app.precompile_failure = None
+        app.precompile_step = ('ui.precompile_warm_count', {'done': 1024, 'total': 4096})
+        app.precompile_fraction = 0.25
+        app.refresh_precompile()
+        app.show('precompile')
+        shot(f'precompile-{tag}')
+        app.precompile_failed('exit code 1')
+        shot(f'precompile-failed-{tag}')
+        app.precompile_running = False
+        app.precompile_failure = None
+        keys = ('ui.home_ready', 'ui.play', 'ui.check_updates', 'ui.updating', 'ui.precompile_title',
+                'ui.precompile_note', 'ui.precompile_checking', 'ui.precompile_census', 'ui.precompile_translate',
+                'ui.precompile_pack', 'ui.precompile_warm', 'ui.precompile_warm_count', 'ui.precompile_failed',
+                'ui.play_anyway', 'ui.skip_and_play', 'ui.confirm_cancel_precompile')
+        return all(app.cat(i) != i for i in keys)
 
     def shot(name):
         root.update()
@@ -1367,14 +1628,20 @@ def start_launcher(args, layout):
     return launcher
 
 
-def play_now(dest):
-    """--play: the game in dest, started from its folder and waited for, for a frontend (#402); 1 when dest holds no
-    finished install, as the Play button would stay disabled."""
+def play_now(dest, layout=None):
+    """--play: warm missing shader pipelines if needed (--warm-shaders-if-needed, progress on stdout), then start the game in dest and wait for it (#402);
+    1 when dest holds no finished install, as the Play button would stay disabled."""
     if sys.stderr is None:   # pythonw.exe started with no handles
         sys.stdout = sys.stderr = open(os.devnull, 'w')
     if install_state(dest) != 'ready':
         print(f'--play: no finished install in {dest or "(no folder given or remembered)"}', file=sys.stderr)
         return 1
+    dest_path = Path(dest)
+    if (dest_path / GAME_EXE).is_file() and (dest_path / 'shader-prepared.bin').is_file() and not libraries_failed(dest_path):
+        try:
+            _run_precompile_proc(warm_command(dest_path), dest_path, on_line=lambda line: print(line, end='', flush=True))
+        except OSError as e:
+            print(f'--play: {e}', file=sys.stderr)
     try:
         return subprocess.call(play_command(dest), cwd=dest)
     except OSError as e:
@@ -1433,7 +1700,7 @@ def main(argv=None):
     if args.selftest:
         return selftest(layout, args.shots, args.game)
     if args.play is not None:
-        return play_now(args.play or (Settings.load(args.base).dest if args.base else ''))
+        return play_now(args.play or (Settings.load(args.base).dest if args.base else ''), layout=layout)
     fix_tcl_paths()
     fix_dpi_awareness()
     launcher = start_launcher(args, layout) if args.base else None

@@ -41,6 +41,7 @@ extern "C" {
 #include "perfmon.h"
 #include "platform/platform.h"
 #include "sysinfo.h"
+#include "ov.h"
 #include "ui/menu.h"
 #include "ui_text.h"
 #include "window_filter.h"
@@ -62,6 +63,8 @@ int gfx_window_hdr10(void);    // gfx.h: the swapchain is HDR10 now (the CRT row
 // fs.h (romfs.c): romfs-patches-xbox was next to romfs-index.bin at start, and was loaded.
 int romfs_xbox_prompts_ready(void);
 int romfs_xbox_prompts_active(void);
+int romfs_prompt_layout(void);
+const char *romfs_prompt_style(void);
 extern const char rt_port_version[];
 extern const char rt_game_display[];
 }
@@ -160,6 +163,8 @@ static const struct { int bit; ImGuiKey key; } pad_keys[] = {
     {B_UP, ImGuiKey_GamepadDpadUp}, {B_RIGHT, ImGuiKey_GamepadDpadRight}, {B_DOWN, ImGuiKey_GamepadDpadDown},
 };
 static uint64_t pad_prev;   // buttons at the last frame; a button held when the menu opened counts once released
+static int pad_nav_layout = -1;
+static bool pad_face_wait_release;
 static int stick_dir = -1;  // the D-pad button the left stick holds, -1 none
 
 // The left stick moves the cursor as the D-pad does (ImGui's own stick handling only scrolls the page): past half way
@@ -176,6 +181,16 @@ static void pad_events(ImGuiIO &io, int reset) {
     uint64_t b;
     int32_t lx, ly;
     int have = input_pad_read(&b, &lx, &ly);
+    const int layout = input_pad_layout();
+    const uint64_t face = (1ull << B_A) | (1ull << B_B) | (1ull << B_X) | (1ull << B_Y);
+    if (reset) pad_face_wait_release = false;
+    else if (layout != pad_nav_layout && (pad_prev & face)) pad_face_wait_release = true;
+    pad_nav_layout = layout;
+    // A press that selected a new layout must release before it can act as a different menu button.
+    if (pad_face_wait_release) {
+        if (!(b & face)) pad_face_wait_release = false;
+        b &= ~face;
+    }
     if (have) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     else io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
     stick_dir = stick_to_dpad(lx, ly);
@@ -324,7 +339,8 @@ static int vk_up(const MenuTarget *t) {
 }
 
 // Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
-// and Chinese language names merged in from a system font when there is one (each language is named in its own script).
+// and Chinese language names merged in from a system font when there is one (each language is named in its own script);
+// the Chinese catalog's own text comes from that font too, so the menu can switch language at any time.
 // Made again when the window height changes; the old texture goes after the queue is idle (CreateFontsTexture).
 static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
@@ -392,7 +408,10 @@ static int fonts_up(float scale) {
         }
         merged++;
         ImFontGlyphRangesBuilder b;
-        b.AddText(ui_text_in("en", kCjk[i].name));
+        if (!strcmp(kCjk[i].lang, "zh-Hans"))
+            for (int id = 0; id < UI_TEXT_COUNT; id++) b.AddText(ui_text_in("zh-Hans", (UiTextId)id));
+        else
+            b.AddText(ui_text_in("en", kCjk[i].name));
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
@@ -421,7 +440,7 @@ extern "C" void menu_vk_release(void) {
 // DKB_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (DKB_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. dkb.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_DISPLAY, TAB_GRAPHICS, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
+enum { TAB_DISPLAY, TAB_GRAPHICS, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -693,8 +712,9 @@ static const char *present_note(void) {
 
 // Frame generation (vk_framegen.c, Bananza only): off, Auto (a frame for each of the display's refreshes) or a fixed
 // 2x to 8x, live; the names follow the order of cfg.c's list of values. It makes no frames in VSync (fifo) mode, which
-// the note under the value says while both are chosen. "Made by" (frame_gen_by, vk_fsr3fi.c) is shown at 2x only, the
-// one multiplier AMD's interpolation makes frames for; its note says what AMD's needs while it is chosen.
+// the note under the value says while both are chosen. "Made by" (frame_gen_by: vk_fsr3fi.c, vk_dlssg.cpp) is shown at
+// 2x only, the one multiplier AMD's interpolation and NVIDIA's DLSS Frame Generation make frames for; its note says what
+// they need while one is chosen. NVIDIA's is offered on Windows only, where its D3D12 route exists.
 static void rows_frame_gen(void) {
     static const UiTextId names[] = {UI_MENU_OFF, UI_MENU_AUTO, UI_MENU_FRAME_GEN_2X, UI_MENU_FRAME_GEN_3X,
                                      UI_MENU_FRAME_GEN_4X, UI_MENU_FRAME_GEN_5X, UI_MENU_FRAME_GEN_6X,
@@ -704,9 +724,14 @@ static void rows_frame_gen(void) {
     opt_choice("DKB_FRAME_GEN", UI_MENU_FRAME_GEN, names, 9, UI_MENU_FRAME_GEN_DESC,
                idle ? menu_text(UI_MENU_FRAME_GEN_VSYNC) : nullptr);
     if (!strcmp(mode, "2x")) {
-        static const UiTextId by[] = {UI_MENU_FRAME_GEN_BUILTIN, UI_MENU_FRAME_GEN_FSR3};
-        opt_choice("DKB_FRAME_GEN_BY", UI_MENU_FRAME_GEN_BY, by, 2, UI_MENU_FRAME_GEN_BY_DESC,
-                   !strcmp(cfg_value("DKB_FRAME_GEN_BY"), "fsr3") ? menu_text(UI_MENU_FRAME_GEN_BY_NEEDS) : nullptr);
+        static const UiTextId by[] = {UI_MENU_FRAME_GEN_BUILTIN, UI_MENU_FRAME_GEN_FSR3, UI_MENU_FRAME_GEN_DLSS};
+#ifdef _WIN32
+        const int n_by = 3;
+#else
+        const int n_by = 2;   // NVIDIA's route is D3D12 (vk_dlssg.cpp)
+#endif
+        opt_choice("DKB_FRAME_GEN_BY", UI_MENU_FRAME_GEN_BY, by, n_by, UI_MENU_FRAME_GEN_BY_DESC,
+                   strcmp(cfg_value("DKB_FRAME_GEN_BY"), "builtin") ? menu_text(UI_MENU_FRAME_GEN_BY_NEEDS) : nullptr);
     }
 }
 
@@ -857,6 +882,14 @@ static void rows_display_output(void) {
     row_gpu();
 }
 
+// The folder in the file manager. A fullscreen game is minimised with it: the file manager's window opened behind the
+// game, and the button seemed to do nothing.
+static bool open_folder(const char *dir) {
+    if (!plat_open_folder(dir)) return false;
+    gfx_window_step_aside();
+    return true;
+}
+
 static bool settings_section(UiTextId title, const char *id, bool first = false) {
     if (!first) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2 * ImGui::GetStyle().ItemSpacing.y);
     char label[96];
@@ -909,6 +942,56 @@ static void tab_graphics(float scale, const MenuTarget &target) {
     opt_end();
 }
 
+// The amiibo at the game's NFC reader (ov_nfp.c): a folder of the player's tag files, then a file of it.
+static void rows_amiibo(void) {
+    enum { MAXF = 512, MAXT = 1024 };
+    static const char *folders[MAXF + 1], *fnames[MAXF + 1], *paths[MAXT + 2], *names[MAXT + 2];   // +1 for "None", +1 for a file of another folder
+    int nf = ov_nfp_folders(folders, MAXF);
+    if (!nf) opt_text(UI_MENU_AMIIBO_EMPTY);
+    // The folder the files are looked for in, made on the way: the player drops tag files into it
+    // Under the label, only the end of the path (".../DKB/amiibo"): the whole path does not fit the row
+    const char *dir = ov_nfp_dir(), *tail = dir + strlen(dir);
+    for (int seps = 0; tail > dir; tail--)
+        if ((tail[-1] == '/' || tail[-1] == '\\') && (++seps == 2 || dir + strlen(dir) - tail > 26)) break;
+    char shown[48];
+    snprintf(shown, sizeof shown, "%s%.40s", tail > dir ? "..." : "", tail > dir ? tail - 1 : dir);
+    if (opt_action("##amiibo_open", UI_MENU_AMIIBO_OPEN, UI_MENU_AMIIBO_OPEN_DESC, UI_MENU_AMIIBO_OPEN_DO, shown)) {
+        plat_file_mkdir_p(ov_nfp_dir());
+        open_folder(ov_nfp_dir());
+    }
+    if (!nf) return;
+    char folder_buf[1024];   // a copy: the list ov_nfp_folders returned is rebuilt by the next library scan
+    snprintf(folder_buf, sizeof folder_buf, "%s", cfg_value("DKB_AMIIBO_FOLDER"));
+    const char *folder = folder_buf;
+    int cur = -1;
+    for (int i = 0; i < nf; i++) {
+        fnames[i] = *folders[i] ? folders[i] : menu_text(UI_MENU_AMIIBO_TOP);
+        if (!strcmp(folders[i], folder)) cur = i;
+    }
+    if (cur < 0) cur = 0, snprintf(folder_buf, sizeof folder_buf, "%s", folders[0]);   // the folder went, or none was chosen yet: the first one
+    // "" writes the key unset, which stands for the top folder; the others are written as they are
+    if (nf > 1) opt_choice_list("DKB_AMIIBO_FOLDER", UI_MENU_AMIIBO_FOLDER, folders, fnames, nf, UI_MENU_AMIIBO_FOLDER_DESC, cur);
+    paths[0] = "", names[0] = menu_text(UI_MENU_AMIIBO_NONE);
+    int nt = ov_nfp_tags(folder, paths + 1, names + 1, MAXT) + 1;
+    const char *now = cfg_value("DKB_AMIIBO");
+    int at = *now ? -1 : 0;
+    for (int i = 1; i < nt && at < 0; i++)
+        if (!strcmp(paths[i], now)) at = i;
+    if (at < 0) {   // a file of another folder, or one set by hand: shown by its name
+        const char *base = now;
+        for (const char *p = now; *p; p++)
+            if (*p == '/' || *p == '\\') base = p + 1;
+        paths[nt] = now, names[nt] = base, at = nt++;
+    }
+    opt_choice_list("DKB_AMIIBO", UI_MENU_AMIIBO, paths, names, nt, UI_MENU_AMIIBO_DESC, at);
+}
+
+static void tab_amiibo(float scale) {
+    opt_begin("##amiibo", scale);
+    rows_amiibo();
+    opt_end();
+}
+
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     if (rt_game_version) {
@@ -932,14 +1015,17 @@ static void tab_sound(float scale) {
     opt_end();
 }
 
-// The note under the layout label. Xbox prompts (the Nintendo layout with the A/B and X/Y prompts swapped, romfs.c
-// overlay_init) change the buttons at once but the prompts only at the next start: "files missing" without
-// romfs-patches-xbox, "prompts change after restart" while the prompts in use differ from the choice. Automatic with a
-// gamepad connected: "in use: Xbox". NULL otherwise.
+static bool pad_layout_prompts_pending(void) {
+    const int boot_layout = romfs_prompt_layout();
+    return !rt_game_version && boot_layout >= 0 &&
+           boot_layout != input_pad_layout_pick(cfg_value("DKB_PAD_LAYOUT"), 0);
+}
+
+// Automatic shows the active mapping. In Tears of the Kingdom the combined Xbox option also reports its overlay state.
 static const char *pad_layout_note(void) {
     bool want = !strcasecmp(cfg_value("DKB_PAD_LAYOUT"), "xbox_prompts");
-    if (want && !romfs_xbox_prompts_ready()) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_MISSING);
-    if (want != (romfs_xbox_prompts_active() != 0)) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_RESTART);
+    if (rt_game_version && want && !romfs_xbox_prompts_ready()) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_MISSING);
+    if (rt_game_version && want != (romfs_xbox_prompts_active() != 0)) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_RESTART);
     int got = input_pad_layout();
     if (got < 0 || strcmp(cfg_value("DKB_PAD_LAYOUT"), "auto")) return nullptr;
     static char note[96];
@@ -956,7 +1042,7 @@ static void controller_display_name(const char *name, char *out, size_t size) {
         suffix[-1] = 0;
 }
 
-static void row_controller_device(void) {
+static void row_controller_device(bool player2) {
     static InputPadDevice *devices;
     static int count;
     static uint64_t next;
@@ -971,9 +1057,14 @@ static void row_controller_device(void) {
     const char **names = (const char **)malloc((size_t)(count + 2) * sizeof(char *));
     char (*display)[256] = (char (*)[256])calloc((size_t)(count + 1), 256);
     if (!values || !names || !display) { free(values); free(names); free(display); return; }
-    values[0] = "auto"; names[0] = "Auto";
-    const char *preferred = cfg_value("DKB_PAD_DEVICE");
+    values[0] = "auto"; names[0] = menu_text(UI_MENU_AUTO);
+    const bool coop = cfg_bool("DKB_COOP");
+    const char *key = player2 ? "DKB_PAD2_DEVICE" : coop ? "DKB_COOP_PAD_DEVICE" : "DKB_PAD_DEVICE";
+    const char *preferred = cfg_value(key);
+    InputPadInfo info;
+    const int connected = input_pad_info(&info);
     int found = !strcmp(preferred, "auto");
+    int n = 1, cur = 0;
     for (int i = 0; i < count; i++) {
         controller_display_name(devices[i].name, display[i], sizeof display[i]);
         int duplicates = 0, ordinal = 0;
@@ -986,35 +1077,74 @@ static void row_controller_device(void) {
             size_t used = strlen(display[i]);
             snprintf(display[i] + used, sizeof display[i] - used, " (%d)", ordinal);
         }
-        values[i + 1] = devices[i].key; names[i + 1] = display[i];
+        if (player2 && connected && devices[i].id == info.id) continue;
+        if (connected && devices[i].id == info.id) cur = n;
+        values[n] = devices[i].key; names[n++] = display[i];
         if (!strcmp(preferred, devices[i].key)) found = 1;
     }
-    int n = count + 1;
     if (!found) { values[n] = preferred; names[n++] = menu_text(UI_MENU_PAD_SAVED); }
-    InputPadInfo info;
-    int connected = input_pad_info(&info);
-    int cur = 0;
+    if (player2) {
+        if (!coop) opt_disable_next(UI_MENU_PAD2_NEEDS_COOP);
+        opt_choice_list(key, UI_MENU_PAD2_DEVICE, values, names, n, UI_MENU_PAD2_DEVICE_DESC);
+        free(values); free(names); free(display);
+        return;
+    }
     if (input_pad_automatic()) {
         if (connected) {
-            snprintf(display[count], sizeof display[count], "Auto: %.240s", info.name);
+            char auto_name[241];
+            snprintf(auto_name, sizeof auto_name, "%.240s", info.name);
+            snprintf(display[count], sizeof display[count], menu_text(UI_MENU_PAD_DEVICE_AUTO_FMT), auto_name);
             names[0] = display[count];
         }
-    } else if (connected) {
-        for (int i = 0; i < count; i++) if (devices[i].id == info.id) cur = i + 1;
+        cur = 0;
     }
     const char *status = menu_text(connected ? UI_MENU_PAD_CONNECTED : UI_MENU_PAD_NONE);
     char detail[320];
     snprintf(detail, sizeof detail, "%s%s%s", status, connected ? ": " : "", connected ? info.name : "");
-    if (opt_choice_list("DKB_PAD_DEVICE", UI_MENU_PAD_DEVICE, values, names, n, UI_MENU_PAD_DEVICE_DESC, cur, status, detail))
+    if (opt_choice_list(key, UI_MENU_PAD_DEVICE, values, names, n, UI_MENU_PAD_DEVICE_DESC, cur, status, detail))
         input_pad_selection_changed();
     free(values); free(names); free(display);
 }
 
-static void rows_controller(void) {
-    row_controller_device();
+static void rows_controller_layout(void) {
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
                                       UI_MENU_PAD_LAYOUT_XBOX_PROMPTS};
-    opt_choice("DKB_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+    if (rt_game_version) {
+        opt_choice("DKB_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+        return;
+    }
+    const bool legacy = !strcasecmp(cfg_value("DKB_PAD_LAYOUT"), "xbox_prompts");
+    const char *style = cfg_value("DKB_PAD_PROMPTS");
+    static const char *const layouts[] = {"nintendo", "xbox"};
+    const char *layout_names[] = {menu_text(UI_MENU_PAD_LAYOUT_NINTENDO), menu_text(UI_MENU_PAD_LAYOUT_XBOX)};
+    const bool pending = pad_layout_prompts_pending();
+    const char *layout_note = pending ? menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_RESTART) : pad_layout_note();
+    const char *layout_status = pending ? menu_text(UI_MENU_DKB_PAD_LAYOUT_RESTART_DETAIL) : nullptr;
+    const bool layout_changed = opt_choice_list("DKB_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layouts, layout_names, 2,
+                                                UI_MENU_DKB_PAD_LAYOUT_DESC, legacy ? 0 : -1, layout_note,
+                                                layout_status, menu_text(UI_MENU_AUTO));
+    if (layout_changed && legacy && !strcasecmp(style, "switch") && !cfg_from_env("DKB_PAD_PROMPTS")) {
+        cfg_set("DKB_PAD_PROMPTS", "xbox");   // keep the letter style when leaving the old combined setting
+        style = cfg_value("DKB_PAD_PROMPTS");
+    }
+
+    static const char *const styles[] = {"auto", "nintendo", "xbox", "playstation"};
+    const char *style_names[] = {menu_text(UI_MENU_AUTO), menu_text(UI_MENU_PAD_PROMPTS_NINTENDO),
+                                 menu_text(UI_MENU_PAD_PROMPTS_XBOX), menu_text(UI_MENU_PAD_PROMPTS_PLAYSTATION)};
+    int current = !strcasecmp(style, "switch") ? (legacy && !layout_changed ? 2 : 1) : -1;
+    const char *boot_style = romfs_prompt_style();
+    const bool restart = boot_style && strcasecmp(style, boot_style) != 0;
+    opt_choice_list("DKB_PAD_PROMPTS", UI_MENU_PAD_PROMPTS, styles, style_names, 4, UI_MENU_PAD_PROMPTS_DESC,
+                    current, nullptr, nullptr, nullptr, restart);
+}
+
+static void rows_controller(void) {
+    row_controller_device(false);
+    if (!rt_game_version) {
+        opt_toggle("DKB_COOP", UI_MENU_COOP, UI_MENU_COOP_DESC);
+        row_controller_device(true);
+    }
+    rows_controller_layout();
     opt_toggle("DKB_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_slider("DKB_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("DKB_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
@@ -1053,8 +1183,9 @@ static void tab_controls(float scale) {
 
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("DKB_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
+                                     UI_MENU_LANGNAME_ZH_HANS};
+    opt_choice("DKB_MENU_LANG", UI_MENU_MENU_LANG, langs, 4, UI_MENU_MENU_LANG_DESC);
     static const UiTextId themes[] = {UI_MENU_THEME_DK, UI_MENU_THEME_CLASSIC};
     opt_choice("DKB_MENU_THEME", UI_MENU_THEME, themes, 2, UI_MENU_THEME_DESC);
     opt_end();
@@ -1203,7 +1334,7 @@ static void tab_advanced(float scale) {
     row_set_or_not("DKB_INPUT_RECORD", UI_MENU_INPUT_RECORD, UI_MENU_INPUT_RECORD_DESC, rec_path);
     if (opt_button("##open_log", UI_MENU_OPEN_LOG, UI_MENU_OPEN_LOG_DESC, action_value(log_note, UI_MENU_OPEN_LOG))) {
         char dir[512];
-        bool ok = sysinfo_log_folder(dir, sizeof dir) && plat_open_folder(dir);
+        bool ok = sysinfo_log_folder(dir, sizeof dir) && open_folder(dir);
         if (!ok) action_done(log_note, false);   // success shows as the opened folder
     }
     if (opt_button("##copy_info", UI_MENU_COPY_INFO, UI_MENU_COPY_INFO_DESC,
@@ -1308,7 +1439,8 @@ static void header_dk(float scale, const char *version) {
 }
 
 static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_DISPLAY, UI_MENU_TAB_GRAPHICS, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND,
-                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU, UI_MENU_TAB_ADVANCED};
+                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
+                                              UI_MENU_TAB_ADVANCED};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
@@ -1370,6 +1502,7 @@ static void layout_menu(const MenuTarget &target, float scale, bool had_popup) {
             case TAB_GAME: tab_game(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
+            case TAB_AMIIBO: tab_amiibo(scale); break;
             case TAB_MENU: tab_menu(scale); break;
             case TAB_ADVANCED: tab_advanced(scale); break;
             }
@@ -1385,6 +1518,9 @@ static void layout_menu(const MenuTarget &target, float scale, bool had_popup) {
     if (!cfg_last_save_ok()) {   // stays until a save succeeds; the settings hold for the session
         ImGui::SetCursorPosY(y + st.FramePadding.y);
         ImGui::TextColored(g_theme == 1 ? opt_warn() : ImVec4(0.95f, 0.45f, 0.35f, 1), "%s", menu_text(UI_MENU_SAVE_FAILED));
+    } else {   // a plain line, no link and no pop-up
+        ImGui::SetCursorPosY(y + st.FramePadding.y);
+        ImGui::TextDisabled("%s", menu_text(UI_MENU_SUPPORT));
     }
     const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
     float bw = fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x) + st.FramePadding.x * 4;
@@ -1453,6 +1589,19 @@ static void perf_gpu_once(const MenuTarget *t) {
                     (float)(vram >> 20));
 }
 
+extern "C" uint64_t vk_fg_made_total(void);
+
+// Made frames shown a second (vk_framegen.c), over the last half second or more; 0 while frame generation makes none.
+// The overlay then shows the frames on screen (the game's plus the made ones) with the game's own in brackets.
+static double fg_made_rate(uint64_t now) {
+    static uint64_t t0, n0;
+    static double rate;
+    uint64_t n = vk_fg_made_total();
+    if (!t0 || now - t0 > 2000000000ull) t0 = now, n0 = n, rate = 0;   // first call, or a stall: start again
+    else if (now - t0 >= 500000000ull) rate = (double)(n - n0) * 1e9 / (double)(now - t0), t0 = now, n0 = n;
+    return rate >= 1 ? rate : 0;
+}
+
 static void perf_tick(uint64_t now, const MenuTarget *t) {
     if (cfg_version() != g_perf_ver) {
         g_perf_ver = cfg_version();
@@ -1474,8 +1623,10 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         g_perf_frames++;
         if (d > g_perf_max_ns) g_perf_max_ns = d;
         if (g_perf_win_ns >= 500000000ull) {
-            snprintf(g_perf_text, sizeof g_perf_text, g_perf_mode == 4 ? "%.0f" : menu_text(UI_PERF_LINE_FPS),
-                     g_perf_frames * 1e9 / g_perf_win_ns);
+            double fps = g_perf_frames * 1e9 / g_perf_win_ns, made = fg_made_rate(now);
+            if (g_perf_mode == 4) snprintf(g_perf_text, sizeof g_perf_text, "%.0f", fps + made);
+            else if (made > 0) snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS_FG), fps + made, fps);
+            else snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), fps);
             g_perf_win_ns = g_perf_max_ns = 0;
             g_perf_frames = 0;
         }
@@ -1494,8 +1645,9 @@ static float perf_text_w(UiTextId fmt, float v) {
 }
 
 // A fixed column as wide as the widest of the formats (with their samples) and labels given.
-static void perf_column(const char *id, const PerfCol *cols, int n, const UiTextId *labels = nullptr, int nl = 0) {
-    float w = ImGui::CalcTextSize(menu_text(UI_MENU_OV_NONE)).x;
+static void perf_column(const char *id, const PerfCol *cols, int n, const UiTextId *labels = nullptr, int nl = 0,
+                        float min_w = 0) {
+    float w = fmaxf(min_w, ImGui::CalcTextSize(menu_text(UI_MENU_OV_NONE)).x);
     for (int i = 0; i < n; i++) w = fmaxf(w, perf_text_w(cols[i].fmt, cols[i].sample));
     for (int i = 0; i < nl; i++) w = fmaxf(w, ImGui::CalcTextSize(menu_text(labels[i])).x);
     ImGui::TableSetupColumn(id, ImGuiTableColumnFlags_WidthFixed, w);
@@ -1632,7 +1784,10 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         static const PerfCol c2[] = {{UI_MENU_OV_FMT_TEMP, 188}, {UI_MENU_OV_FMT_GB_OF, 888.8f}, {UI_MENU_OV_MAX_MS, 8888.8f}};
         static const PerfCol c3[] = {{UI_MENU_OV_FMT_POWER, 888}, {UI_MENU_OV_FMT_MHZ, 8888}, {UI_MENU_OV_GAME_PCT, 100},
                                      {UI_MENU_OV_GAME_GB, 888.8f}};
-        perf_column("##c0", c0, 1, labels, 4);
+        char fgb[64];   // the frame row with frame generation: "888 (888) FG", two numbers, so measured here
+        snprintf(fgb, sizeof fgb, menu_text(UI_MENU_OV_FPS_FG), 888.0, 888.0);
+        const double made = fg_made_rate(plat_now_ns());
+        perf_column("##c0", c0, 1, labels, 4, made > 0 ? ImGui::CalcTextSize(fgb).x : 0);
         perf_column("##c1", c1, 3);
         perf_column("##c2", c2, 3);
         perf_column("##c3", c3, 4);
@@ -1654,7 +1809,8 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         perf_cell(UI_MENU_OV_GAME_GB, perf_gb(s.ram_game_mb));
         ImGui::TableNextColumn();   // the frame row: no label, the rate in its place
         char b[64];
-        snprintf(b, sizeof b, menu_text(UI_MENU_OV_FPS), s.fps);
+        if (made > 0) snprintf(b, sizeof b, menu_text(UI_MENU_OV_FPS_FG), s.fps + made, (double)s.fps);
+        else snprintf(b, sizeof b, menu_text(UI_MENU_OV_FPS), s.fps);
         ImGui::TextColored(fps_c, "%s", b);
         perf_cell(UI_MENU_OV_FRAME_MS, s.frame_ms_avg);
         perf_cell(UI_MENU_OV_MAX_MS, s.frame_ms_max);

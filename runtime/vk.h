@@ -67,6 +67,7 @@ typedef struct {
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
     int moltenvk;                      // the driver is MoltenVK (VK_DRIVER_ID_MOLTENVK)
     int radv;                          // Mesa's RADV (VK_DRIVER_ID_MESA_RADV)
+    int nvidia_prop;                   // NVIDIA's proprietary driver (VK_DRIVER_ID_NVIDIA_PROPRIETARY)
     int amd_slices;                    // a discrete AMD GPU on the proprietary driver, where sliced passes were measured (vk_exec.c par_threads)
 } VkCaps;
 extern VkCaps vk_caps;
@@ -162,6 +163,13 @@ typedef struct {
     // it (the game's format, a sampled view in GENERAL), for the frame without its HUD; NULL: none
     VkImageView picture;
     uint32_t picture_w, picture_h;
+    // for DLSS Frame Generation (vk_dlssg.cpp, frame_gen_by = dlss), as VkTemporalIn has them: the motion image
+    // itself (it is copied), the scene's projection and view, and this frame's clip space to the last one's
+    // (has_to_prev 0: no frame before)
+    VkImage motion_image;
+    float proj[16], view[12];
+    double to_prev[16];
+    int has_to_prev;
 } VkFiInputs;
 // CRT filters on the present (vk_crt.c): with DKB_CRT_FILTER = lottes_grille|lottes_tv|hyllian|zfast, records the
 // filter over the rectangle {x, y, w, h} of the swapchain image dst, which is in TRANSFER_DST and holds the scaled SDR
@@ -185,6 +193,8 @@ void vk_crt_release(void);
 int vk_fg_record(VkImage src, VkFormat fmt, int w, int h, const int crop[4], const VkFiInputs *fi, uint64_t frame_no, uint64_t antilag);
 void vk_fg_show(int (*pending)(void), uint64_t frame, uint64_t antilag);
 void vk_fg_release(void);   // before the device goes away
+// Made frames presented so far (any thread): the performance overlay's frames-on-screen rate.
+uint64_t vk_fg_made_total(void);
 // AMD Anti-Lag 2 (vk_antilag.c, DKB_ANTILAG). vk_antilag_available: the device can run it (0 before the device).
 // vk_antilag_frame: the index of the game frame being made now (its input stage was given), 0 while off or none; a
 // present job keeps it. vk_antilag_input: after the game presented, the next frame's input stage, where the driver
@@ -399,7 +409,9 @@ void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence, uint32_t upto); 
 // Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
 // write into CPU-visible memory at record time (vk_mem_gpu_pending) and reports it at the fence with vk_gpu_written,
 // which copies the bytes back into guest memory before telling the texture cache (vk_guest_written).
-void vk_mem_shadow_sync(void);
+void vk_mem_shadow_sync(void);         // vk_mem_shadow_sync_pools, then vk_mem_shadow_sync_done
+void vk_mem_shadow_sync_pools(void);   // the pools resolved since the last call take the CPU's writes
+void vk_mem_shadow_sync_done(void);    // the part these syncs precede is submitted next
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 void vk_gpu_written(uint64_t addr, uint64_t size);
 // One range of a submission's GPU writes: {address, size, buffer the GPU wrote or VK_NULL_HANDLE}.
@@ -462,6 +474,7 @@ void vk_upload_end(void);
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
 uint64_t vk_upload_flush(int wait);
 int vk_upload_done(uint64_t seq);                 // the upload batch seq (vk_upload_flush's value) has completed
+void vk_upload_wait(uint64_t seq);                // waits for the batches up to seq, submitting it if open; not later ones
 // The sequence number of the open upload batch, the value vk_upload_flush will return for it. Only between
 // vk_upload_begin and vk_upload_end.
 uint64_t vk_upload_seq(void);
@@ -625,7 +638,11 @@ void vk_texture_write_back(uint64_t addr, uint64_t size);   // writes those imag
 // The replay's deferred-read write-back (DKB_WB_ASYNC, default on): copies recorded and submitted without waiting,
 // written to the storage by a later vk_texture_wb_poll once they completed. DKB_WB_ASYNC=0: vk_texture_write_back.
 void vk_texture_write_back_async(uint64_t addr, uint64_t size);
+int vk_texture_wb_async_on(void);                   // DKB_WB_ASYNC: vk_texture_write_back_async does not wait
 void vk_texture_wb_poll(void);                      // finishes the asynchronous write-backs whose copies completed
+// The submitting thread, once the guest submission of value fence is on the queue: queues the copies of the targets it
+// rendered that waited reads hit lately, behind it (DKB_WB_AHEAD).
+void vk_texture_copy_ahead(uint64_t fence);
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc);   // vk_pool_fini: drop the images there
 void vk_texture_stats(uint64_t *images, uint64_t *uploads, uint64_t *reuploads);
 // Entries now, live and released (TextureFinalize, kept until sweep_released), with the bytes of their own memory
@@ -670,6 +687,8 @@ typedef struct {
     uint32_t depth_level, depth_layer;
     float proj[16];
     double vp[16];                // for vk_temporal_done
+    float view[12];               // the rows of the scene's view matrix [R | t]
+    double to_prev[16];           // this frame's clip space to the last one's, row-major; meaningful when reset is 0
 } VkTemporalIn;
 int vk_temporal_inputs(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int fresh, VkTemporalIn *t);
 void vk_temporal_done(const VkTemporalIn *t, uint32_t w, uint32_t h, uint32_t ow);

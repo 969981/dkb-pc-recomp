@@ -335,6 +335,7 @@ uint32_t kern_event_readable(uint32_t writable);
 void kern_event_signal(uint32_t writable);
 void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear);   // guest thread only
 void kern_signal_system_event(uint64_t ev);                // any thread
+void kern_forget_system_event(uint64_t ev);                // any thread: ev was destroyed, a later bind makes it anew
 int kern_svc(Cpu *c, uint32_t imm);                        // thread/sync SVCs; 1 if handled
 uint64_t kern_now_ns(void);
 extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
@@ -452,3 +453,4 @@ int probe_splash(void);                                    // vk_splash.c: the s
 int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)
 int vk_pipeline_translate_shaders(void);                  // vk_pipeline.c: --translate-shaders (installer/bananza.py)
 int vk_pipeline_warm_shaders(void);                       // vk_pipeline.c: --warm-shaders (tools/build_game.py)
+int vk_pipeline_warm_shaders_if_needed(void);             // vk_pipeline.c: --warm-shaders-if-needed (launcher)

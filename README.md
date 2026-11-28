@@ -25,12 +25,19 @@ As far as we know, no other static recompilation of a Switch 2 game is public.
 ## Status
 
 **Playable on recent NVIDIA cards, well past the first level.** Players report runs through layer -101, sublayer 200,
-the Glacier layer, Snow World (Layer 500), the Resort and the Tempest layer. The current release is 0.5.2
-(24 November): the TOTK to DKB rename of settings and files, the Feast Layer black shards (#439), 4 GB cards (#437)
-and Switch 2 controllers on USB. The [latest release](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries
+the Glacier layer, Snow World (Layer 500), the Resort and the Tempest layer. The current release is 0.5.3
+(28 November): amiibo from your own tag files, selectable button prompts and a Player 2 controller, NVIDIA DLSS
+Frame Generation, Chinese, fewer shader stalls and an opt-in low-spec profile. The [latest release](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries
 `DKB-Launcher.exe`, one small Windows file that installs the build tools, builds the game from your own dump (`.nup`,
 `.nx` or folders) and updates in place with one click. It also has the setup zip, a Linux AppImage, and a
 macOS preview: [docs/installer.md](docs/installer.md).
+
+New in 0.5.3:
+- Amiibo from your own tag dumps (F1 > Amiibo, #567), button prompt style and Player 2 controller rows (#569),
+  `frame_gen_by = dlss` on RTX 40 or newer (#561), Simplified Chinese (#553, #554) and gyro under Steam Input (#551).
+- Shader pipelines precompiled before start (#564), many replay speed-ups (#529 to #544) and ten guest registers in C locals.
+- `preset = lowspec` and its opt-in settings for integrated GPUs, ported from evolis-game's low-spec fork
+  ([docs/dkb-lowend.md](docs/dkb-lowend.md)).
 
 New in 0.5.2:
 - Settings are `DKB_*` and files `dkb.*`; `TOTK_*` variables are ignored, and `totk.ini` is copied to `dkb.ini` once.
@@ -143,9 +150,16 @@ before committing; CI runs the same check. Questions go to
 ## Support the project
 
 If you want to support the work without writing code, tips go to
-[ko-fi.com/lucasblippng](https://ko-fi.com/lucasblippng). A tip pays for time on the project; it buys no game files,
-builds or early access, and everything stays open source here. Starring the repository and sharing it with people who
-know GPUs, ARM64 or the Switch also helps.
+[ko-fi.com/lucasblippng](https://ko-fi.com/lucasblippng), once or monthly. The current goal there, US$20 a month, pays
+for the Claude Pro plan used for reviews, tests and much of the lifter and renderer work, and its progress bar is on
+that page. A tip pays for time on the project; it buys no game files, builds or early access, and everything stays open
+source here.
+
+Help that costs nothing counts as much:
+- Test on hardware we don't have (AMD and Intel GPUs, handhelds, 4-thread CPUs) and post the numbers in #3 or on Discord.
+- When something breaks, attach `logs/dkb.log`; for a bug at one spot, your `profile/save` folder (zipped) and an input
+  recording (`input_record` in `dkb.ini`) let us replay it here.
+- Star the repository and share it with people who know GPUs, ARM64 or the Switch.
 
 ## Building from source
 

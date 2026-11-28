@@ -40,6 +40,8 @@ static SDL_Gamepad *SDL_OpenGamepad(SDL_JoystickID id) {
 static const char *SDL_GetGamepadSerial(SDL_Gamepad *p) { return p->serial; }
 static void SDL_CloseGamepad(SDL_Gamepad *p) { p->closes++; assert(p->references-- > 0); }
 #define SDL_free free
+// input.c leaves out the controllers Steam hid; none here
+static SDL_JoystickID *gamepad_ids(int *n) { return SDL_GetGamepads(n); }
 
 #include "input.h"
 // The runner copies the production scanner block here, without the unrelated window/game runtime.
@@ -116,6 +118,16 @@ int main(void) {
     for (int i = 0; i < 120; i++) assert(!open_pad_locked(pads[0].id));
     assert(pads[0].opens == attempts);
     assert(pads[0].references == 0 && pads[1].references == 0 && pads[2].references == 0);
+
+    // Free the saved Player 2 pad by trying a working spare after the first choice fails.
+    list = scan(3);
+    int reserved_opens = pads[1].opens;
+    SDL_Gamepad *replacement = open_pad1_locked(list, 3, pads[0].id, pads[1].id, pads[1].id);
+    assert(replacement == &pads[2]);
+    SDL_CloseGamepad(replacement);
+    assert(pads[0].opens == attempts && pads[1].opens == reserved_opens);
+    free(list);
+
     count = 0;
     list = scan(0); assert(!list);
     assert(!device_cache && !device_cache_count);

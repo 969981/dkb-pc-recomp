@@ -10,6 +10,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "vk.h"
+#include "vk_dlssg.h"
 #include "platform/platform.h"
 
 static VkCtx g_vk;
@@ -85,23 +86,29 @@ static void mesa_cache_beside_exe(void) {
     cache_beside_exe("__GL_SHADER_DISK_CACHE_PATH", "nv-cache");
 }
 
-#ifndef _WIN32
-// Both Linux drivers cap their shader cache at about 1 GB and evict past it. --warm-shaders builds every stage library
-// into that cache, so a full cache drops libraries the installer built and the game compiles them again in play. The
-// cap goes to 10 GiB unless the player set one: MESA_SHADER_CACHE_MAX_SIZE for Mesa, __GL_SHADER_DISK_CACHE_SIZE
-// (bytes) for NVIDIA's driver. A cap, not a reservation: the cache takes only what the pipelines need. Windows
-// drivers read neither name.
+// Both Linux drivers cap their shader cache at about 1 GB and evict past it. NVIDIA's Windows driver also honours
+// __GL_SHADER_DISK_CACHE_SIZE (bytes) alongside __GL_SHADER_DISK_CACHE_PATH (created above), and its 1 GB default
+// evicts pre-warmed stage libraries across runs. --warm-shaders builds every stage library into that cache, so a full
+// cache drops libraries the installer built and the game compiles them again in play. The cap goes to 10 GiB unless
+// the player set one: MESA_SHADER_CACHE_MAX_SIZE for Mesa, __GL_SHADER_DISK_CACHE_SIZE (bytes) for NVIDIA's driver. A
+// cap, not a reservation: the cache takes only what the pipelines need. That the NVIDIA Windows driver honours
+// __GL_SHADER_DISK_CACHE_SIZE this way is unverified.
 static void driver_cache_room(void) {
-    char mesa[256], nv[256];
-    int set_mesa = !plat_getenv("MESA_SHADER_CACHE_MAX_SIZE", mesa, sizeof mesa);
+    char nv[256];
     int set_nv = !plat_getenv("__GL_SHADER_DISK_CACHE_SIZE", nv, sizeof nv);
-    if (set_mesa) plat_setenv("MESA_SHADER_CACHE_MAX_SIZE", "10G");
     if (set_nv) plat_setenv("__GL_SHADER_DISK_CACHE_SIZE", "10737418240");
+#ifndef _WIN32
+    char mesa[256];
+    int set_mesa = !plat_getenv("MESA_SHADER_CACHE_MAX_SIZE", mesa, sizeof mesa);
+    if (set_mesa) plat_setenv("MESA_SHADER_CACHE_MAX_SIZE", "10G");
     // the variables are set inside this process, where no outside tool sees them, so the log says what the drivers get
     rt_log("vk: shader disk cache room: MESA_SHADER_CACHE_MAX_SIZE=%s, __GL_SHADER_DISK_CACHE_SIZE=%s",
            set_mesa ? "10G (set here)" : mesa, set_nv ? "10737418240 (set here)" : nv);
-}
+#else
+    rt_log("vk: shader disk cache room: __GL_SHADER_DISK_CACHE_SIZE=%s",
+           set_nv ? "10737418240 (set here)" : nv);
 #endif
+}
 
 // AMD Anti-Lag 2 on Linux (vk_antilag.c): RADV has no VK_AMD_anti_lag of its own; Mesa ships it as the implicit layer
 // VK_LAYER_MESA_anti_lag, which the loader loads only with ENABLE_LAYER_MESA_ANTI_LAG=1 (its manifest's
@@ -121,9 +128,7 @@ static void mesa_anti_lag_layer(void) {
 static int create_instance(void) {
     mesa_cache_beside_exe();
     mesa_anti_lag_layer();
-#ifndef _WIN32
     driver_cache_room();
-#endif
     const char *ext[28];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 8);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
@@ -335,6 +340,7 @@ static int pick_device(void) {
         }
     free(qp);
     rt_log("vk: using gpu %d: %s", best, g_vk.props.deviceName);
+    vk_caps_driver(g_vk.phys);   // the memory mode reads the driver (vk_caps.nvidia_prop: shadow storage on Linux)
     vk_mem_class_log(&g_vk.props, &g_vk.mem_props);
     return 1;
 }
@@ -373,7 +379,8 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[49];   // one extra slot for FSR 4's optional compute derivatives
+    enum { EXT_MAX = 51 };   // the last slot stays free for FSR 4's optional compute derivatives
+    const char *ext[EXT_MAX];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
     // A portability implementation (MoltenVK) requires this one on every device it exposes; no feature of it is needed
@@ -515,6 +522,15 @@ static int create_device(void) {
                 ext[n_ext++] = dx[i];
         }
     }
+    // An NVIDIA GPU on Windows: external memory and semaphores from Win32 handles, which DLSS Frame Generation through
+    // D3D12 shares its images and fence with (vk_dlssg.cpp). Asked for always: frame_gen_by can be changed while the
+    // game runs, and the device is made once.
+    int dlssg_interop = 0;
+    if (g_vk.props.vendorID == 0x10de) {
+        vk_dlssg_device_exts(ep, ne, ext, &n_ext, EXT_MAX - 1);
+        dlssg_interop = listed(ext, n_ext, "VK_KHR_external_memory_win32") &&
+                        listed(ext, n_ext, "VK_KHR_external_semaphore_win32");
+    }
     free(ep);
     const VkPhysicalDeviceFeatures *h = &c->f2.features;
     const char *miss = NULL;
@@ -587,10 +603,13 @@ static int create_device(void) {
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
 
-    VkPhysicalDeviceExternalMemoryHostPropertiesEXT emh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+    VkPhysicalDeviceIDProperties idp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceExternalMemoryHostPropertiesEXT emh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT,
+                                                           .pNext = &idp};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &emh};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
     g_vk.min_imported_host_alignment = (uint32_t)emh.minImportedHostPointerAlignment;
+    vk_dlssg_device(g_vk.phys, g_vk.device, g_vk.gfx_family, idp.deviceLUID, idp.deviceLUIDValid, dlssg_interop);
     vk_caps_init(&g_vk);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.device, .instance = g_vk.instance,
